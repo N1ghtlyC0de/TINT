@@ -37,7 +37,7 @@ Eres el agente responsable del procesamiento multimedia asíncrono de **TINT**. 
 2. **Extracción Ambilight:** Analiza una franja del 10% en cada uno de los 4 bordes del fotograma a 1 FPS. Genera el archivo `ambilight.json` y súbelo al Blob Storage.
 3. **Persistencia:** Al finalizar con éxito, marca el vídeo como `ready`.
 4. **Idempotencia:** Reprocesar el mismo vídeo debe producir el mismo resultado sin duplicar artefactos.
-5. **TDD:** Escribe primero pruebas unitarias con `pytest` mockeando ejecuciones de FFmpeg. Cobertura obligatoria **> 85%**.
+5. **TDD:** Escribe primero pruebas unitarias con `pytest` mockeando ejecuciones de FFmpeg. Cobertura obligatoria **≥ 85 %**.
 
 ## Comandos
 

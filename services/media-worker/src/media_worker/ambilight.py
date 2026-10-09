@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 EDGE_RATIO = 0.10
 SAMPLE_FPS = 1
+MAX_FPS = 1000
 
 
 @dataclass(frozen=True)
@@ -45,7 +46,9 @@ def average_color(pixels: list[tuple[int, int, int]]) -> str:
 
 def sample_timestamps_ms(duration_ms: int, fps: int = SAMPLE_FPS) -> list[int]:
     """Instantes (ms) a muestrear para generar ambilight.json."""
-    if duration_ms < 0 or fps <= 0:
-        raise ValueError("duración y fps deben ser válidos")
+    if duration_ms < 0:
+        raise ValueError("la duración no puede ser negativa")
+    if not 0 < fps <= MAX_FPS:
+        raise ValueError(f"fps debe estar en (0, {MAX_FPS}], recibido {fps}")
     step = 1000 // fps
     return list(range(0, duration_ms, step))

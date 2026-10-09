@@ -1,3 +1,4 @@
+import logging
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -29,6 +30,10 @@ def test_parse_duration_ms_rounds_to_milliseconds():
         '{"format": {}}',
         '{"format": {"duration": "abc"}}',
         '{"format": {"duration": "0"}}',
+        '{"format": {"duration": "nan"}}',
+        '{"format": {"duration": "inf"}}',
+        '{"format": {"duration": "-inf"}}',
+        '{"format": {"duration": "-3"}}',
     ],
 )
 def test_parse_duration_ms_rejects_invalid_output(payload):
@@ -61,3 +66,23 @@ def test_inspect_status_ready():
 
 def test_inspect_status_failed_on_corrupt_file():
     assert inspect_status("bad.mp4", fake_run(returncode=1)) == (VideoStatus.FAILED, None)
+
+
+def test_video_status_flow_is_processing_ready_failed():
+    assert [s.value for s in VideoStatus] == ["processing", "ready", "failed"]
+
+
+def test_inspect_status_failed_when_ffprobe_missing(caplog):
+    runner = Mock(side_effect=FileNotFoundError("ffprobe"))
+    with caplog.at_level(logging.ERROR, logger="media_worker.probe"):
+        assert inspect_status("ok.mp4", runner) == (VideoStatus.FAILED, None)
+    assert "ffprobe" in caplog.text
+    assert "ok.mp4" in caplog.text
+
+
+def test_inspect_status_logs_probe_error_reason(caplog):
+    runner = fake_run(returncode=1, stderr="moov atom not found")
+    with caplog.at_level(logging.WARNING, logger="media_worker.probe"):
+        assert inspect_status("bad.mp4", runner) == (VideoStatus.FAILED, None)
+    assert "moov atom not found" in caplog.text
+    assert "bad.mp4" in caplog.text

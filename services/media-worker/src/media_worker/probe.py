@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
+import math
 import subprocess
 from enum import StrEnum
 
+logger = logging.getLogger(__name__)
+
 
 class VideoStatus(StrEnum):
-    PENDING = "pending"
+    PROCESSING = "processing"
     READY = "ready"
     FAILED = "failed"
 
@@ -34,6 +38,8 @@ def parse_duration_ms(ffprobe_output: str) -> int:
         duration = float(json.loads(ffprobe_output)["format"]["duration"])
     except (ValueError, KeyError, TypeError) as exc:
         raise ProbeError("salida de ffprobe inválida") from exc
+    if not math.isfinite(duration):
+        raise ProbeError("duración no finita")
     if duration <= 0:
         raise ProbeError("duración no positiva")
     return round(duration * 1000)
@@ -51,5 +57,9 @@ def inspect_status(path: str, runner=subprocess.run) -> tuple[VideoStatus, int |
     """Devuelve el estado a persistir en SQL y la duración si fue válida."""
     try:
         return VideoStatus.READY, probe_duration_ms(path, runner)
-    except ProbeError:
+    except ProbeError as exc:
+        logger.warning("vídeo %s marcado como failed: %s", path, exc)
+        return VideoStatus.FAILED, None
+    except OSError as exc:
+        logger.error("no se pudo ejecutar ffprobe sobre %s: %s", path, exc)
         return VideoStatus.FAILED, None

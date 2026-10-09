@@ -36,7 +36,17 @@ def test_sample_timestamps_one_fps():
     assert sample_timestamps_ms(3500) == [0, 1000, 2000, 3000]
 
 
-@pytest.mark.parametrize(("duration", "fps"), [(-1, 1), (1000, 0)])
+@pytest.mark.parametrize(("duration", "fps"), [(-1, 1), (1000, 0), (1000, -1), (1000, 1001)])
 def test_sample_timestamps_rejects_invalid_input(duration, fps):
     with pytest.raises(ValueError):
         sample_timestamps_ms(duration, fps)
+
+
+def test_sample_timestamps_accepts_max_fps():
+    assert sample_timestamps_ms(3, 1000) == [0, 1, 2]
+
+
+@pytest.mark.parametrize("fps", [0, -5, 1001])
+def test_sample_timestamps_fps_error_message(fps):
+    with pytest.raises(ValueError, match="fps debe estar en"):
+        sample_timestamps_ms(1000, fps)
