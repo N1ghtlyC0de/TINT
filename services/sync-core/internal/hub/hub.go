@@ -11,6 +11,11 @@
 //
 // La réplica emisora no difunde localmente: todo pasa por Pub/Sub, así hay
 // un único camino y un orden consistente en todas las réplicas.
+//
+// Run mantiene dos bucles por réplica (no por conexión): el de HEARTBEAT,
+// que también cierra a los clientes que dejaron de responder, y el barrido
+// de presencia, que publica HOST_STATUS aunque la réplica del host muera y
+// delega el control si el host no vuelve (ver sweep).
 package hub
 
 import (
@@ -45,6 +50,12 @@ const (
 	// local (alimentada por el bus) esté al día. Red de seguridad por si se
 	// perdiera un mensaje Pub/Sub durante una reconexión.
 	CacheTTL = 5 * time.Second
+	// SweepInterval: cada cuánto se renueva la presencia y se evalúa el
+	// estado del host y la delegación de control.
+	SweepInterval = time.Second
+	// HandoffAfter: tiempo sin host/cohost tras el cual un participante
+	// recibe el control (CONTROL_HANDOFF_AFTER).
+	HandoffAfter = 5 * time.Minute
 
 	ioTimeout = 2 * time.Second
 )
@@ -57,7 +68,12 @@ type StateStore interface {
 	Touch(ctx context.Context, roomID string) error
 	HostSeen(ctx context.Context, roomID, connID string, nowMs int64) (int64, error)
 	HostGone(ctx context.Context, roomID, connID string, nowMs int64) (int64, error)
-	OnlineHosts(ctx context.Context, roomID string, nowMs int64) (int64, error)
+	Beat(ctx context.Context, roomID string, hostConns, memberSubs []string, nowMs int64) error
+	MemberGone(ctx context.Context, roomID, sub string) error
+	Presence(ctx context.Context, roomID string, nowMs int64) (store.Presence, error)
+	SetHostStatus(ctx context.Context, roomID string, online bool, nowMs int64) (bool, error)
+	LiveMembers(ctx context.Context, roomID string, nowMs int64) ([]string, error)
+	SwapDelegate(ctx context.Context, roomID, sub string) (string, error)
 }
 
 // Bus distribuye mensajes de sala entre réplicas (ver package bus).
@@ -79,7 +95,9 @@ type Hub struct {
 	tel   Telemetry
 	now   func() time.Time
 
-	heartbeat time.Duration
+	heartbeat  time.Duration
+	sweepEvery time.Duration
+	handoff    time.Duration
 
 	// mu protege rooms. Se mantiene durante Subscribe/Unsubscribe para que
 	// un join y un leave concurrentes de la misma sala no se desordenen.
@@ -95,11 +113,16 @@ type roomEntry struct {
 	state      master.State
 	hasState   bool
 	loadedAtMs int64
+	delegate   string // sub del participante con control delegado
 }
 
 // New crea un Hub.
 func New(s StateStore, b Bus, t Telemetry) *Hub {
-	return &Hub{store: s, bus: b, tel: t, now: time.Now, heartbeat: HeartbeatInterval, rooms: make(map[string]*roomEntry)}
+	return &Hub{
+		store: s, bus: b, tel: t, now: time.Now,
+		heartbeat: HeartbeatInterval, sweepEvery: SweepInterval, handoff: HandoffAfter,
+		rooms: make(map[string]*roomEntry),
+	}
 }
 
 // WithHeartbeat cambia el intervalo de HEARTBEAT (por defecto 1 s).
@@ -108,8 +131,197 @@ func (h *Hub) WithHeartbeat(d time.Duration) *Hub {
 	return h
 }
 
+// WithSweep cambia el intervalo del barrido de presencia (por defecto 1 s).
+func (h *Hub) WithSweep(d time.Duration) *Hub {
+	h.sweepEvery = d
+	return h
+}
+
+// WithHandoff cambia el tiempo sin host tras el cual se delega el control.
+func (h *Hub) WithHandoff(d time.Duration) *Hub {
+	h.handoff = d
+	return h
+}
+
 // HeartbeatInterval devuelve el intervalo de HEARTBEAT configurado.
 func (h *Hub) HeartbeatInterval() time.Duration { return h.heartbeat }
+
+// Run ejecuta los bucles de HEARTBEAT y de barrido hasta que ctx termine.
+func (h *Hub) Run(ctx context.Context) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); every(ctx, h.heartbeat, h.beatAll) }()
+	go func() { defer wg.Done(); every(ctx, h.sweepEvery, func() { h.sweepAll(ctx) }) }()
+	wg.Wait()
+}
+
+func every(ctx context.Context, d time.Duration, fn func()) {
+	t := time.NewTicker(d)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			fn()
+		}
+	}
+}
+
+// beatAll envía el HEARTBEAT a cada cliente local y cierra a los que
+// dejaron de responder. Un único temporizador por réplica en lugar de uno
+// por conexión.
+func (h *Hub) beatAll() {
+	for _, c := range h.snapshotClients() {
+		raw, err := h.Tick(c)
+		if err != nil {
+			c.close(err)
+			continue
+		}
+		c.enqueue(raw)
+	}
+}
+
+func (h *Hub) snapshotClients() []*Client {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []*Client
+	for _, r := range h.rooms {
+		for c := range r.clients {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// sweepAll renueva la presencia de los clientes locales y reevalúa cada sala.
+func (h *Hub) sweepAll(ctx context.Context) {
+	type roomBeat struct{ hosts, members []string }
+	h.mu.Lock()
+	beats := make(map[string]roomBeat, len(h.rooms))
+	for id, r := range h.rooms {
+		var b roomBeat
+		seen := map[string]bool{}
+		for c := range r.clients {
+			switch {
+			case c.ctx.Err() != nil:
+			case c.claims.CanControl():
+				b.hosts = append(b.hosts, c.id)
+			case !seen[c.claims.Sub]:
+				seen[c.claims.Sub] = true
+				b.members = append(b.members, c.claims.Sub)
+			}
+		}
+		beats[id] = b
+	}
+	h.mu.Unlock()
+
+	for room, b := range beats {
+		rctx, cancel := context.WithTimeout(ctx, ioTimeout)
+		nowMs := h.now().UnixMilli()
+		if err := h.store.Beat(rctx, room, b.hosts, b.members, nowMs); err != nil {
+			log.Printf("hub: latido de presencia sala %s: %v", room, err)
+		} else if _, err := h.sweep(rctx, room, nowMs); err != nil {
+			log.Printf("hub: barrido sala %s: %v", room, err)
+		}
+		cancel()
+	}
+}
+
+// presence es el resultado de evaluar una sala.
+type presence struct {
+	online   bool
+	delegate string
+}
+
+// sweep reconcilia el estado del host y la delegación de una sala. Varias
+// réplicas pueden ejecutarlo a la vez: el store solo informa transiciones
+// y el delegado elegido es determinista, así que no hay avisos duplicados.
+func (h *Hub) sweep(ctx context.Context, room string, nowMs int64) (presence, error) {
+	p, err := h.store.Presence(ctx, room, nowMs)
+	if err != nil {
+		return presence{}, err
+	}
+	online := p.Online > 0
+	changed, err := h.store.SetHostStatus(ctx, room, online, nowMs)
+	if err != nil {
+		return presence{}, err
+	}
+	if changed {
+		h.publishHostStatus(ctx, room, online)
+	}
+	delegate := p.Delegate
+	switch {
+	case online && delegate != "":
+		if err := h.swapDelegate(ctx, room, ""); err != nil {
+			return presence{}, err
+		}
+		delegate = ""
+	case !online && p.HostlessSinceMs > 0 && nowMs-p.HostlessSinceMs >= h.handoff.Milliseconds():
+		members, err := h.store.LiveMembers(ctx, room, nowMs)
+		if err != nil {
+			return presence{}, err
+		}
+		candidate := ""
+		if len(members) > 0 {
+			candidate = members[0]
+		}
+		if candidate != delegate {
+			if err := h.swapDelegate(ctx, room, candidate); err != nil {
+				return presence{}, err
+			}
+			delegate = candidate
+		}
+	}
+	h.applyDelegate(room, delegate)
+	return presence{online: online, delegate: delegate}, nil
+}
+
+// swapDelegate fija el delegado y publica CONTROL si cambió.
+func (h *Hub) swapDelegate(ctx context.Context, room, sub string) error {
+	prev, err := h.store.SwapDelegate(ctx, room, sub)
+	if err != nil || prev == sub {
+		return err
+	}
+	ev := baseEvent(syncevent.Control, room, h.now())
+	ev.Holder = sub
+	if err := h.bus.Publish(ctx, room, mustJSON(ev)); err != nil {
+		log.Printf("hub: CONTROL sala %s: %v", room, err)
+	}
+	return nil
+}
+
+// applyDelegate actualiza el delegado local y avisa a los participantes
+// locales si cambió (los host/cohost siempre tienen el control).
+func (h *Hub) applyDelegate(room, holder string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	r, ok := h.rooms[room]
+	if !ok || r.delegate == holder {
+		return
+	}
+	r.delegate = holder
+	now := h.now()
+	for c := range r.clients {
+		if c.claims.CanControl() {
+			continue
+		}
+		ev := baseEvent(syncevent.Control, room, now)
+		ev.CanControl = syncevent.Bool(c.claims.Sub == holder)
+		c.enqueue(mustJSON(ev))
+	}
+}
+
+// canControl indica si el cliente puede emitir comandos ahora mismo.
+func (h *Hub) canControl(c *Client) bool {
+	if c.claims.CanControl() {
+		return true
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	r, ok := h.rooms[c.claims.RoomID]
+	return ok && r.delegate != "" && r.delegate == c.claims.Sub
+}
 
 // Connect registra una conexión autenticada, crea la sala si no existe y le
 // encola de inmediato el STATE actual (HU-SYNC-01).
@@ -135,26 +347,30 @@ func (h *Hub) Connect(parent context.Context, claims auth.Claims) (*Client, erro
 		return nil, err
 	}
 	h.cache(room, st, now.UnixMilli())
-	firstHost := false
+	nowMs := now.UnixMilli()
 	if claims.CanControl() {
-		n, err := h.store.HostSeen(ctx, room, c.id, now.UnixMilli())
-		if err != nil {
-			h.Disconnect(c)
-			return nil, err
-		}
-		firstHost = n == 1
+		_, err = h.store.HostSeen(ctx, room, c.id, nowMs)
+	} else {
+		err = h.store.Beat(ctx, room, nil, []string{claims.Sub}, nowMs)
 	}
-	online, err := h.store.OnlineHosts(ctx, room, now.UnixMilli())
+	if err != nil {
+		h.Disconnect(c)
+		return nil, err
+	}
+	p, err := h.store.Presence(ctx, room, nowMs)
 	if err != nil {
 		h.Disconnect(c)
 		return nil, err
 	}
 
+	// El STATE va primero (HU-SYNC-01); el barrido puede publicar
+	// HOST_STATUS/CONTROL, que llegan después por el bus.
 	ev := stateEvent(syncevent.State, room, st, now)
-	ev.Online = syncevent.Bool(online > 0)
+	ev.Online = syncevent.Bool(p.Online > 0)
+	ev.CanControl = syncevent.Bool(claims.CanControl() || (p.Delegate != "" && p.Delegate == claims.Sub))
 	c.enqueue(mustJSON(ev))
-	if firstHost {
-		h.publishHostStatus(ctx, room, true)
+	if _, err := h.sweep(ctx, room, nowMs); err != nil {
+		log.Printf("hub: barrido sala %s: %v", room, err)
 	}
 	return c, nil
 }
@@ -163,16 +379,27 @@ func (h *Hub) Connect(parent context.Context, claims auth.Claims) (*Client, erro
 // su TTL de gracia (REQ-07); si era el último host se avisa a los demás.
 func (h *Hub) Disconnect(c *Client) {
 	c.close(ErrClosed)
-	if !h.leave(c) {
+	left, ok := h.leave(c)
+	if !ok {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), ioTimeout)
 	defer cancel()
 	room := c.claims.RoomID
+	nowMs := h.now().UnixMilli()
+	reevaluate := false
 	if c.claims.CanControl() {
-		n, err := h.store.HostGone(ctx, room, c.id, h.now().UnixMilli())
-		if err == nil && n == 0 {
-			h.publishHostStatus(ctx, room, false)
+		if _, err := h.store.HostGone(ctx, room, c.id, nowMs); err == nil {
+			reevaluate = true
+		}
+	} else if !left.sameSub {
+		if err := h.store.MemberGone(ctx, room, c.claims.Sub); err == nil {
+			reevaluate = left.delegate == c.claims.Sub // se fue el delegado: reasignar
+		}
+	}
+	if reevaluate {
+		if _, err := h.sweep(ctx, room, nowMs); err != nil {
+			log.Printf("hub: barrido sala %s: %v", room, err)
 		}
 	}
 	if err := h.store.Touch(ctx, room); err != nil {
@@ -184,7 +411,10 @@ func (h *Hub) Disconnect(c *Client) {
 // sala y, si es un comando, actualiza la caché del estado maestro.
 func (h *Hub) Deliver(roomID string, payload []byte) {
 	var ev syncevent.Event
-	isCommand := json.Unmarshal(payload, &ev) == nil && ev.IsCommand()
+	if json.Unmarshal(payload, &ev) == nil && ev.Type == syncevent.Control {
+		h.applyDelegate(roomID, ev.Holder) // cada cliente recibe su propio CONTROL
+		return
+	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -192,7 +422,7 @@ func (h *Hub) Deliver(roomID string, payload []byte) {
 	if !ok {
 		return
 	}
-	if isCommand {
+	if ev.IsCommand() {
 		r.update(master.State{
 			Status: master.Status(ev.Status), PositionMs: ev.PositionMs, UpdatedAtMs: ev.UpdatedAtMs,
 			Rate: ev.Rate, Version: ev.Version, MediaID: ev.MediaID,
@@ -232,7 +462,7 @@ func (h *Hub) Handle(ctx context.Context, c *Client, raw []byte) {
 
 func (h *Hub) handleCommand(ctx context.Context, c *Client, ev syncevent.Event, now time.Time) {
 	room := c.claims.RoomID
-	if !c.claims.CanControl() {
+	if !h.canControl(c) {
 		c.enqueue(mustJSON(errorEvent(room, ev.EventID, syncevent.CodeForbidden, now)))
 		return
 	}
@@ -270,9 +500,6 @@ func (h *Hub) handleSyncCheck(ctx context.Context, c *Client, ev syncevent.Event
 		c.rttMs.Store(drift.UpdateRTT(c.rttMs.Load(), nowMs-ev.EchoServerTs))
 	}
 	room := c.claims.RoomID
-	if c.claims.CanControl() {
-		_, _ = h.store.HostSeen(ctx, room, c.id, nowMs) // latido de presencia
-	}
 	st, ok := h.fresh(room, nowMs)
 	if !ok {
 		loaded, err := h.store.Load(ctx, room)
@@ -282,7 +509,8 @@ func (h *Hub) handleSyncCheck(ctx context.Context, c *Client, ev syncevent.Event
 		st = h.cache(room, loaded, nowMs)
 	}
 	rtt := c.RTT()
-	_, corr := drift.Check(st, ev.PositionMs, nowMs, rtt, h.now().UnixMilli())
+	driftMs, corr := drift.Check(st, ev.PositionMs, nowMs, rtt, h.now().UnixMilli())
+	c.lastDriftMs.Store(driftMs)
 	if corr == nil {
 		return
 	}
@@ -308,6 +536,8 @@ func (h *Hub) Tick(c *Client) ([]byte, error) {
 	}
 	ev := baseEvent(syncevent.Heartbeat, c.claims.RoomID, now)
 	ev.ServerTimeMs = now.UnixMilli()
+	ev.RTTMs = c.RTT()
+	ev.DriftMs = c.lastDriftMs.Load()
 	return mustJSON(ev), nil
 }
 
@@ -327,19 +557,32 @@ func (h *Hub) join(ctx context.Context, c *Client) error {
 	return nil
 }
 
-// leave quita al cliente; devuelve false si ya no estaba registrado.
-func (h *Hub) leave(c *Client) bool {
+// leftInfo describe la sala que deja un cliente.
+type leftInfo struct {
+	delegate string // delegado vigente al salir
+	sameSub  bool   // queda otra conexión local con el mismo sub
+}
+
+// leave quita al cliente; ok es false si ya no estaba registrado.
+func (h *Hub) leave(c *Client) (leftInfo, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	room := c.claims.RoomID
 	r, ok := h.rooms[room]
 	if !ok {
-		return false
+		return leftInfo{}, false
 	}
 	if _, ok := r.clients[c]; !ok {
-		return false
+		return leftInfo{}, false
 	}
 	delete(r.clients, c)
+	info := leftInfo{delegate: r.delegate}
+	for other := range r.clients {
+		if other.claims.Sub == c.claims.Sub {
+			info.sameSub = true
+			break
+		}
+	}
 	if len(r.clients) == 0 {
 		delete(h.rooms, room)
 		ctx, cancel := context.WithTimeout(context.Background(), ioTimeout)
@@ -348,7 +591,7 @@ func (h *Hub) leave(c *Client) bool {
 			log.Printf("hub: unsubscribe sala %s: %v", room, err)
 		}
 	}
-	return true
+	return info, true
 }
 
 // cache guarda st si es más nuevo que lo cacheado y devuelve el estado

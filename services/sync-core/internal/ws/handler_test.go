@@ -44,6 +44,7 @@ func newServer(t *testing.T, heartbeat time.Duration) *server {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	b.Start(ctx, h.Deliver)
+	go h.Run(ctx)
 
 	ts := httptest.NewServer(NewHandler(h, auth.NewVerifier(secret, "tint-identity", "tint:room"), []string{"tint.app"}))
 	t.Cleanup(ts.Close)

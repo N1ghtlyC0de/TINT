@@ -20,6 +20,7 @@ type Config struct {
 	JWTAudience    string
 	AllowedOrigins []string      // patrones de host para el handshake WS
 	RoomTTL        time.Duration // periodo de gracia de la sala (REQ-07)
+	HandoffAfter   time.Duration // sin host durante este tiempo, se delega el control
 }
 
 // Load lee la configuración usando getenv (inyectable en pruebas).
@@ -32,18 +33,30 @@ func Load(getenv func(string) string) (Config, error) {
 		JWTAudience:    or(getenv("JWT_AUDIENCE"), "tint:room"),
 		AllowedOrigins: splitList(or(getenv("ALLOWED_ORIGINS"), "localhost:5173")),
 		RoomTTL:        12 * time.Hour,
+		HandoffAfter:   5 * time.Minute,
 	}
 	if c.JWTSecret == "" {
 		return Config{}, ErrMissingSecret
 	}
-	if raw := getenv("ROOM_TTL"); raw != "" {
-		d, err := time.ParseDuration(raw)
-		if err != nil || d <= 0 {
-			return Config{}, fmt.Errorf("ROOM_TTL inválido %q: debe ser una duración positiva", raw)
+	for name, dst := range map[string]*time.Duration{"ROOM_TTL": &c.RoomTTL, "CONTROL_HANDOFF_AFTER": &c.HandoffAfter} {
+		if err := duration(getenv(name), name, dst); err != nil {
+			return Config{}, err
 		}
-		c.RoomTTL = d
 	}
 	return c, nil
+}
+
+// duration interpreta una duración positiva opcional.
+func duration(raw, name string, dst *time.Duration) error {
+	if raw == "" {
+		return nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return fmt.Errorf("%s inválido %q: debe ser una duración positiva", name, raw)
+	}
+	*dst = d
+	return nil
 }
 
 func or(v, def string) string {

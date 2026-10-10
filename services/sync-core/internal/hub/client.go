@@ -27,6 +27,7 @@ type Client struct {
 
 	rttMs       atomic.Int64 // RTT suavizado (EWMA), medido con el reloj del servidor
 	lastCheckMs atomic.Int64 // último SYNC_CHECK recibido
+	lastDriftMs atomic.Int64 // último drift medido (se informa en HEARTBEAT)
 
 	// Rate limit por ventana fija; solo lo toca la goroutine lectora.
 	windowStartMs int64

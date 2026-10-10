@@ -205,8 +205,7 @@ func (s *Store) HostGone(ctx context.Context, roomID, connID string, nowMs int64
 
 // OnlineHosts cuenta las conexiones de host que latieron dentro del timeout.
 func (s *Store) OnlineHosts(ctx context.Context, roomID string, nowMs int64) (int64, error) {
-	since := strconv.FormatInt(nowMs-PresenceTimeout.Milliseconds(), 10)
-	return s.rdb.ZCount(ctx, syncevent.HostsKey(roomID), since, "+inf").Result()
+	return s.rdb.ZCount(ctx, syncevent.HostsKey(roomID), sinceArg(nowMs), "+inf").Result()
 }
 
 func load(ctx context.Context, c redis.Cmdable, roomID string) (master.State, error) {

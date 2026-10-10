@@ -2,8 +2,8 @@
 //
 // Cada conexión usa dos goroutines:
 //   - lectora (la del handler HTTP): lee frames y llama a hub.Handle.
-//   - escritora: única dueña de conn.Write; drena la cola del cliente y
-//     emite un HEARTBEAT por intervalo.
+//   - escritora: única dueña de conn.Write; drena la cola del cliente. Los
+//     HEARTBEAT los encola el hub con un único temporizador por réplica.
 //
 // Cuando cualquiera de las dos termina, el contexto del cliente se cancela y
 // la otra sale (el cierre del socket desbloquea la lectura y la lectura
@@ -40,8 +40,6 @@ type Hub interface {
 	Connect(ctx context.Context, claims auth.Claims) (*hub.Client, error)
 	Disconnect(c *hub.Client)
 	Handle(ctx context.Context, c *hub.Client, raw []byte)
-	Tick(c *hub.Client) ([]byte, error)
-	HeartbeatInterval() time.Duration
 }
 
 // Handler atiende el upgrade a WebSocket del Canal Sync.
@@ -114,8 +112,6 @@ func (h *Handler) readLoop(conn *websocket.Conn, c *hub.Client) {
 }
 
 func (h *Handler) writeLoop(conn *websocket.Conn, c *hub.Client) {
-	ticker := time.NewTicker(h.hub.HeartbeatInterval())
-	defer ticker.Stop()
 	for {
 		select {
 		case <-c.Done():
@@ -123,16 +119,6 @@ func (h *Handler) writeLoop(conn *websocket.Conn, c *hub.Client) {
 			return
 		case msg := <-c.Send():
 			if err := write(conn, msg); err != nil {
-				conn.CloseNow()
-				return
-			}
-		case <-ticker.C:
-			beat, err := h.hub.Tick(c)
-			if err != nil {
-				closeFor(conn, err)
-				return
-			}
-			if err := write(conn, beat); err != nil {
 				conn.CloseNow()
 				return
 			}

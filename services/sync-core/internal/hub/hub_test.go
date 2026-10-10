@@ -23,12 +23,13 @@ import (
 const room = "room-1"
 
 var (
-	t0        = time.Date(2026, 10, 10, 18, 0, 0, 0, time.UTC)
-	host      = auth.Claims{Sub: "user-1", RoomID: room, Role: auth.RoleHost, Nick: "Ana"}
-	cohost    = auth.Claims{Sub: "user-2", RoomID: room, Role: auth.RoleCohost}
-	guest     = auth.Claims{Sub: "guest:1", RoomID: room, Role: auth.RoleParticipant, Nick: "Luis"}
-	guestTwo  = auth.Claims{Sub: "guest:2", RoomID: room, Role: auth.RoleParticipant}
-	recvLimit = 2 * time.Second
+	t0         = time.Date(2026, 10, 10, 18, 0, 0, 0, time.UTC)
+	host       = auth.Claims{Sub: "user-1", RoomID: room, Role: auth.RoleHost, Nick: "Ana"}
+	cohost     = auth.Claims{Sub: "user-2", RoomID: room, Role: auth.RoleCohost}
+	guest      = auth.Claims{Sub: "guest:1", RoomID: room, Role: auth.RoleParticipant, Nick: "Luis"}
+	guestTwo   = auth.Claims{Sub: "guest:2", RoomID: room, Role: auth.RoleParticipant}
+	guestThree = auth.Claims{Sub: "guest:3", RoomID: room, Role: auth.RoleParticipant}
+	recvLimit  = 2 * time.Second
 )
 
 type fakeClock struct{ ms atomic.Int64 }
