@@ -10,6 +10,13 @@ import { create as createRoom, listByHost, findById, softRemoveById, updateTitle
 import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../modules/invitations/invitations.repo.js';
 import { issueGuestToken, generateSyncTicket } from '../modules/auth/auth.service.js';
 import { getMediaSigner } from '../modules/media/media.signer.js';
+import {
+  create as createGuestSession,
+  findByJti as findGuestSession,
+  listByRoom as listGuestSessions,
+  setRevoked as setGuestSessionRevoked,
+} from '../modules/guests/guestSessions.repo.js';
+import { markTokenRevoked, publishRevoked } from '../modules/tokens/revocation.js';
 import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
@@ -198,6 +205,29 @@ router.get('/rooms/:id/playback', requireRoomHostOrGuest, async (req, res) => {
   res.json({ mediaId: room.mediaId, url, expiresAt: expiresAt.toISOString() });
 });
 
+router.get('/rooms/:id/guests', requireAuthHost, requireRoomOwner, async (req, res) => {
+  const sessions = await listGuestSessions(paramId(req.params.id));
+  res.json({
+    // `sub` no se expone: es el identificador interno del invitado en sync-core.
+    guests: sessions.map(({ jti, nick, joinedAt, expiresAt, revoked }) => ({ jti, nick, joinedAt, expiresAt, revoked })),
+  });
+});
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+router.post('/rooms/:id/guests/:jti/revoke', requireAuthHost, requireRoomOwner, async (req, res) => {
+  const roomId = paramId(req.params.id);
+  const jti = paramId(req.params.jti);
+  const session = UUID_RE.test(jti) ? await findGuestSession(jti) : null;
+  if (!session || session.roomId !== roomId) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  // Idempotente: revocar de nuevo reescribe la marca y vuelve a publicar REVOKED.
+  await setGuestSessionRevoked(jti);
+  await markTokenRevoked(jti, Math.floor(session.expiresAt.getTime() / 1000));
+  await publishRevoked(roomId, jti);
+  res.json({ success: true });
+});
+
 router.post('/invitations/:code/revoke', requireAuthHost, async (req, res) => {
   const rawCode = req.params.code;
   const code = Array.isArray(rawCode) ? rawCode[0] : rawCode;
@@ -215,7 +245,7 @@ router.post('/invitations/:code/revoke', requireAuthHost, async (req, res) => {
 
 const claimSchema = z.object({
   code: z.string().trim(),
-  nick: z.string().trim().min(1),
+  nick: z.string().trim().min(1).max(64),
 });
 router.post('/invitations/claim', validate(claimSchema), async (req, res) => {
   const { code, nick } = req.body;
@@ -233,7 +263,16 @@ router.post('/invitations/claim', validate(claimSchema), async (req, res) => {
   if (room && room.status === 'deleted') {
     return res.status(410).json({ error: 'Deleted' });
   }
-  const { token } = issueGuestToken(invitation.roomId, nick);
+  const { token, payload } = issueGuestToken(invitation.roomId, nick);
+  // Registrar la sesión antes de entregar el token: un token sin fila no se podría listar ni revocar.
+  await createGuestSession({
+    jti: payload.jti,
+    roomId: payload.room_id,
+    sub: payload.sub,
+    nick: payload.nick,
+    joinedAt: new Date(payload.iat * 1000),
+    expiresAt: new Date(payload.exp * 1000),
+  });
   res.json({ token, roomId: invitation.roomId, nick, roomTitle: room?.title ?? null });
 });
 

@@ -1,5 +1,14 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import jwt from 'jsonwebtoken';
+
+vi.mock('../src/modules/guests/guestSessions.repo.js', () => ({
+  create: vi.fn(),
+  findByJti: vi.fn(),
+  listByRoom: vi.fn(),
+  setRevoked: vi.fn(),
+}));
+
+import { findByJti } from '../src/modules/guests/guestSessions.repo.js';
 import { env } from '../src/config/env.js';
 import { requireRoomGuest, requireRoomHostOrGuest } from '../src/middlewares/guestAuth.js';
 import { setRedisClient } from '../src/modules/tokens/revocation.js';
@@ -35,6 +44,10 @@ function sign(claims: Record<string, unknown>, opts: { secret?: string; issuer?:
   });
 }
 
+beforeEach(() => {
+  vi.mocked(findByJti).mockReset();
+  vi.mocked(findByJti).mockResolvedValue(null as any);
+});
 afterEach(() => setRedisClient(null));
 
 describe('requireRoomGuest', () => {
@@ -79,6 +92,25 @@ describe('requireRoomGuest', () => {
     expect(res.status).toHaveBeenCalledWith(401);
     expect(res.json).toHaveBeenCalledWith({ error: 'Token revoked' });
     expect(next).not.toHaveBeenCalled();
+  });
+
+  it('401 si la sesión del invitado está revocada en BD (aunque Redis no tenga la clave)', async () => {
+    setRevokedKeys();
+    const { token, payload } = issueGuestToken('room-1', 'Ana');
+    vi.mocked(findByJti).mockResolvedValueOnce({ jti: payload.jti, roomId: 'room-1', revoked: true } as any);
+    const { res, next } = await run(token);
+    expect(findByJti).toHaveBeenCalledWith(payload.jti);
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Token revoked' });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('acepta si la sesión existe y no está revocada', async () => {
+    setRevokedKeys();
+    const { token, payload } = issueGuestToken('room-1', 'Ana');
+    vi.mocked(findByJti).mockResolvedValueOnce({ jti: payload.jti, roomId: 'room-1', revoked: false } as any);
+    const { next } = await run(token);
+    expect(next).toHaveBeenCalled();
   });
 
   it('requireRoomHostOrGuest sin token delega en requireAuthHost → 401', async () => {

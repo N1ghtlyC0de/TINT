@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
 import { isTokenRevoked } from '../modules/tokens/revocation.js';
+import { findByJti as findGuestSession } from '../modules/guests/guestSessions.repo.js';
 import { requireAuthHost } from './auth.js';
 import { requireRoomOwner } from './requireRoomOwner.js';
 import type { GuestTokenPayload } from '../modules/auth/auth.service.js';
@@ -24,7 +25,9 @@ function roomIdParam(req: Request) {
 
 /**
  * Exige un guest token HS256 emitido por identity-api para la sala `:id`
- * (mismo JWT_SECRET/iss/aud que valida sync-core) y cuyo `jti` no esté revocado.
+ * (mismo JWT_SECRET/iss/aud que valida sync-core) y cuyo `jti` no esté revocado
+ * (ni `guest_sessions.revoked` en BD ni la clave Redis `token:revoked:{jti}`).
+ * Tokens emitidos antes de existir guest_sessions (sin fila) se aceptan si Redis no los marca.
  */
 export async function requireRoomGuest(req: Request, res: Response, next: NextFunction) {
   const token = bearer(req);
@@ -48,7 +51,8 @@ export async function requireRoomGuest(req: Request, res: Response, next: NextFu
     return res.status(403).json({ error: 'Forbidden' });
   }
   try {
-    if (await isTokenRevoked(payload.jti)) {
+    const session = await findGuestSession(payload.jti);
+    if (session?.revoked || (await isTokenRevoked(payload.jti))) {
       return res.status(401).json({ error: 'Token revoked' });
     }
   } catch (err) {

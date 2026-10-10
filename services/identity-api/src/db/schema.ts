@@ -23,6 +23,17 @@ export const rooms = pgTable('rooms', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
 
+// Sesiones de invitado (F5): una fila por guest token emitido, para listarlos y revocarlos.
+export const guestSessions = pgTable('guest_sessions', {
+  jti: uuid('jti').primaryKey(),
+  roomId: uuid('room_id').notNull().references(() => rooms.id, { onDelete: 'cascade' }),
+  sub: text('sub').notNull(),
+  nick: varchar('nick', { length: 64 }).notNull(),
+  joinedAt: timestamp('joined_at', { withTimezone: true }).defaultNow().notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  revoked: boolean('revoked').default(false).notNull(),
+});
+
 export const invitations = pgTable('invitations', {
   id: uuid('id').primaryKey().defaultRandom(),
   code: varchar('code', { length: 12 }).unique().notNull(),

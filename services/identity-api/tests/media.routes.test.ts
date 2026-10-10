@@ -23,6 +23,13 @@ vi.mock('../src/modules/invitations/invitations.repo.js', () => ({
   setRevoked: vi.fn(),
 }));
 
+vi.mock('../src/modules/guests/guestSessions.repo.js', () => ({
+  create: vi.fn(),
+  findByJti: vi.fn(async () => null),
+  listByRoom: vi.fn(),
+  setRevoked: vi.fn(),
+}));
+
 import app from '../src/app.js';
 import { env } from '../src/config/env.js';
 import { findById, isOwner, setMedia } from '../src/modules/rooms/rooms.repo.js';
