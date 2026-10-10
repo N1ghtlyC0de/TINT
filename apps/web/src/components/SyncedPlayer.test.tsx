@@ -14,6 +14,12 @@ function makeSync(over: Partial<SyncSocketApi> = {}): SyncSocketApi {
     hostOnline: true,
     lastError: null,
     correction: null,
+    canControl: true,
+    rttMs: null,
+    driftMs: null,
+    revoked: false,
+    reconnect: null,
+    lastBroadcast: null,
     sendCommand: vi.fn(() => 'evt'),
     ...over,
   };

@@ -1,7 +1,10 @@
 /**
  * WebSocket falso para pruebas: registra instancias, mensajes enviados y permite
- * simular apertura, mensajes del servidor y cierres. Se instala con vi.stubGlobal.
+ * simular apertura (con subprotocolo negociado), mensajes del servidor (texto o
+ * binarios) y cierres con código. Se instala con vi.stubGlobal.
  */
+export type SentFrame = string | ArrayBufferLike | ArrayBufferView;
+
 export class MockWebSocket {
   static readonly CONNECTING = 0;
   static readonly OPEN = 1;
@@ -10,15 +13,20 @@ export class MockWebSocket {
   static instances: MockWebSocket[] = [];
 
   readonly url: string;
+  readonly protocols: string | string[] | undefined;
+  /** Subprotocolo aceptado por el "servidor" (se fija en open()). */
+  protocol = '';
+  binaryType: 'blob' | 'arraybuffer' = 'blob';
   readyState = MockWebSocket.CONNECTING;
-  sent: string[] = [];
+  sent: SentFrame[] = [];
   onopen: ((ev: Event) => void) | null = null;
   onmessage: ((ev: MessageEvent) => void) | null = null;
   onclose: ((ev: CloseEvent) => void) | null = null;
   onerror: ((ev: Event) => void) | null = null;
 
-  constructor(url: string) {
+  constructor(url: string, protocols?: string | string[]) {
     this.url = url;
+    this.protocols = protocols;
     MockWebSocket.instances.push(this);
   }
 
@@ -30,17 +38,19 @@ export class MockWebSocket {
     return MockWebSocket.instances[MockWebSocket.instances.length - 1];
   }
 
-  send(data: string) {
+  send(data: SentFrame) {
     this.sent.push(data);
   }
 
-  close() {
+  /** Cierre (del cliente o simulado del servidor) con código y razón opcionales. */
+  close(code?: number, reason?: string) {
     this.readyState = MockWebSocket.CLOSED;
-    this.onclose?.(new CloseEvent('close'));
+    this.onclose?.(new CloseEvent('close', { code, reason }));
   }
 
-  /** Simula el handshake exitoso. */
-  open() {
+  /** Simula el handshake exitoso, opcionalmente aceptando un subprotocolo. */
+  open(protocol = '') {
+    this.protocol = protocol;
     this.readyState = MockWebSocket.OPEN;
     this.onopen?.(new Event('open'));
   }
@@ -51,7 +61,15 @@ export class MockWebSocket {
     this.onmessage?.(new MessageEvent('message', { data }));
   }
 
+  /** Simula un frame binario del servidor. */
+  receiveBinary(data: ArrayBuffer) {
+    this.onmessage?.(new MessageEvent('message', { data }));
+  }
+
+  /** Mensajes de texto enviados, parseados como JSON. */
   sentJson(): Record<string, unknown>[] {
-    return this.sent.map((s) => JSON.parse(s) as Record<string, unknown>);
+    return this.sent
+      .filter((s): s is string => typeof s === 'string')
+      .map((s) => JSON.parse(s) as Record<string, unknown>);
   }
 }
