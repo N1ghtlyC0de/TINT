@@ -6,7 +6,7 @@ from pathlib import Path
 
 from media_worker.probe import VideoStatus, inspect_status
 
-DEFAULT_VIDEOS_DIR = Path(__file__).resolve().parents[1] / "test-videos"
+DEFAULT_VIDEOS_DIR = Path(__file__).resolve().parents[2] / "test-videos"
 
 
 def resolve_video(video: str, videos_dir: Path) -> str:
@@ -27,7 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--videos-dir",
         type=Path,
         default=DEFAULT_VIDEOS_DIR,
-        help="carpeta de vídeos para nombres sueltos (por defecto: src/test-videos)",
+        help="carpeta de vídeos para nombres sueltos (por defecto: test-videos/)",
     )
     return parser
 

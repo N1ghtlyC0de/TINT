@@ -29,8 +29,9 @@ def test_main_reports_failed_without_duration(capsys):
     assert capsys.readouterr().out.strip() == message
 
 
-def test_default_videos_dir_is_src_test_videos():
-    assert DEFAULT_VIDEOS_DIR.parts[-2:] == ("src", "test-videos")
+def test_default_videos_dir_is_test_videos_outside_src():
+    assert DEFAULT_VIDEOS_DIR.name == "test-videos"
+    assert (DEFAULT_VIDEOS_DIR.parent / "pyproject.toml").is_file()
 
 
 def test_resolve_video_bare_name_uses_videos_dir(tmp_path):
