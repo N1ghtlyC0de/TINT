@@ -1,86 +1,160 @@
 # ⏱️ Dominio de Reproducción — Canal Sync
 
-> Documento técnico de la feature de reproducción sincronizada de TINT: qué se construyó, cómo funciona, qué se integró en cada dominio y cómo se verificó.
-> Rama: `feat/reproductor` · Servicio principal: [`services/sync-core`](../services/sync-core) · Protocolo detallado: [`services/sync-core/AGENTS.md`](../services/sync-core/AGENTS.md).
+> Documento técnico de la reproducción sincronizada de TINT. Explica qué se construyó, cómo funciona, qué se integró en cada dominio y cómo se verificó.
+> - Rama: `feat/reproductor`.
+> - Contrato vigente: **v2**.
+> - Servicio principal: [`services/sync-core`](../services/sync-core).
+> - Protocolo detallado: [`services/sync-core/AGENTS.md`](../services/sync-core/AGENTS.md).
 
 ## Índice
 1. [Resumen](#1-resumen)
-2. [Requisitos cubiertos](#2-requisitos-cubiertos)
+2. [Requisitos y mejoras cubiertas](#2-requisitos-y-mejoras-cubiertas)
 3. [Vista general](#3-vista-general)
 4. [Mapa de cambios por dominio](#4-mapa-de-cambios-por-dominio)
 5. [El Reloj Maestro](#5-el-reloj-maestro)
 6. [Flujos principales](#6-flujos-principales)
 7. [Modelo de datos en Redis](#7-modelo-de-datos-en-redis)
 8. [Arquitectura interna de sync-core](#8-arquitectura-interna-de-sync-core)
-9. [Cliente web](#9-cliente-web)
-10. [Seguridad y límites](#10-seguridad-y-límites)
-11. [Configuración y ejecución local](#11-configuración-y-ejecución-local)
-12. [Verificación y resultados](#12-verificación-y-resultados)
-13. [Decisiones de diseño y desviaciones del plan](#13-decisiones-de-diseño-y-desviaciones-del-plan)
-14. [Limitaciones conocidas](#14-limitaciones-conocidas)
+9. [identity-api: vídeo de la sala e invitados](#9-identity-api-vídeo-de-la-sala-e-invitados)
+10. [Cliente web](#10-cliente-web)
+11. [Seguridad y límites](#11-seguridad-y-límites)
+12. [Observabilidad](#12-observabilidad)
+13. [Configuración y ejecución local](#13-configuración-y-ejecución-local)
+14. [Verificación y resultados](#14-verificación-y-resultados)
+15. [Decisiones de diseño](#15-decisiones-de-diseño)
+16. [Limitaciones conocidas](#16-limitaciones-conocidas)
 
 ---
 
 ## 1. Resumen
 
-TINT es una *Watch Party*: todos los participantes de una sala deben ver **el mismo fotograma al mismo tiempo**. Esta feature implementa el *Core Sync Domain* completo:
+TINT es una *Watch Party*: todos los participantes de una sala deben ver **el mismo fotograma al mismo tiempo**. La feature se construyó en dos entregas.
 
-- **sync-core (Go)**: servidor WebSocket `/ws/sync` con Reloj Maestro en Redis, comandos `PLAY`/`PAUSE`/`SEEK` autorizados por rol, difusión entre réplicas por Redis Pub/Sub, medición de RTT y corrección de *drift*, presencia del Host y telemetría no bloqueante.
-- **identity-api (TypeScript)**: endpoint `POST /api/v1/rooms/:id/sync-ticket` que emite un token HS256 de vida corta para que el Host entre al Canal Sync.
-- **web (React)**: hook `useSyncSocket` y componente `SyncedPlayer` integrados en la página `WatchRoom`.
-- **infraestructura**: servicio `sync-core` en `docker-compose.yml`, variables en `.env.example`, caché de dependencias Go en CI y prueba de carga k6.
+**v1 — Canal Sync (13 commits)**
+- **sync-core (Go):** WebSocket `/ws/sync` con:
+  - Reloj Maestro en Redis.
+  - `PLAY`/`PAUSE`/`SEEK` autorizados por rol.
+  - Difusión entre réplicas por Pub/Sub.
+  - Medición de RTT y corrección de *drift*.
+  - Presencia del Host y telemetría no bloqueante.
+- **identity-api:** sync-ticket HS256 para el Host.
+- **web:** `useSyncSocket` y `SyncedPlayer`.
+- **infra:** servicio en `docker compose`, prueba de carga k6 y caché de CI.
 
-### Commits de la rama
+**v2 — Mejoras funcionales, de experiencia y de rendimiento (20 commits)**
+
+*Funcionales*
+- El vídeo queda asignado a la sala y el navegador lo descarga de MinIO con una URL firmada.
+- El Host puede retirar invitados (revocación de tokens).
+- La sala se sigue anunciando como sin host aunque se caiga la réplica del host.
+- Nuevos comandos `RATE` (velocidad) y `LOAD` (cambiar de vídeo).
+- Delegación temporal del control cuando el Host no vuelve.
+
+*Experiencia de uso*
+- Semáforo de sincronía.
+- Avisos (*toasts*) de lo que hace el Host.
+- Barra de progreso estilo cine.
+- Atajos de teclado.
+- Estado de reconexión visible.
+- Fundido al corregir.
+
+*Rendimiento y operación*
+- Escritura atómica con compare-and-set en Lua.
+- Un solo temporizador de latidos por réplica.
+- Métricas Prometheus.
+- MessagePack opcional.
+- Humo de carga k6 en CI.
+- `npm ci` de identity-api reparado y probado en CI.
+
+### Historial de commits
 
 ```mermaid
 gitGraph
     commit id: "84a5e7b base"
     branch feat/reproductor
-    commit id: "3c0c542 reloj y drift"
-    commit id: "0625aba contrato sync"
-    commit id: "ebe9146 config y JWT"
-    commit id: "665942d sync-ticket"
-    commit id: "8d00d56 store Redis"
-    commit id: "e0160a7 bus y telemetria"
-    commit id: "e9cecd5 hub"
-    commit id: "87ff669 handler WS"
-    commit id: "a102af5 web sync"
-    commit id: "524428b arranque"
-    commit id: "8334b7f infra y CI"
-    commit id: "1b43dc0 docs y k6"
+    commit id: "v1: reloj, contrato, JWT"
+    commit id: "v1: ticket, store, bus"
+    commit id: "v1: hub, ws, web"
+    commit id: "v1: arranque, infra, k6"
     commit id: "aad0ad7 cache hub"
+    commit id: "3c71e80 docs v1"
+    commit id: "49904f8 RATE/LOAD v2"
+    commit id: "3096e5d CAS Lua"
+    commit id: "3a395b3 presencia y control"
+    commit id: "b0b1631 revocación"
+    commit id: "e2d2683 metrics"
+    commit id: "9970dfc npm ci"
+    commit id: "ae88d2d media MinIO"
+    commit id: "6abb0cf guest_sessions"
+    commit id: "e963b1c msgpack"
+    commit id: "e58fb15 CI k6"
+    commit id: "4c28498 web v2 x10"
 ```
+
+<details>
+<summary>Commits de la v1</summary>
 
 | Commit | Alcance | Contenido |
 | :--- | :--- | :--- |
 | `3c0c542` | sync-core | `internal/master` (ancla, `PositionAt`, `Apply`) e `internal/drift` (EWMA de RTT, umbrales). |
-| `0625aba` | sync-core | Contrato `syncevent.Event` extendido: tipos, códigos de error, `Validate`/`ValidateInbound`, claves Redis. |
-| `ebe9146` | sync-core | `internal/config` y `internal/auth` (verificación HS256, roles). |
-| `665942d` | identity-api | `generateSyncTicket` + ruta `POST /rooms/:id/sync-ticket`. |
-| `8d00d56` | sync-core | `internal/store`: estado con `WATCH/MULTI/EXEC`, dedupe, presencia de hosts. |
+| `0625aba` | sync-core | Contrato `syncevent.Event`, tipos, códigos de error, `Validate`/`ValidateInbound`, claves Redis. |
+| `ebe9146` | sync-core | `internal/config` y `internal/auth` (HS256, roles). |
+| `665942d` | identity-api | `generateSyncTicket` + `POST /rooms/:id/sync-ticket`. |
+| `8d00d56` | sync-core | `internal/store`: estado, dedupe, presencia de hosts. |
 | `e0160a7` | sync-core | `internal/bus` (Pub/Sub) e `internal/telemetry` (`XADD analytics:events`). |
 | `e9cecd5` | sync-core | `internal/hub`: salas, comandos, heartbeat, drift y `HOST_STATUS`. |
-| `87ff669` | sync-core | `internal/ws`: handshake JWT, goroutines lectora/escritora, códigos de cierre. |
-| `a102af5` | web | `syncProtocol.ts`, `drift.ts`, `useSyncSocket`, `SyncedPlayer`, integración en `WatchRoom`. |
-| `524428b` | sync-core | `internal/server.Run`: Redis, ensamblado y apagado ordenado; `main.go` mínimo. |
+| `87ff669` | sync-core | `internal/ws`: handshake JWT, lectora/escritora, códigos de cierre. |
+| `a102af5` | web | `syncProtocol.ts`, `drift.ts`, `useSyncSocket`, `SyncedPlayer`, `WatchRoom`. |
+| `524428b` | sync-core | `server.Run`: Redis, ensamblado y apagado ordenado. |
 | `8334b7f` | sync-core | Dockerfile, `docker-compose.yml`, `.env.example`, caché de CI. |
-| `1b43dc0` | sync-core | Protocolo en `AGENTS.md` y prueba de carga `loadtest/sync.js`. |
-| `aad0ad7` | sync-core | Caché del estado por sala en el hub (elimina un `HGETALL` por latido). |
+| `1b43dc0` | sync-core | Protocolo en `AGENTS.md` y `loadtest/sync.js`. |
+| `aad0ad7` | sync-core | Caché del estado por sala en el hub. |
+| `3c71e80` | docs | Este documento (v1). |
+</details>
+
+| Commit (v2) | Alcance | Contenido |
+| :--- | :--- | :--- |
+| `49904f8` | sync-core | Contrato v2: tipos `RATE`, `LOAD`, `CONTROL`, `REVOKED`; campos `media_id`, `rtt_ms`, `can_control`, `holder`, `jti`. |
+| `3096e5d` | sync-core | **perf**: compare-and-set con Lua y candado por sala (reemplaza `WATCH/MULTI`). |
+| `3a395b3` | sync-core | Barrido de presencia, `HOST_STATUS` ante caída de réplica, delegación de control, latido único por réplica, RTT/drift en `HEARTBEAT`. |
+| `b0b1631` | sync-core | Revocación: 401 en el handshake y cierre `4001` en vivo. |
+| `e2d2683` | sync-core | `GET /metrics` (paquete propio, sin dependencias). |
+| `9970dfc` | identity-api | `vitest` y `@vitest/coverage-v8` alineados: `npm ci` sin flags. |
+| `ae88d2d` | identity-api | `PUT /rooms/:id/media` y `GET /rooms/:id/playback` con URL firmada de MinIO. |
+| `6abb0cf` | identity-api | `guest_sessions`, `GET /rooms/:id/guests`, `POST /rooms/:id/guests/:jti/revoke`. |
+| `e963b1c` | sync-core | MessagePack opcional (subprotocolo `tint.sync.msgpack`). |
+| `e58fb15` | ci | Job de humo k6 (50 VUs) y job de identity-api. |
+| `4c28498` … `8c7406f` | web | 10 commits: protocolo v2, hook v2, MessagePack, `useRoomPlayback`, paneles del Host, semáforo y reconexión, toasts, reproductor de cine, integración en `WatchRoom`, `AGENTS.md`. |
 
 ---
 
-## 2. Requisitos cubiertos
+## 2. Requisitos y mejoras cubiertas
 
 | Requisito | Descripción | Implementación |
 | :--- | :--- | :--- |
-| **HU-SYNC-01** | Canal `/ws/sync?room_id=X` aislado, estado inmediato al conectar | `internal/ws` + `hub.Connect` envía `STATE` antes de cualquier otro mensaje. |
-| **REQ-27 / HU-SYNC-02** | `PLAY`/`PAUSE`/`SEEK` del Host a todos en < 100 ms; participantes sin control | `hub.Handle` → `store.Apply` (transacción + `PUBLISH`) → `bus` → todas las réplicas. Participante → `ERROR{FORBIDDEN}`. Medido: 2–4 ms extremo a extremo. |
-| **REQ-28 / HU-SYNC-03** | Drift > 500 ms compensando RTT, corrección suave y métrica | `internal/drift`: estrategia `rate` (±5 %) o `seek`; `sync_drift` a `analytics:events`. |
-| **REQ-07** | La sala sobrevive 12 h si el Host se cae | TTL de 12 h refrescado en cada comando, conexión y desconexión; la reproducción sigue el reloj sin conexiones. |
-| **REQ-08 / SYNC-BE-05** | Escalado horizontal entre réplicas | Toda difusión pasa por Redis Pub/Sub; presencia de hosts en un ZSET compartido. |
-| **SYNC-BE-01..04** | Handshake JWT, Reloj Maestro, comandos, RTT/drift | Paquetes `auth`, `master`, `store`, `drift`. |
-| **SYNC-TEST-01** | 500 conexiones simultáneas | `loadtest/sync.js` (k6). Ver [resultados](#12-verificación-y-resultados). |
-| **Ley 1581** | Analítica sin PII | `telemetry.DriftSample` no lleva `sub`, `nick` ni token. |
+| **HU-SYNC-01** | Canal `/ws/sync?room_id=X` aislado, estado inmediato | `hub.Connect` encola `STATE` antes que cualquier otro mensaje. |
+| **REQ-27 / HU-SYNC-02** | Comandos del Host a todos en < 100 ms | CAS en Redis + Pub/Sub. Medido: 1–4 ms entre réplicas. |
+| **REQ-28 / HU-SYNC-03** | Drift > 500 ms, corrección suave y métrica | `internal/drift` (`rate` ±5 % o `seek`) y `sync_drift` a `analytics:events`. |
+| **REQ-07** | La sala sobrevive 12 h sin Host | TTL de 12 h. Ahora también se avisa la caída de la réplica del Host. |
+| **REQ-08 / SYNC-BE-05** | Escalado entre réplicas | Pub/Sub, presencia compartida y barrido determinista. |
+| **SYNC-TEST-01** | 500 conexiones | `loadtest/sync.js`. Humo de 50 VUs en CI. Ver [§14](#14-verificación-y-resultados). |
+| **Ley 1581** | Analítica sin PII | `sync_drift` sin `sub`, `nick` ni token. `GET /guests` no expone `sub`. |
+
+| Mejora (v2) | Dónde |
+| :--- | :--- |
+| F3 Vídeo de la sala con URL firmada | identity-api (`media`, `playback`) + web (`useRoomPlayback`, panel "Cambiar vídeo") |
+| F4 `HOST_STATUS` ante caída de réplica | sync-core (barrido + script Lua de transiciones) |
+| F5 Revocación de invitados | identity-api (`guest_sessions`, `revoke`) + sync-core (401 / `4001`) + web (panel "Participantes", pantalla de retiro) |
+| F6 Comandos `RATE` y `LOAD` | sync-core (`master`) + web (selector de velocidad, cambio de vídeo) |
+| F7 Delegación de control | sync-core (`CONTROL`) + web (`canControl`, aviso de control temporal) |
+| UX 1–6 | web (`SyncStatus`, `SyncToasts`, `SeekBar`, `usePlayerShortcuts`, reconexión, fundido) + `rtt_ms`/`drift_ms` en `HEARTBEAT` |
+| O1 k6 en CI | `.github/workflows/ci-pipeline.yml` (`sync-load-smoke`) |
+| O2 Bytes compartidos en broadcasts | Ya existía. Con MessagePack, cada broadcast se transcodifica una sola vez por sala. |
+| O3 Un temporizador por réplica | `hub.Run` (`beatAll`) |
+| O4 Escritura atómica más rápida | `store.Apply` (CAS Lua) |
+| O5 Métricas | `internal/metrics` + `GET /metrics` |
+| O6 MessagePack | `internal/codec` + `syncCodec.ts` |
+| O7 `npm ci` de identity-api | Versiones alineadas + job de CI |
 
 ---
 
@@ -89,49 +163,60 @@ gitGraph
 ```mermaid
 flowchart LR
     subgraph Navegador
-        H["Host<br/>WatchRoom + SyncedPlayer"]
-        G["Invitados<br/>WatchRoom + SyncedPlayer"]
+        H["Host<br/>WatchRoom + paneles del Host"]
+        G["Invitados<br/>WatchRoom"]
     end
 
     subgraph identity["identity-api :8081"]
-        T["POST /rooms/:id/sync-ticket<br/>HS256 role=host"]
-        GT["Guest token<br/>HS256 role=participant"]
+        T["POST /rooms/:id/sync-ticket"]
+        PB["GET /rooms/:id/playback<br/>PUT /rooms/:id/media"]
+        GS["GET /rooms/:id/guests<br/>POST .../guests/:jti/revoke"]
     end
 
+    PG[("PostgreSQL<br/>rooms.media_*<br/>guest_sessions")]
+    MI[("MinIO<br/>bucket tint-media")]
+
     subgraph sync["sync-core :8082 (N réplicas)"]
-        WS["/ws/sync<br/>handler WS"]
-        HUB["hub<br/>salas, comandos, drift"]
-        ST["store<br/>WATCH/MULTI"]
-        BUS["bus<br/>Pub/Sub"]
-        TEL["telemetry<br/>buffer no bloqueante"]
+        WS["/ws/sync<br/>JSON o MessagePack"]
+        HUB["hub<br/>comandos, drift, barrido"]
+        ST["store<br/>CAS Lua"]
+        BUS["bus Pub/Sub"]
+        TEL["telemetry"]
+        MET["/metrics"]
     end
 
     subgraph redis["Redis"]
-        S[("room:{id}:sync_state")]
+        S[("sync_state")]
         P{{"room:{id}:sync"}}
-        Z[("room:{id}:hosts_online")]
+        Z[("hosts_online · members<br/>host_online · delegate")]
+        RV[("token:revoked:{jti}")]
         A[["analytics:events"]]
     end
 
-    AN["analytics<br/>XREADGROUP"]
+    PROM["Prometheus"]
 
-    H -- "1. pide ticket (Firebase)" --> T
-    G -. "token al unirse" .-> GT
-    H <-- "WebSocket" --> WS
-    G <-- "WebSocket" --> WS
-    WS --> HUB
-    HUB --> ST
-    HUB --> TEL
+    H -- "ticket" --> T
+    H -- "asignar vídeo / retirar" --> PB & GS
+    G -- "URL firmada" --> PB
+    PB --> PG
+    GS --> PG
+    PB -. "firma SigV4" .-> MI
+    H & G -- "GET vídeo" --> MI
+    H <-- WebSocket --> WS
+    G <-- WebSocket --> WS
+    WS --> HUB --> ST
     ST --> S
     ST -- PUBLISH --> P
-    ST --> Z
-    P -- SUBSCRIBE --> BUS
-    BUS --> HUB
-    TEL -- XADD --> A
-    A --> AN
+    HUB --> Z
+    GS -- "SET + PUBLISH REVOKED" --> RV & P
+    WS -- "¿revocado?" --> RV
+    P --> BUS --> HUB
+    HUB --> TEL -- XADD --> A
+    MET --- HUB
+    PROM -. scrape .-> MET
 ```
 
-**Idea central:** sync-core no guarda "el segundo actual" ni usa temporizadores. Guarda un **ancla** (posición + instante del servidor + velocidad) y cualquiera puede calcular la posición en cualquier momento. Cada comando es una sola escritura atómica que además publica el cambio para todas las réplicas.
+**Idea central:** sync-core no guarda "el segundo actual" ni usa temporizadores por sala. Guarda un **ancla** (posición, instante del servidor, velocidad y vídeo) y cualquiera puede calcular la posición en cualquier momento. Cada comando es una escritura atómica que además publica el cambio para todas las réplicas.
 
 ---
 
@@ -139,77 +224,68 @@ flowchart LR
 
 ```mermaid
 flowchart TB
-    classDef nuevo fill:#0f5132,stroke:#75b798,color:#fff
+    classDef v1 fill:#1f3a5f,stroke:#6ea8fe,color:#fff
+    classDef v2 fill:#0f5132,stroke:#75b798,color:#fff
     classDef mod fill:#664d03,stroke:#ffda6a,color:#fff
 
     subgraph SC["services/sync-core"]
         direction TB
-        m1["internal/master"]:::nuevo
-        m2["internal/drift"]:::nuevo
-        m3["internal/syncevent"]:::mod
-        m4["internal/config"]:::nuevo
-        m5["internal/auth"]:::nuevo
-        m6["internal/store"]:::nuevo
-        m7["internal/bus"]:::nuevo
-        m8["internal/telemetry"]:::nuevo
-        m9["internal/hub"]:::nuevo
-        m10["internal/ws"]:::nuevo
-        m11["internal/server"]:::mod
-        m12["main.go, go.mod, Dockerfile"]:::mod
-        m13["loadtest/sync.js + README"]:::nuevo
-        m14["AGENTS.md"]:::mod
+        a1["master · drift · auth · bus · telemetry"]:::v1
+        a2["syncevent<br/>contrato v2"]:::mod
+        a3["store<br/>CAS Lua, presence.go"]:::mod
+        a4["hub<br/>Run, barrido, delegación, métricas"]:::mod
+        a5["ws<br/>subprotocolo, revocación, 4001"]:::mod
+        a6["codec"]:::v2
+        a7["metrics"]:::v2
+        a8["server<br/>/metrics"]:::mod
+        a9["config<br/>CONTROL_HANDOFF_AFTER"]:::mod
     end
 
     subgraph ID["services/identity-api"]
-        i1["auth.service.ts<br/>generateSyncTicket"]:::mod
-        i2["rutas v1<br/>POST /rooms/:id/sync-ticket"]:::mod
-        i3[".env.example<br/>SYNC_TICKET_TTL_SECONDS"]:::mod
+        b1["sync-ticket"]:::v1
+        b2["media.signer<br/>@aws-sdk/s3"]:::v2
+        b3["revocation.ts<br/>ioredis"]:::v2
+        b4["guestSessions.repo"]:::v2
+        b5["guestAuth middleware"]:::v2
+        b6["migraciones 0001 y 0002"]:::v2
     end
 
     subgraph WEB["apps/web"]
-        w1["lib/syncProtocol.ts"]:::nuevo
-        w2["lib/drift.ts<br/>applyCorrection"]:::mod
-        w3["hooks/useSyncSocket.ts"]:::nuevo
-        w4["components/SyncedPlayer.tsx"]:::nuevo
-        w5["pages/WatchRoom.tsx"]:::mod
-        w6["test/mockWebSocket.ts"]:::nuevo
+        c1["useSyncSocket v2"]:::mod
+        c2["syncCodec · syncQuality"]:::v2
+        c3["useRoomPlayback · useSyncToasts<br/>usePlayerShortcuts"]:::v2
+        c4["SeekBar · SyncStatus · SyncToasts"]:::v2
+        c5["ChangeVideoPanel · ParticipantsPanel"]:::v2
+        c6["SyncedPlayer · WatchRoom"]:::mod
     end
 
-    subgraph INF["Raíz / infraestructura"]
-        r1["docker-compose.yml<br/>servicio sync-core"]:::mod
-        r2[".env.example<br/>JWT_*, SYNC_ALLOWED_ORIGINS"]:::mod
-        r3["ci-pipeline.yml<br/>caché go.sum"]:::mod
+    subgraph INF["CI"]
+        d1["job identity-api"]:::v2
+        d2["job k6 50 VUs"]:::v2
     end
 
-    i1 -- "contrato JWT HS256" --> m5
-    w3 -- "protocolo JSON" --> m10
-    w3 -- "pide ticket" --> i2
-    r1 --> SC
+    b3 -- "token:revoked + REVOKED" --> a5
+    b2 -- "mediaId" --> c3
+    c1 -- "protocolo v2" --> a5
+    c5 -- "PUT media / revoke" --> b2 & b3
+    d2 --> SC
 ```
 
-🟩 nuevo · 🟨 modificado
-
-| Dominio | Qué se integró |
-| :--- | :--- |
-| **sync-core** | Servicio completo (antes solo tenía `/healthz` y el contrato `Event`). |
-| **identity-api** | Sync-ticket del Host con `role: host`, `jti`, `exp = ahora + SYNC_TICKET_TTL_SECONDS` (600 s); el guest token ahora fija HS256 explícitamente. Solo el dueño de la sala obtiene ticket (`requireAuthHost` + `requireRoomOwner`). |
-| **web** | Cliente del Canal Sync que reemplaza el `TODO /ws/sync` de `WatchRoom`; el vídeo sale de `VITE_DEMO_VIDEO_URL`. |
-| **infra** | `sync-core` en `docker compose` (puerto `8082`), dependencias Go cacheadas en CI. |
+🟦 v1 sin cambios · 🟩 nuevo en v2 · 🟨 modificado en v2
 
 ---
 
 ## 5. El Reloj Maestro
-
-El estado de cada sala es un ancla:
 
 | Campo | Significado |
 | :--- | :--- |
 | `status` | `playing` o `paused` |
 | `position_ms` | Posición del vídeo **en el instante del ancla** |
 | `updated_at_ms` | Instante del ancla, reloj del **servidor** (unix ms) |
-| `rate` | Velocidad (1.0) |
+| `rate` | Velocidad, entre 0.25 y 4 |
 | `version` | Contador monotónico: orden total de comandos |
 | `host_id` | `sub` del último Host conectado |
+| `media_id` | Vídeo actual de la sala (v2) |
 
 ```text
 PositionAt(t) = position_ms + (t − updated_at_ms) × rate   si playing
@@ -218,21 +294,21 @@ PositionAt(t) = position_ms + (t − updated_at_ms) × rate   si playing
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Paused: Init (position 0, version 0)
-    Paused --> Playing: PLAY(pos)<br/>ancla = pos en recv − RTT/2
-    Playing --> Paused: PAUSE(pos)<br/>congela en pos
-    Playing --> Playing: SEEK(pos)<br/>nueva ancla, sigue reproduciendo
-    Paused --> Paused: SEEK(pos)
-    Playing --> Playing: PLAY (re-ancla)
-    Paused --> Paused: PAUSE (re-ancla)
+    [*] --> Paused: Init (posición 0, version 0)
+    Paused --> Playing: PLAY(pos)
+    Playing --> Paused: PAUSE(pos) congela el fotograma
+    Playing --> Playing: SEEK(pos) o RATE(pos, rate)
+    Paused --> Paused: SEEK(pos) o RATE(pos, rate)
+    Playing --> Paused: LOAD(media) rate=1
+    Paused --> Paused: LOAD(media) rate=1
     note right of Playing
-        Cada transición incrementa version.
-        El ancla se fija en received_at − RTT/2
-        del emisor para compensar la red.
+        Cada transición incrementa version
+        y fija el ancla en received_at − RTT/2
+        del emisor. media_id se conserva salvo en LOAD.
     end note
 ```
 
-`master.Apply` es una función pura (sin I/O) y es **la única** que calcula el siguiente estado; Redis solo lo persiste.
+`master.Apply` es una función pura y es **la única** que calcula el siguiente estado. Redis solo lo persiste.
 
 ---
 
@@ -243,107 +319,39 @@ stateDiagram-v2
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Host
+    actor C as Cliente
     participant ID as identity-api
     participant WS as sync-core ws
     participant HUB as hub
     participant R as Redis
 
-    Host->>ID: POST /rooms/:id/sync-ticket (Bearer Firebase)
-    ID-->>Host: { token HS256 role=host, expiresAt }
-    Host->>WS: GET /ws/sync?room_id=X&token=JWT
-    WS->>WS: Verify(token, room_id)<br/>alg, iss, aud, exp, room_id, rol
-    alt token inválido
-        WS-->>Host: 401 (sin upgrade)
-    else token de otra sala / origen no permitido
-        WS-->>Host: 403
+    alt Host
+        C->>ID: POST /rooms/:id/sync-ticket (Firebase)
+        ID-->>C: token HS256 role=host
+    else Invitado
+        Note over C: guest token del claim de la invitación
+    end
+    C->>WS: GET /ws/sync?room_id&token<br/>Sec-WebSocket-Protocol opcional: tint.sync.msgpack
+    WS->>WS: Verify: alg, iss, aud, exp, room_id, rol
+    WS->>R: EXISTS token:revoked:{jti}
+    alt inválido o revocado
+        WS-->>C: 401
+    else otra sala u origen no permitido
+        WS-->>C: 403
+    else Redis no responde
+        WS-->>C: 503 (falla cerrado)
     else válido
-        WS-->>Host: 101 Switching Protocols
-        WS->>HUB: Connect(claims)
-        HUB->>R: SUBSCRIBE room:X:sync (si es el primer cliente local)
-        HUB->>R: Init: HSETNX campos + PEXPIRE 12h
-        HUB->>R: ZADD hosts_online (solo host/cohost)
-        HUB-->>Host: STATE { ancla, version, online }
-        opt primer host vivo
-            HUB->>R: PUBLISH HOST_STATUS online=true
-        end
+        WS-->>C: 101 + subprotocolo elegido
+        WS->>HUB: Connect(claims, códec)
+        HUB->>R: SUBSCRIBE (primer cliente local) · Init · presencia
+        HUB-->>C: STATE { ancla, media_id, online, can_control }
+        HUB->>R: barrido de la sala (puede publicar HOST_STATUS / CONTROL)
     end
 ```
 
-Los invitados siguen el mismo flujo con el guest token que emite identity-api al unirse (rol `participant`).
+El `STATE` siempre se encola **antes** del barrido: así ningún `HOST_STATUS` o `CONTROL` se le adelanta (HU-SYNC-01).
 
-### 6.2 Comando del Host (PLAY / PAUSE / SEEK) entre réplicas
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Host
-    participant A as réplica A (hub)
-    participant R as Redis
-    participant B as réplica B (hub)
-    actor Inv as Invitado en B
-
-    Host->>A: SEEK { event_id, position_ms, occurred_at }
-    A->>A: rate limit, ValidateInbound, rol host/cohost
-    loop hasta 50 reintentos si hay conflicto
-        A->>R: WATCH sync_state, evt:{event_id}
-        A->>R: EXISTS evt + HGETALL sync_state
-        A->>A: master.Apply(cmd, recv, RTT) → version+1
-        A->>R: MULTI · SET evt PX 60s · HSET · PEXPIRE · PUBLISH · EXEC
-    end
-    A-->>Host: ACK { ref_event_id, version, duplicate=false }
-    R-->>A: mensaje room:X:sync
-    R-->>B: mensaje room:X:sync
-    A-->>Host: SEEK { ancla nueva, version }
-    B-->>Inv: SEEK { ancla nueva, version }
-    Note over Host,Inv: El orden ACK/broadcast no está garantizado:<br/>los clientes filtran por version.
-```
-
-- Un **participante** que envía un comando recibe `ERROR{FORBIDDEN}` y el estado no cambia.
-- Un `event_id` repetido (reintento tras reconexión) recibe `ACK{duplicate:true}` y no se difunde.
-- La réplica emisora **no** difunde localmente: todos reciben el cambio por Pub/Sub, así hay un único camino y el mismo orden en todas las réplicas.
-
-### 6.3 Heartbeat, RTT y drift
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant S as sync-core (escritora)
-    participant C as Cliente
-    participant H as hub
-    participant T as telemetry
-    participant R as Redis
-
-    loop cada 1 s
-        S->>C: HEARTBEAT { server_time_ms }
-        C->>H: SYNC_CHECK { echo_server_ts, position_ms }
-        H->>H: rtt = ahora − echo_server_ts (solo reloj del servidor)<br/>RTT = 0.8·RTT + 0.2·rtt
-        H->>H: drift = pos_cliente − PositionAt(recv − RTT/2)
-        alt |drift| > 500 ms
-            H-->>C: SYNC_CORRECTION { target_ms, strategy, drift_ms, version }
-            H-)T: EmitDrift (no bloqueante)
-            T-)R: XADD analytics:events type=sync_drift
-        end
-    end
-    Note over S,C: 3 latidos sin SYNC_CHECK → cierre 1008
-```
-
-```mermaid
-flowchart TD
-    A["SYNC_CHECK recibido"] --> B["drift = pos_cliente − PositionAt(recv − RTT/2)"]
-    B --> C{"|drift| > 500 ms?"}
-    C -- no --> D["Sin respuesta"]
-    C -- sí --> E{"sala playing<br/>y |drift| ≤ 2000 ms?"}
-    E -- sí --> F["strategy = rate<br/>cliente usa 1.05 si va atrasado<br/>o 0.95 si va adelantado"]
-    E -- no --> G["strategy = seek<br/>salto directo a target_ms"]
-    F --> H["target_ms = PositionAt(ahora + RTT/2)"]
-    G --> H
-    H --> I["SYNC_CORRECTION + sync_drift a analytics"]
-```
-
-El RTT se mide **solo con el reloj del servidor** (el cliente devuelve el `server_time_ms` que recibió), así que un reloj de cliente adelantado o atrasado no afecta el cálculo.
-
-### 6.4 Presencia y caída del Host (REQ-07)
+### 6.2 Comando entre réplicas (compare-and-set)
 
 ```mermaid
 sequenceDiagram
@@ -351,45 +359,184 @@ sequenceDiagram
     actor Host
     participant A as réplica A
     participant R as Redis
-    actor Inv as Invitados
+    participant B as réplica B
+    actor Inv as Invitado en B
 
-    Host-xA: conexión perdida
-    A->>R: ZREM hosts_online conn_id
-    A->>R: ZCOUNT hosts_online (latido en los últimos 5 s)
-    alt no quedan hosts
-        A->>R: PUBLISH HOST_STATUS online=false
-        R-->>Inv: HOST_STATUS online=false
-        Note over Inv: "Host desconectado"<br/>el vídeo sigue según el reloj maestro
+    Host->>A: SEEK / RATE / LOAD { event_id, ... }
+    A->>A: rate limit, validación, ¿tiene control?
+    A->>A: candado local de la sala
+    loop hasta 50 intentos
+        A->>R: pipeline: EXISTS evt + HGETALL estado
+        A->>A: master.Apply → version+1
+        A->>R: EVALSHA cas.lua(version esperada, estado, payload)
+        alt OK
+            R->>R: SET evt · HSET · PEXPIRE · PUBLISH
+        else CONFLICT (otra réplica escribió)
+            A->>A: espera aleatoria 0–4 ms
+        else DUP
+            A->>A: devuelve el estado sin cambios
+        end
     end
-    A->>R: PEXPIRE sync_state 12h
-    Note over R: El estado vive 12 h sin conexiones
-    Host->>A: reconecta con ticket nuevo
-    A-->>Host: STATE (recupera el control)
-    A->>R: PUBLISH HOST_STATUS online=true
+    A-->>Host: ACK { version, duplicate }
+    R-->>A: room:X:sync
+    R-->>B: room:X:sync
+    A-->>Host: broadcast (JSON o MessagePack)
+    B-->>Inv: broadcast
 ```
 
-Si una réplica muere sin ejecutar `HostGone`, su entrada en el ZSET deja de contar a los 5 s porque el score es el último latido.
+- Dentro de una réplica, el candado por sala elimina los conflictos. Entre réplicas, el script solo escribe si la `version` no cambió.
+- La réplica emisora no difunde localmente: todo pasa por Pub/Sub.
+- Los clientes filtran por `version`, porque el orden entre `ACK` y broadcast no está garantizado.
 
-### 6.5 Ciclo de vida de una conexión
+### 6.3 Latido, RTT y drift
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant L as hub.Run (1 temporizador por réplica)
+    participant C as Cliente
+    participant H as hub.Handle
+    participant T as telemetry
+
+    loop cada 1 s
+        L->>L: ¿3 latidos sin SYNC_CHECK? → cerrar con 1008
+        L->>C: HEARTBEAT { server_time_ms, rtt_ms, drift_ms }
+        C->>H: SYNC_CHECK { echo_server_ts, position_ms }
+        H->>H: RTT EWMA con el reloj del servidor<br/>drift = pos − PositionAt(recv − RTT/2)
+        alt |drift| > 500 ms
+            H-->>C: SYNC_CORRECTION { target_ms, strategy }
+            H-)T: sync_drift (no bloqueante)
+        end
+    end
+```
+
+```mermaid
+flowchart TD
+    A["SYNC_CHECK"] --> B["drift = pos_cliente − PositionAt(recv − RTT/2)"]
+    B --> M["se guarda para el próximo HEARTBEAT (semáforo de la web)"]
+    B --> C{"|drift| > 500 ms?"}
+    C -- no --> D["sin corrección"]
+    C -- sí --> E{"playing y |drift| ≤ 2000 ms?"}
+    E -- sí --> F["rate: 1.05 si va atrasado, 0.95 si va adelantado"]
+    E -- no --> G["seek directo (la web hace un fundido)"]
+    F & G --> H["target_ms = PositionAt(ahora + RTT/2)"]
+```
+
+El `SYNC_CHECK` **no** toca Redis: el estado sale de la caché por sala y la presencia se renueva en el barrido.
+
+### 6.4 Presencia y caída de la réplica del Host (F4)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant A as réplica A (con el Host)
+    participant R as Redis
+    participant B as réplica B
+    actor Inv as Invitados en B
+
+    loop barrido cada 1 s en cada réplica
+        A->>R: ZADD hosts_online (conexiones del Host)
+        B->>R: ZADD members (subs de invitados)
+    end
+    Note over A: SIGKILL: no hay HostGone
+    loop barrido de B
+        B->>R: ZCOUNT hosts_online (últimos 5 s)
+        B->>R: host_status.lua("0")
+        alt transición 1 → 0
+            R-->>B: 1 (y fija hostless_since)
+            B->>R: PUBLISH HOST_STATUS online=false
+            R-->>Inv: HOST_STATUS online=false
+        else ya era 0
+            R-->>B: 0 (nadie publica de nuevo)
+        end
+    end
+```
+
+El script guarda el último estado publicado, así que varias réplicas pueden evaluar la misma sala sin publicar duplicados. Una sala a la que nunca entró el Host no "pierde" al Host.
+
+### 6.5 Delegación de control (F7)
+
+```mermaid
+stateDiagram-v2
+    [*] --> ConHost
+    ConHost --> SinHost: último host/cohost se va<br/>(hostless_since = ahora)
+    SinHost --> ConHost: vuelve un host/cohost
+    SinHost --> Delegado: pasa CONTROL_HANDOFF_AFTER (5 min)<br/>delegate = menor sub vivo
+    Delegado --> Delegado: el delegado se va<br/>se reasigna al siguiente
+    Delegado --> ConHost: vuelve un host/cohost<br/>se borra delegate
+    note right of Delegado
+        Cada cambio publica CONTROL{holder}.
+        Cada réplica envía a sus participantes
+        CONTROL{can_control: true/false}.
+    end note
+```
+
+La elección es **determinista** (el `sub` menor entre los participantes vivos), así que todas las réplicas llegan al mismo delegado. `SET … GET` en Redis evita publicar dos veces el mismo cambio. El delegado puede usar `PLAY`/`PAUSE`/`SEEK`/`RATE`/`LOAD`. En la web, cambiar de vídeo requiere además el token Firebase del dueño.
+
+### 6.6 Retirar a un invitado (F5)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Host
+    participant ID as identity-api
+    participant PG as PostgreSQL
+    participant R as Redis
+    participant SC as sync-core (todas las réplicas)
+    actor Inv as Invitado
+
+    Host->>ID: POST /rooms/:id/guests/:jti/revoke
+    ID->>PG: guest_sessions.revoked = true
+    ID->>R: SET token:revoked:{jti} 1 EXAT exp
+    ID->>R: PUBLISH room:{id}:sync REVOKED{jti}
+    R-->>SC: REVOKED (no se reenvía a clientes)
+    SC-->>Inv: cierre 4001 "token revocado"
+    Note over Inv: la web no reconecta, borra el token<br/>y muestra "Fuiste retirado de la sala"
+    Inv->>SC: reintento con el mismo token
+    SC-->>Inv: 401
+    Inv->>ID: GET /rooms/:id/playback
+    ID-->>Inv: 401 Token revoked
+```
+
+### 6.7 Cambio de vídeo (F3 + LOAD)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Host
+    participant ID as identity-api
+    participant SC as sync-core
+    actor Inv as Invitados
+    participant MI as MinIO
+
+    Host->>ID: PUT /rooms/:id/media { mediaKey }
+    ID-->>Host: { mediaId }
+    Host->>SC: LOAD { media_id: mediaId, position_ms: 0 }
+    SC-->>Host: LOAD (pausa, rate 1, media_id)
+    SC-->>Inv: LOAD
+    Inv->>ID: GET /rooms/:id/playback (guest token)
+    ID-->>Inv: { url firmada, expiresAt }
+    Inv->>MI: GET vídeo
+    Note over Inv: la URL se renueva ~1 min antes de expiresAt<br/>conservando la posición
+```
+
+### 6.8 Ciclo de vida de una conexión
 
 ```mermaid
 stateDiagram-v2
     [*] --> Validando: GET /ws/sync
-    Validando --> Rechazada: 400 / 401 / 403
+    Validando --> Rechazada: 400 / 401 / 403 / 503
     Validando --> Conectada: 101 + hub.Connect
-    Validando --> Cerrada1011: Redis no disponible
-    state Conectada {
-        [*] --> Activa
-        Activa --> Activa: lectora → hub.Handle
-        Activa --> Activa: escritora → cola + HEARTBEAT
-    }
+    Validando --> Cerrada1011: Redis no disponible al conectar
     Conectada --> Cerrada1008: cola llena (64) o 3 latidos sin respuesta
     Conectada --> Cerrada1009: mensaje > 4 KB
-    Conectada --> Cerrada1000: cliente cierra
+    Conectada --> Cerrada4001: REVOKED de identity-api
+    Conectada --> Cerrada1000: el cliente cierra
     Cerrada1008 --> Desconectada
     Cerrada1009 --> Desconectada
+    Cerrada4001 --> Desconectada
     Cerrada1000 --> Desconectada
-    Desconectada --> [*]: hub.Disconnect (presencia + TTL)
+    Desconectada --> [*]: hub.Disconnect (presencia, barrido si era host o delegado, TTL)
 ```
 
 ---
@@ -399,48 +546,59 @@ stateDiagram-v2
 ```mermaid
 erDiagram
     SALA ||--|| SYNC_STATE : "room:{id}:sync_state (Hash, TTL 12h)"
-    SALA ||--o{ EVT : "room:{id}:evt:{event_id} (String, 1 min)"
+    SALA ||--o{ EVT : "room:{id}:evt:{event_id} (1 min)"
     SALA ||--|| CANAL : "room:{id}:sync (Pub/Sub)"
     SALA ||--o{ HOST_CONN : "room:{id}:hosts_online (ZSET)"
+    SALA ||--o{ MEMBER : "room:{id}:members (ZSET)"
+    SALA ||--o| PRESENCIA : "host_online · hostless_since · delegate"
+    TOKEN ||--o| REVOCADO : "token:revoked:{jti} (EXAT exp)"
     SALA ||--o{ SYNC_DRIFT : "analytics:events (Stream)"
 
     SYNC_STATE {
-        string status "playing | paused"
+        string status
         int position_ms
-        int updated_at_ms "reloj del servidor"
+        int updated_at_ms
         float rate
-        int version "orden total"
+        int version
         string host_id
-    }
-    EVT {
-        string valor "1, solo para dedupe"
-    }
-    CANAL {
-        json Event "comandos y HOST_STATUS"
+        string media_id
     }
     HOST_CONN {
         string member "id de conexión"
-        int score "último latido unix ms"
+        int score "último latido"
+    }
+    MEMBER {
+        string member "sub del invitado"
+        int score "último latido"
+    }
+    PRESENCIA {
+        string host_online "1 o 0, último publicado"
+        int hostless_since "unix ms"
+        string delegate "sub con control"
+    }
+    CANAL {
+        json Event "comandos, HOST_STATUS, CONTROL, REVOKED"
     }
     SYNC_DRIFT {
-        string type "sync_drift"
         string room_id
         int drift_ms
         int rtt_ms
-        string strategy "rate | seek"
+        string strategy
         string role
-        string occurred_at
-        string received_at
     }
 ```
 
 | Clave | Escrita por | Vida |
 | :--- | :--- | :--- |
-| `room:{id}:sync_state` | `store.Init`, `store.Apply`, `store.Touch` | 12 h desde la última actividad |
+| `room:{id}:sync_state` | `store.Init`/`Apply`/`Touch` | 12 h desde la última actividad |
 | `room:{id}:evt:{event_id}` | `store.Apply` | 1 min |
-| `room:{id}:sync` | `store.Apply` (comandos), `hub` (`HOST_STATUS`) | efímero |
-| `room:{id}:hosts_online` | `HostSeen` al conectar y en cada `SYNC_CHECK` de host; `HostGone` | 12 h; miembros cuentan 5 s desde su último latido |
+| `room:{id}:hosts_online`, `room:{id}:members` | `Beat` en el barrido; `HostSeen`/`HostGone`/`MemberGone` | 12 h; cuentan 5 s desde el último latido |
+| `room:{id}:host_online`, `room:{id}:hostless_since` | `SetHostStatus` (Lua) | 12 h |
+| `room:{id}:delegate` | `SwapDelegate` | 12 h |
+| `token:revoked:{jti}` | identity-api | hasta la expiración del token |
 | `analytics:events` | `telemetry.Run` | `MAXLEN ~100000` |
+
+En PostgreSQL (identity-api): `rooms.media_id`/`rooms.media_key` y la tabla `guest_sessions` (`jti`, `room_id`, `sub`, `nick`, `joined_at`, `expires_at`, `revoked`).
 
 ---
 
@@ -448,193 +606,221 @@ erDiagram
 
 ```mermaid
 flowchart TD
-    main["main.go<br/>signal.NotifyContext"] --> server
-    server["server<br/>Run: config, Redis, ensamblado, Shutdown"] --> config
-    server --> ws
-    server --> hub
-    server --> store
-    server --> bus
-    server --> telemetry
-    ws["ws<br/>handshake, lectora/escritora"] --> auth
-    ws --> hub
-    hub["hub<br/>salas, caché, despacho"] --> master
-    hub --> drift
-    hub --> syncevent
-    hub -. "interfaz StateStore" .-> store
-    hub -. "interfaz Bus" .-> bus
-    hub -. "interfaz Telemetry" .-> telemetry
-    store["store<br/>WATCH/MULTI, presencia"] --> master
-    store --> syncevent
-    drift["drift<br/>EWMA, umbrales"] --> master
-    master["master<br/>ancla pura"] --> syncevent
-    auth["auth<br/>HS256"]
-    bus["bus<br/>Pub/Sub"]
-    telemetry["telemetry<br/>XADD"]
-    config["config<br/>getenv"]
-    syncevent["syncevent<br/>contrato Event"]
+    main["main.go"] --> server
+    server["server<br/>Run, /healthz, /ws/sync, /metrics"] --> ws & hub & store & bus & telemetry & config
+    ws["ws<br/>handshake, revocación, subprotocolo"] --> auth & hub & codec
+    hub["hub<br/>salas, caché, Run, barrido, delegación"] --> master & drift & codec & metrics
+    hub -. "StateStore" .-> store
+    hub -. "Bus" .-> bus
+    hub -. "Telemetry" .-> telemetry
+    store["store<br/>CAS Lua, presencia, revocación"] --> master
+    master["master"] --> syncevent
+    codec["codec<br/>JSON / MessagePack"] --> syncevent
+    metrics["metrics<br/>Prometheus sin deps"]
+    syncevent["syncevent<br/>contrato v2"]
 ```
-
-El hub depende de **interfaces** (`StateStore`, `Bus`, `Telemetry`), lo que permitió probarlo con dobles y con miniredis sin levantar Redis real.
-
-### Concurrencia por conexión
 
 ```mermaid
 flowchart LR
-    subgraph conexión
-        L["goroutine lectora<br/>conn.Read → hub.Handle"]
-        W["goroutine escritora<br/>única dueña de conn.Write"]
-        Q[("cola send<br/>buffer 64")]
+    subgraph réplica
+        RUN1["hub.Run · latidos<br/>1 temporizador"]
+        RUN2["hub.Run · barrido<br/>1 temporizador"]
+        subgraph "por conexión"
+            L["lectora<br/>Read → Handle"]
+            Q[("cola send · 64")]
+            W["escritora<br/>única dueña de Write"]
+        end
     end
-    BUS["bus (Pub/Sub)"] -- "Deliver → enqueue" --> Q
+    RUN1 -- HEARTBEAT --> Q
+    BUS["bus"] -- "Deliver (bytes compartidos)" --> Q
     L -- "ACK / ERROR / CORRECTION" --> Q
-    Q --> W
-    TK["ticker 1 s"] --> W
-    W -- "HEARTBEAT o cierre con código" --> Socket(("socket"))
-    L -. "ctx cancelado → Disconnect" .-> W
+    Q --> W --> S(("socket"))
+    RUN2 -- "Beat + sweep" --> R[("Redis")]
 ```
 
-- `enqueue` **nunca bloquea**: si la cola de un cliente está llena se le desconecta (`1008`) y, al reconectar, recibe `STATE`. Un cliente lento no frena a los otros 499.
-- Solo la escritora escribe y cierra el socket, con un código explícito; la lectora termina cuando el socket se cierra.
-- **Caché por sala** (`aad0ad7`): el hub guarda el último estado de cada sala, lo actualiza con `Init` y con cada broadcast recibido (solo si la `version` es mayor) y lo refresca desde Redis cada 5 s. Antes, cada `SYNC_CHECK` hacía un `HGETALL`: con 500 clientes eran 500 lecturas/s por sala que competían con los comandos del Host.
+- **Antes (v1):** cada conexión tenía su propio `time.Ticker` en la escritora.
+- **Ahora (v2):** un único recorrido por réplica encola los latidos y cierra a los clientes sin respuesta, y la escritora solo drena la cola.
+- La **caché por sala** (v1) sigue evitando un `HGETALL` por cada `SYNC_CHECK`. En v2 también guarda `media_id` y el delegado vigente.
 
 ---
 
-## 9. Cliente web
+## 9. identity-api: vídeo de la sala e invitados
+
+| Método y ruta | Autorización | Respuesta |
+| :--- | :--- | :--- |
+| `POST /rooms/:id/sync-ticket` | Host dueño (Firebase) | `{ token, expiresAt }` (HS256, `role: host`, 10 min) |
+| `PUT /rooms/:id/media` | Host dueño | `{ mediaId, mediaKey }` (nuevo `mediaId` en cada llamada) |
+| `GET /rooms/:id/playback` | Host dueño **o** guest token de la sala no revocado | `{ mediaId, url, expiresAt }` o `null`s si no hay vídeo |
+| `GET /rooms/:id/guests` | Host dueño | `{ guests: [{ jti, nick, joinedAt, expiresAt, revoked }] }` (sin `sub`) |
+| `POST /rooms/:id/guests/:jti/revoke` | Host dueño | `{ success: true }`, idempotente; 404 si el `jti` no es de la sala |
+| `POST /invitations/claim` | — | Ahora registra la sesión en `guest_sessions`; `nick` ≤ 64 caracteres |
+
+- **Firmado:** se usa `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner`, con `forcePathStyle` para MinIO. La firma SigV4 se calcula en local, sin llamar a MinIO.
+- **Host de la URL firmada:** se firma contra `MINIO_PUBLIC_ENDPOINT`, el host que ve el navegador.
+- **Revocación:** se comprueban tanto la base de datos como Redis. Si alguno falla, responde 503 (falla cerrado).
+
+---
+
+## 10. Cliente web
 
 ```mermaid
 flowchart TD
-    WR["WatchRoom.tsx"] --> USS["useSyncSocket(roomId, role)"]
+    WR["WatchRoom"] --> USS["useSyncSocket v2"]
+    WR --> URP["useRoomPlayback"]
     WR --> SP["SyncedPlayer"]
-    USS -- "{ state, correction, hostOnline,<br/>connected, lastError, sendCommand }" --> SP
-    SP --> V["&lt;video&gt;"]
-
-    USS --> C{"rol"}
-    C -- host --> TK["POST /rooms/:id/sync-ticket<br/>en cada (re)conexión"]
-    C -- guest --> LS["localStorage tint_guest_token"]
-    TK --> OPEN["new WebSocket(VITE_SYNC_WS_URL)"]
-    LS --> OPEN
-    OPEN -- "onclose" --> BO["backoff 500 ms → 10 s"]
-    BO --> C
+    WR --> HP["Paneles del Host<br/>Cambiar vídeo · Participantes"]
+    WR --> SS["SyncStatus<br/>semáforo + reconexión"]
+    WR --> TO["SyncToasts"]
+    USS -- "state, canControl, rttMs, driftMs,<br/>reconnect, revoked, lastBroadcast" --> SP & SS & TO
+    USS -- "media_id" --> URP
+    URP -- "url firmada" --> SP
+    SP --> SB["SeekBar<br/>búfer, tooltip, marcadores"]
+    SP --> KS["usePlayerShortcuts"]
+    USS --> COD{"VITE_SYNC_ENCODING"}
+    COD -- json --> J["frames de texto"]
+    COD -- msgpack --> M["subprotocolo tint.sync.msgpack<br/>si el servidor lo acepta"]
+    USS -- "cierre 4001" --> RV["no reconecta · borra token<br/>'Fuiste retirado de la sala'"]
 ```
 
-| Mensaje recibido | Acción del hook / reproductor |
+| Elemento | Comportamiento |
 | :--- | :--- |
-| `STATE` | Reemplaza el snapshot (siempre) y actualiza `hostOnline`. |
-| `PLAY`/`PAUSE`/`SEEK` | Se aplica solo si `version` es mayor que la local. El reproductor salta a la posición esperada y hace `play()`/`pause()`. |
-| `HEARTBEAT` | Responde `SYNC_CHECK` con la posición actual del `<video>`. |
-| `SYNC_CORRECTION` | `seek` → `currentTime = target`; `rate` → `playbackRate` 1.05/0.95 hasta quedar a < 100 ms o 5 s como máximo. |
-| `HOST_STATUS` | Muestra u oculta la etiqueta "Host desconectado". |
-| `ERROR` | Mensaje legible (`FORBIDDEN`, `RATE_LIMITED`, …). |
-
-Si el navegador bloquea el autoplay, el reproductor muestra el botón **"Unirse a la reproducción"**. Los controles se deshabilitan para participantes y mientras no hay conexión; el servidor sigue siendo la autoridad.
+| Semáforo | 🟢 RTT < 150 ms y \|drift\| < 200 ms · 🟡 RTT < 400 ms y \|drift\| ≤ 500 ms · 🔴 resto. Muestra los números en texto accesible. |
+| Reconexión | "Reconectando… intento N · S s" con cuenta regresiva del backoff (500 ms → 10 s). |
+| Avisos | "El host pausó en 12:34", "saltó a…", "cambió la velocidad a 1.5×", "cargó un nuevo vídeo". Máximo 3 a la vez, 3 s cada uno, `aria-live`. No se muestran los comandos propios. |
+| Barra de cine | `role="slider"`: búfer, tiempo bajo el cursor, marcadores de los saltos del Host; flechas ±5 s y RePág/AvPág ±30 s. |
+| Atajos | Espacio/K reproducir o pausar · ←/→ o J/L ±10 s · `[`/`]` velocidad · `?` ayuda. Llevan `aria-keyshortcuts` y se ignoran dentro de campos de texto. |
+| Fundido | ~150–200 ms en correcciones por seek y en saltos de más de 2 s. Desactivado con `prefers-reduced-motion`. |
+| Control | Los controles se habilitan según `canControl` del servidor. Un participante con control delegado ve "El host no está: tienes el control temporal". |
 
 ---
 
-## 10. Seguridad y límites
+## 11. Seguridad y límites
 
 | Aspecto | Medida |
 | :--- | :--- |
-| Autenticación | JWT HS256 de identity-api; `WithValidMethods(HS256)`, `iss=tint-identity`, `aud=tint:room`, `exp` obligatorio, `sub` no vacío, `room_id` igual al de la query. Se valida **antes** del upgrade. |
-| Autorización | Solo `host`/`cohost` emiten comandos; `participant` → `FORBIDDEN`. |
-| Origen | `OriginPatterns` desde `ALLOWED_ORIGINS` (403 si no coincide). |
-| Token en la URL | Inevitable en WebSocket de navegador; el servicio nunca registra la URL y el sync-ticket dura 10 min. |
-| Tamaño | 4 KB por mensaje (cierre `1009`). |
-| Frecuencia | 20 mensajes/s por conexión (`ERROR{RATE_LIMITED}`). |
-| Relojes de cliente | `received_at` siempre lo sella el servidor; `ValidateInbound` no compara relojes de máquinas distintas. |
-| Privacidad | `sync_drift` sin `sub`, `nick` ni token (Ley 1581). |
+| Autenticación | JWT HS256 de identity-api: algoritmo fijo, `iss`, `aud`, `exp`, `sub`, `room_id`. Se valida **antes** del upgrade. |
+| Revocación | `token:revoked:{jti}` en el handshake (401; 503 si Redis no responde) y `REVOKED` en vivo (cierre `4001`). |
+| Autorización | `host`/`cohost` siempre; un participante solo si es el delegado vigente. El resto recibe `FORBIDDEN`. |
+| Origen | `OriginPatterns` desde `ALLOWED_ORIGINS`. |
+| Tamaño y frecuencia | 4 KB por mensaje (`1009`) y 20 mensajes/s (`RATE_LIMITED`). |
+| Argumentos | `rate` ∈ [0.25, 4] y `media_id` de 1 a 128 caracteres; fuera de rango → `INVALID`. |
+| Vídeo | URL firmada con vida corta (`PLAYBACK_URL_TTL_SECONDS`); el bucket no es público. |
+| Privacidad | `sync_drift` sin PII; `/guests` no expone `sub`; `/metrics` sin identificadores de usuario y detrás del ingress. |
 
 ---
 
-## 11. Configuración y ejecución local
+## 12. Observabilidad
 
-```mermaid
-flowchart LR
-    subgraph compose["docker compose"]
-        PG[("postgres :5432")]
-        RD[("redis :6379")]
-        MI[("minio :9000/9001")]
-        SC["sync-core :8082→8080"]
-    end
-    IDA["identity-api :8081<br/>(npm run dev)"]
-    WEB["web :5173<br/>(npm run dev)"]
-    SC --> RD
-    IDA --> PG
-    WEB -- "HTTP" --> IDA
-    WEB -- "WebSocket" --> SC
-```
+`GET /metrics` (formato Prometheus) en cada réplica:
+
+| Métrica | Tipo | Para qué |
+| :--- | :--- | :--- |
+| `sync_connections`, `sync_rooms` | gauge | Carga de la réplica |
+| `sync_commands_total{result}` | counter | `ok`, `duplicate`, `forbidden`, `invalid`, `error` |
+| `sync_command_apply_seconds` | histograma | Duración de la escritura atómica en Redis |
+| `sync_broadcast_delivery_seconds` | histograma | Recepción del comando → entrega por Pub/Sub en esta réplica |
+| `sync_store_conflicts_total` | counter | Reintentos por escrituras de otras réplicas |
+| `sync_disconnects_total{reason}` | counter | `normal`, `stale`, `slow`, `revoked` |
+| `sync_corrections_total{strategy}` | counter | `rate` / `seek` |
+| `sync_messages_invalid_total`, `sync_messages_rate_limited_total` | counter | Clientes mal formados o abusivos |
+| `sync_telemetry_dropped_total`, `sync_telemetry_failed_total` | counter | Salud del envío a `analytics:events` |
+
+---
+
+## 13. Configuración y ejecución local
 
 ```bash
 cp .env.example .env                     # JWT_SECRET compartido por identity-api y sync-core
-docker compose up -d                     # postgres, redis, minio y sync-core
-cd services/identity-api && npm run dev  # :8081
-cd apps/web && cp .env.example .env && npm run dev   # define VITE_DEMO_VIDEO_URL
+docker compose up -d                     # postgres, redis, minio (+ bucket) y sync-core
+cd services/identity-api && npm ci && npm run dev   # :8081 (aplicar migraciones 0001 y 0002)
+cd apps/web && cp .env.example .env && npm run dev  # :5173
 ```
 
-Abrir `/watch/:roomId` como Host en una pestaña y como invitado en otra: los comandos del Host se reflejan en el invitado.
+Para probar el vídeo:
+1. Sube un MP4 al bucket `tint-media` desde la consola de MinIO (`localhost:9001`).
+2. Como Host, usa "Cambiar vídeo" con su clave.
 
-| Variable | Servicio | Valor por defecto |
+| Variable | Servicio | Por defecto |
 | :--- | :--- | :--- |
-| `JWT_SECRET` | sync-core, identity-api | `dev-secret-change-in-prod` (**cambiar en producción**) |
-| `JWT_ISSUER` / `JWT_AUDIENCE` | ambos | `tint-identity` / `tint:room` |
-| `SYNC_ALLOWED_ORIGINS` → `ALLOWED_ORIGINS` | sync-core | `localhost:5173` |
-| `ROOM_TTL` | sync-core | `12h` |
+| `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE` | sync-core, identity-api | `dev-secret-change-in-prod`, `tint-identity`, `tint:room` |
+| `ALLOWED_ORIGINS` (`SYNC_ALLOWED_ORIGINS` en compose) | sync-core | `localhost:5173` |
+| `ROOM_TTL` / `CONTROL_HANDOFF_AFTER` | sync-core | `12h` / `5m` |
 | `SYNC_TICKET_TTL_SECONDS` | identity-api | `600` |
+| `MINIO_ENDPOINT` / `MINIO_PUBLIC_ENDPOINT` | identity-api | `http://localhost:9000` / igual a `MINIO_ENDPOINT` |
+| `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` / `MINIO_BUCKET` / `MINIO_REGION` | identity-api | `tintadmin` / `tintadmin123` / `tint-media` / `us-east-1` |
+| `PLAYBACK_URL_TTL_SECONDS` | identity-api | `3600` |
 | `VITE_SYNC_WS_URL` | web | `ws://localhost:8082/ws/sync` |
-| `VITE_DEMO_VIDEO_URL` | web | vacío ("Sin video configurado") |
+| `VITE_SYNC_ENCODING` | web | `json` (`msgpack` opcional) |
+| `VITE_DEMO_VIDEO_URL` | web | respaldo solo si la sala no tiene vídeo |
 
 ---
 
-## 12. Verificación y resultados
+## 14. Verificación y resultados
 
 | Suite | Resultado | Cobertura |
 | :--- | :--- | :--- |
-| sync-core (`go test -race`, `gofmt`, `go vet`) | ✅ todas pasan | **94,9 %** |
-| web (Vitest) | ✅ 125 pruebas | **97,98 %** |
-| identity-api (Vitest + `tsc`) | ✅ 50 pruebas | **97,85 %** |
+| sync-core (`gofmt`, `go vet`, `go test -race`) | ✅ todas pasan | **94,8 %** |
+| identity-api (`npm ci`, `tsc`, Vitest) | ✅ 100 pruebas | **98,7 %** líneas · 91,7 % ramas |
+| web (lint, `tsc`, Vitest, build) | ✅ 309 pruebas | **98,9 %** líneas · 95,2 % ramas |
 
-Las pruebas de sync-core incluyen miniredis, clientes WebSocket reales, **dos hubs sobre el mismo Redis** (simulan réplicas), 20 comandos concurrentes sin pérdidas y 50 clientes concurrentes con `-race`.
+**Benchmarks del store contra Redis 7 real** (`BENCH_REDIS_URL`):
 
-**Prueba extremo a extremo con Redis real:**
-- `STATE` inmediato al conectar.
-- `PLAY` y `SEEK` del Host llegan al invitado en **2–4 ms**.
-- `PAUSE` del invitado → `FORBIDDEN`, estado intacto.
-- Invitado atrasado 11 s → `SYNC_CORRECTION` con `strategy=seek` y entrada `sync_drift` en `analytics:events` sin PII.
-- Host desconectado → `HOST_STATUS online=false`; la sala sigue `playing` con `PTTL` ≈ 12 h.
+| Escenario | `WATCH/MULTI` (v1) | CAS Lua (v2) |
+| :--- | :--- | :--- |
+| Un host, en serie | 0,66–1,42 ms/op · 105 allocs | **0,24–0,49 ms/op** · 78 allocs |
+| 16 escritores en una réplica | 7,07 ms/op y **comandos perdidos** (se agotaban los 50 reintentos) | **0,27–0,32 ms/op**, sin pérdidas |
+| Dos réplicas compitiendo | — | 0,34–0,79 ms/op, sin pérdidas |
 
-**Prueba de carga k6 (500 VUs, misma máquina de 4 núcleos):**
+**MessagePack frente a JSON** (mensaje PLAY completo): 402 → 364 B (**−9,5 %**), ~5,6 → ~5,0 µs para codificar. La ganancia es pequeña porque el contrato exige claves y fechas de texto; por eso es opcional.
 
-| Umbral | Resultado |
+**Prueba de punta a punta v2** (dos réplicas reales y Redis; códec real de la web y funciones reales de revocación de identity-api):
+- Subprotocolo MessagePack negociado; `STATE` decodificado por `syncCodec.ts` con `can_control`.
+- `LOAD` y `RATE` cruzan réplicas en **1–4 ms**, con `media_id`.
+- `HEARTBEAT` con `rtt_ms` y `drift_ms`.
+- Revocación: el invitado se cierra con **4001** y la reconexión recibe **401**.
+- Réplica del Host matada con `SIGKILL`: la otra publica `HOST_STATUS offline` en **~4,7 s** y delega el control. El delegado hace `SEEK` y al volver el Host lo pierde.
+
+**Carga k6:**
+
+| Escenario | Resultado |
 | :--- | :--- |
-| Handshakes `101` | ✅ 500/500 |
-| `sync_drift_ms` p99 < 500 | ✅ 0 |
-| `sync_forbidden_errors` > 99 % | ✅ 499/499 |
-| `ws_connecting` p95 < 1 s | ✅ |
-| `sync_broadcast_latency_ms` p99 < 100 | ❌ mediana ~18 ms, cola p99 entre 144 y 370 ms según la corrida |
+| Humo de CI (50 VUs, 20 s) | ✅ todos los umbrales; p95 de retransmisión **11 ms** |
+| 500 VUs, k6 y servidor en la misma máquina de 4 núcleos | ✅ handshakes, drift, `FORBIDDEN` · ❌ latencia p99 < 100 ms (p95 entre 128 y 315 ms) |
 
-Con 500 clientes escritos en Go contra el mismo servidor y Redis real, el p99 es **25 ms** y estable, y sync-core usa ~4 % de un núcleo durante la carga. Todo apunta a que la cola proviene de k6 programando 500 VUs de JavaScript en la misma máquina que el servidor, pero no está demostrado: **el umbral no se relajó** y la prueba debe repetirse con k6 en otra máquina.
+Con las métricas nuevas, durante la corrida de 500 VUs:
+- En el servidor, la escritura del comando y la entrega por Pub/Sub promediaron ~12 ms cada una, sin conflictos.
+- En la corrida anterior con 500 clientes en Go, el p99 de punta a punta fue de 25 ms.
 
----
-
-## 13. Decisiones de diseño y desviaciones del plan
-
-| Tema | Plan original | Implementado | Motivo |
-| :--- | :--- | :--- | :--- |
-| Escritura atómica | Script Lua | `WATCH/MULTI/EXEC` optimista con hasta 50 reintentos | `master.Apply` en Go sigue siendo la única fuente de verdad; no se duplica la lógica en Lua. Sigue siendo atómico entre réplicas. |
-| Presencia del Host | Redis Set con TTL | ZSET con score = último latido | Permite expirar conexiones de réplicas caídas (timeout 5 s) sin TTL por miembro. |
-| Validación de entrada | `Validate()` | `ValidateInbound()` para mensajes de clientes | `Validate()` rechazaba `received_at < occurred_at`, lo que expulsaría a clientes con el reloj adelantado. |
-| Paquete `clock` | `Clock` inyectable | Funciones `now` inyectables por componente | Menos indirección para el mismo efecto en pruebas. |
-| Lectura de estado en `SYNC_CHECK` | `HGETALL` por latido | Caché por sala alimentada por Pub/Sub | Hallazgo de la prueba de carga: saturaba el pool de go-redis. |
-| Código de error `STALE` | Mensaje `ERROR` | Cierre `1008` | Un cliente que no responde latidos no leería el mensaje. |
+La cola restante sigue sin una causa demostrada, y el umbral **no se relajó**. La prueba completa debe correrse con k6 en otra máquina.
 
 ---
 
-## 14. Limitaciones conocidas
+## 15. Decisiones de diseño
 
-- **Latencia k6**: umbral p99 < 100 ms pendiente de confirmar desde una máquina separada (ver §12).
-- **`make test-all`** se detiene en los servicios Python si el entorno no tiene `pytest`; no es un fallo de esta feature.
-- **identity-api `npm ci`** requiere `--legacy-peer-deps` por un conflicto previo entre `vitest` y `@vitest/coverage-v8`; el CI podría fallar en ese paso.
-- **Cohost en la web**: sync-core acepta `role: cohost`, pero nadie lo emite todavía y el cliente no sabe distinguirlo (vería los controles deshabilitados).
-- **Usuario sin token**: en `WatchRoom`, quien no tiene guest token se trata como Host y pide un ticket (falla con 401/403 si no es el dueño).
-- **Vídeo de la sala**: temporal en `VITE_DEMO_VIDEO_URL`; el vínculo sala → vídeo pertenece a media/identity.
-- **Réplica caída**: no publica `HOST_STATUS offline`; la presencia expira por timeout, pero nadie avisa a los invitados hasta el siguiente evento de presencia.
-- **Revocación de tokens**: no hay; un guest token sigue valiendo hasta su `exp`.
+| Tema | Decisión | Motivo |
+| :--- | :--- | :--- |
+| Escritura atómica | CAS: lectura en pipeline + Lua condicionado a `version` + candado por sala | `master.Apply` sigue siendo la única fuente de verdad (no se duplica en Lua); con `WATCH` se perdían comandos bajo contención. |
+| Presencia | ZSET con score = último latido, renovado en lote en el barrido | Expira a las conexiones de réplicas caídas; `SYNC_CHECK` ya no escribe en Redis. |
+| `HOST_STATUS` | Script que guarda el último valor publicado | Solo se publican transiciones, sin duplicados entre réplicas. |
+| Delegado | Menor `sub` vivo | Determinista entre réplicas, sin coordinación extra. |
+| Latidos | Un temporizador por réplica | 500 conexiones = 1 timer en lugar de 500. |
+| Revocación | Marca en Redis + `REVOKED` por el canal de la sala | sync-core no depende de identity-api en tiempo real; falla cerrado. |
+| Métricas | Paquete propio | Evita `client_golang` y sus dependencias transitivas para un conjunto fijo de métricas. |
+| MessagePack | Opcional; el bus sigue en JSON | Ahorro medido de ~10 %; se transcodifica una vez por sala. |
+| `STALE` | Cierre `1008`, no mensaje `ERROR` | Un cliente que no responde latidos no leería el mensaje. |
+
+---
+
+## 16. Limitaciones conocidas
+
+- **Latencia k6 con 500 VUs:** pendiente de confirmar con k6 en otra máquina (ver §14).
+- **Invitado retirado mientras estaba desconectado:** el navegador solo ve un cierre 1006 cuando el handshake devuelve 401. La web sigue reintentando con backoff en vez de mostrar "Fuiste retirado".
+- **Cohost:** sync-core lo acepta, pero aún nadie emite tokens `role: cohost` y no hay UI para asignarlo.
+- **Usuario sin token:** `WatchRoom` lo trata como Host y pide un ticket, que falla si no es el dueño.
+- **Cambio de vídeo:** solo desde la UI del Host dueño, porque `PUT /media` exige Firebase. `PUT /media` tampoco comprueba que el objeto exista en MinIO.
+- **Avisos:** dicen "El host…" aunque el comando lo haya enviado un participante con control delegado.
+- **Producción:**
+  - `/metrics` debe quedar detrás del ingress.
+  - `guest_sessions.room_id` no tiene índice.
+  - Las claves de Redis no usan *hash tags* (Redis Cluster requeriría ajustarlas).
+- **`make test-all`:** se detiene en los servicios Python si el entorno no tiene `pytest`.

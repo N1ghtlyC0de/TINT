@@ -86,7 +86,7 @@ make test-all
 | PostgreSQL | `localhost:5432` |
 | Redis | `localhost:6379` |
 | MinIO API / Consola | `localhost:9000` / [`localhost:9001`](http://localhost:9001) |
-| sync-core (Canal Sync) | `ws://localhost:8082/ws/sync` · `http://localhost:8082/healthz` |
+| sync-core (Canal Sync) | `ws://localhost:8082/ws/sync` · `/healthz` · `/metrics` (Prometheus) |
 | identity-api (`npm run dev`) | `http://localhost:8081/api/v1` |
 | web (`npm run dev`) | `http://localhost:5173` |
 
