@@ -1,13 +1,21 @@
-import { useParams } from 'react-router-dom';
-import { useEffect, useRef, useState } from 'react';
+import { useParams, Link } from 'react-router-dom';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ReactionBar } from '../components/ReactionBar';
 import { CopyButton } from '../components/CopyButton';
+import { SyncedPlayer } from '../components/SyncedPlayer';
+import { ChangeVideoPanel } from '../components/host/ChangeVideoPanel';
+import { ParticipantsPanel } from '../components/host/ParticipantsPanel';
+import { ReconnectStatus, SyncQualityIndicator } from '../components/sync/SyncStatus';
+import { ToastStack } from '../components/sync/SyncToasts';
 import { BackLink } from '../components/ui/BackLink';
 import { Card } from '../components/ui/Primitives';
 import { apiFetch } from '../lib/api';
 import { toAbsoluteInviteLink, pickLatestActiveInvitation } from '../lib/invite';
 import { formatChatTime, noticeText } from '../lib/socialSocket';
+import { useRoomPlayback } from '../hooks/useRoomPlayback';
 import { useSocialSocket } from '../hooks/useSocialSocket';
+import { useSyncSocket } from '../hooks/useSyncSocket';
+import { useSyncToasts } from '../hooks/useSyncToasts';
 
 export default function WatchRoom() {
   const { roomId } = useParams();
@@ -18,6 +26,36 @@ export default function WatchRoom() {
   // (p. ej. guest token de una visita anterior al login). Coherente con
   // apiFetch, que prefiere el header de host.
   const isGuest = !localStorage.getItem('tint_token') && !!guestToken;
+  const role = isGuest ? 'guest' : 'host';
+  // Respaldo solo si la sala no tiene vídeo asignado en identity-api.
+  const demoVideoUrl = import.meta.env.VITE_DEMO_VIDEO_URL || undefined;
+
+  // Canal Sync (/ws/sync): el Reloj Maestro vive en sync-core.
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const getPositionMs = useCallback(
+    () => (videoRef.current ? videoRef.current.currentTime * 1000 : null),
+    [],
+  );
+  const sync = useSyncSocket({ roomId: roomId ?? '', role, getPositionMs });
+  const playback = useRoomPlayback(roomId ?? '', sync.state ? sync.state.media_id : undefined, {
+    role,
+    enabled: !sync.revoked,
+  });
+  const toasts = useSyncToasts(sync.lastBroadcast);
+  // Los controles los habilita el servidor (STATE.can_control / CONTROL), no el rol local.
+  const canControl = sync.canControl;
+  const delegated = isGuest && canControl;
+  const videoSrc = playback.url ?? (!playback.loading && !playback.error && !playback.mediaId ? demoVideoUrl : undefined);
+  const emptyMessage = playback.url
+    ? undefined
+    : playback.loading
+      ? 'Cargando vídeo…'
+      : (playback.error ?? 'Sin video configurado');
+  const { sendCommand } = sync;
+  const loadMedia = useCallback(
+    (mediaId: string) => sendCommand('LOAD', 0, { media_id: mediaId }) !== null,
+    [sendCommand],
+  );
   const [chat, setChat] = useState('');
   const [roomTitle, setRoomTitle] = useState<string | null>(null);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
@@ -80,6 +118,27 @@ export default function WatchRoom() {
     if (el && stickRef.current) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
+  if (sync.revoked) {
+    return (
+      <div className="grid min-h-[100dvh] place-items-center bg-tint-bg px-4 text-tint-muted">
+        <Card className="max-w-md p-8 text-center">
+          <p role="alert" className="text-lg font-semibold tracking-tight text-white">
+            Fuiste retirado de la sala por el host
+          </p>
+          <p className="mt-2 text-sm leading-relaxed">
+            Tu invitación ya no es válida. Si crees que es un error, pide al host un nuevo enlace.
+          </p>
+          <Link
+            to="/"
+            className="mt-6 inline-flex rounded-full bg-tint-accent px-5 py-2.5 text-sm font-semibold text-tint-bg transition hover:bg-tint-accentHover"
+          >
+            Volver al inicio
+          </Link>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-[100dvh] bg-tint-bg text-tint-muted">
       <header className="sticky top-0 z-30 border-b border-white/10 bg-tint-bg/90 backdrop-blur">
@@ -101,62 +160,55 @@ export default function WatchRoom() {
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2" aria-label="Estado de sincronía">
-            <span aria-hidden="true" className="h-2 w-2 rounded-full bg-tint-success" />
-            <span className="text-[13px] text-white">Sincronizado</span>
+          <div className="flex shrink-0 items-center gap-3">
+            {sync.connected && <SyncQualityIndicator rttMs={sync.rttMs} driftMs={sync.driftMs} />}
+            <div role="status" aria-label="Estado de sincronía" aria-live="polite">
+              <ReconnectStatus connected={sync.connected} reconnect={sync.reconnect} />
+            </div>
+            <p className="text-[12px]" role="status" aria-live="polite">
+              {chatStatus}
+            </p>
           </div>
-          <p className="text-[12px]" role="status" aria-live="polite">
-            {chatStatus}
-          </p>
         </div>
       </header>
 
       <main className="mx-auto grid w-full max-w-[1400px] gap-4 px-4 py-6 lg:grid-cols-[2fr_360px]">
         <section aria-label="Reproductor">
           <Card className="overflow-hidden">
-            <div className="relative aspect-video bg-black">
-              <img
-                src={`https://picsum.photos/seed/tint-watch-${roomId}/1280/720`}
-                alt=""
-                className="absolute inset-0 h-full w-full object-cover opacity-40"
-                loading="eager"
-              />
-              <div className="absolute inset-0 grid place-items-center">
-                <div className="flex flex-col items-center gap-3">
-                  <button
-                    type="button"
-                    aria-label="Reproducir"
-                    className="grid h-16 w-16 place-items-center rounded-full bg-tint-accent text-tint-bg transition hover:bg-tint-accentHover active:scale-[0.98]"
-                  >
-                    <span aria-hidden="true" className="ml-1 text-xl">▶</span>
-                  </button>
-                  <p className="text-[13px]">Reproductor (simulado)</p>
-                </div>
-              </div>
-              <div className="absolute inset-x-0 bottom-0 p-4">
-                <div
-                  className="h-1 overflow-hidden rounded-full bg-white/15"
-                  role="progressbar"
-                  aria-label="Progreso"
-                  aria-valuenow={0}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                >
-                  <div className="h-full w-0 bg-tint-accent" />
-                </div>
-              </div>
-            </div>
+            <SyncedPlayer
+              src={videoSrc}
+              canControl={canControl}
+              delegated={delegated}
+              sync={sync}
+              videoRef={videoRef}
+              emptyMessage={emptyMessage}
+            />
             <div aria-hidden="true" className="h-1.5 bg-gradient-to-r from-tint-accentDark via-tint-accent to-tint-accentDark opacity-70 blur-[6px]" />
             <div className="flex flex-wrap items-center justify-between gap-4 p-4">
               <div>
                 <p className="text-sm font-medium text-white">Reproducción sincronizada</p>
                 <p className="mt-0.5 text-[13px]">
-                  Controles de host listos para /ws/sync
+                  {canControl ? 'Controlas la reproducción de la sala' : 'El host controla la reproducción'}
                 </p>
               </div>
               <ReactionBar onReact={() => {}} />
             </div>
           </Card>
+
+          {!isGuest && (
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
+              <Card className="p-5">
+                <h2 className="text-[15px] font-semibold text-white">Vídeo de la sala</h2>
+                <p className="mb-4 mt-1 text-[13px] leading-relaxed">
+                  Asigna un archivo del bucket; todos lo cargarán en pausa al inicio.
+                </p>
+                <ChangeVideoPanel roomId={roomId ?? ''} onMediaAssigned={loadMedia} />
+              </Card>
+              <Card className="p-5">
+                <ParticipantsPanel roomId={roomId ?? ''} />
+              </Card>
+            </div>
+          )}
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
             <Card className="p-5">
@@ -178,7 +230,6 @@ export default function WatchRoom() {
             </Card>
           </div>
 
-          {/* TODO: conectar a /ws/sync (sync-core) */}
         </section>
 
         <aside aria-label="Social" className="flex min-h-0 flex-col gap-4">
@@ -239,6 +290,8 @@ export default function WatchRoom() {
           </Card>
         </aside>
       </main>
+
+      <ToastStack toasts={toasts} className="fixed right-4 top-20 z-40" />
     </div>
   );
 }

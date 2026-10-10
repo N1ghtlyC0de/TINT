@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { beforeEach, vi } from 'vitest';
 import WatchRoom from './WatchRoom';
+import { MockWebSocket } from '../test/mockWebSocket';
 import { apiFetch } from '../lib/api';
 
 vi.mock('../lib/api', async (importOriginal) => {
@@ -26,6 +27,8 @@ function renderWatch() {
 }
 
 beforeEach(() => {
+  // El Canal Sync (/ws/sync) se prueba en WatchRoom.sync.test.tsx: aquí no abre sockets reales.
+  vi.stubGlobal('WebSocket', MockWebSocket);
   vi.clearAllMocks();
   localStorage.clear();
 });
@@ -107,6 +110,8 @@ describe('WatchRoom', () => {
     renderWatch();
     expect(screen.getByText('Noche de cine')).toBeInTheDocument();
     expect(screen.getByText(`${window.location.origin}/invite/abc123`)).toBeInTheDocument();
-    expect(mockedApi).not.toHaveBeenCalled();
+    // Solo pide la URL de reproducción (permitida con guest token), nunca datos de host.
+    expect(mockedApi).not.toHaveBeenCalledWith('/rooms/r1');
+    expect(mockedApi).not.toHaveBeenCalledWith('/rooms/r1/invitations');
   });
 });
