@@ -5,15 +5,22 @@ import { validate } from '../middlewares/validate.js';
 import { requireAuthHost } from '../middlewares/auth.js';
 import { requireRoomOwner } from '../middlewares/requireRoomOwner.js';
 import { upsertByProvider } from '../modules/users/users.repo.js';
-import { create as createRoom, listByHost, findById, softRemoveById, updateTitle } from '../modules/rooms/rooms.repo.js';
+import { requireRoomHostOrGuest } from '../middlewares/guestAuth.js';
+import { create as createRoom, listByHost, findById, softRemoveById, updateTitle, setMedia } from '../modules/rooms/rooms.repo.js';
 import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../modules/invitations/invitations.repo.js';
 import { issueGuestToken, generateSyncTicket } from '../modules/auth/auth.service.js';
+import { getMediaSigner } from '../modules/media/media.signer.js';
+import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
 
 function getRoomId(req: { params: unknown }) {
   const rawId = (req.params as Record<string, unknown>).id;
   return Array.isArray(rawId) ? rawId[0] : (rawId as string);
+}
+
+function paramId(raw: string | string[]) {
+  return Array.isArray(raw) ? raw[0] : raw;
 }
 
 router.get('/healthz', (req, res) => {
@@ -155,6 +162,40 @@ router.post('/rooms/:id/sync-ticket', requireAuthHost, requireRoomOwner, async (
     nick: user.displayName || user.email,
   });
   res.json({ token, expiresAt: expiresAt.toISOString() });
+});
+
+const setMediaSchema = z.object({
+  mediaKey: z
+    .string()
+    .trim()
+    .min(1)
+    .max(512)
+    .refine((key) => !key.includes('..'), { message: 'mediaKey no puede contener ".."' })
+    .refine((key) => !key.startsWith('/'), { message: 'mediaKey no puede empezar con "/"' }),
+});
+router.put('/rooms/:id/media', requireAuthHost, requireRoomOwner, validate(setMediaSchema), async (req, res) => {
+  const roomId = paramId(req.params.id);
+  const { mediaKey } = req.body;
+  const mediaId = uuidv4();
+  const room = await setMedia(roomId, { mediaId, mediaKey });
+  if (!room) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  res.json({ mediaId, mediaKey });
+});
+
+router.get('/rooms/:id/playback', requireRoomHostOrGuest, async (req, res) => {
+  const room = await findById(paramId(req.params.id));
+  if (!room) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  if (!room.mediaId || !room.mediaKey) {
+    return res.json({ mediaId: null, url: null, expiresAt: null });
+  }
+  const ttl = env.PLAYBACK_URL_TTL_SECONDS;
+  const expiresAt = new Date(Date.now() + ttl * 1000);
+  const url = await getMediaSigner().presignGet(room.mediaKey, ttl);
+  res.json({ mediaId: room.mediaId, url, expiresAt: expiresAt.toISOString() });
 });
 
 router.post('/invitations/:code/revoke', requireAuthHost, async (req, res) => {

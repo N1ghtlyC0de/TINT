@@ -16,6 +16,9 @@ export const rooms = pgTable('rooms', {
   hostId: uuid('host_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
   title: varchar('title', { length: 150 }).notNull(),
   status: varchar('status', { length: 20 }).notNull().default('active'),
+  // Vídeo asignado (F3): id estable que viaja en LOAD/STATE y key del objeto en MINIO_BUCKET.
+  mediaId: uuid('media_id'),
+  mediaKey: text('media_key'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });

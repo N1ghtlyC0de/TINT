@@ -15,6 +15,13 @@
       "when": 1791579645914,
       "tag": "0001_add-room-status",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791694622846,
+      "tag": "0002_room_media",
+      "breakpoints": true
     }
   ]
 }
