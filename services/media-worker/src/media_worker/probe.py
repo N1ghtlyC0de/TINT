@@ -21,6 +21,8 @@ class ProbeError(Exception):
     """El archivo no pudo inspeccionarse (corrupto o ilegible)."""
 
 
+DEFAULT_TIMEOUT_S = 30
+
 FFPROBE_CMD = (
     "ffprobe",
     "-v",
@@ -45,9 +47,18 @@ def parse_duration_ms(ffprobe_output: str) -> int:
     return round(duration * 1000)
 
 
-def probe_duration_ms(path: str, runner=subprocess.run) -> int:
+def probe_duration_ms(path: str, runner=subprocess.run, timeout: float = DEFAULT_TIMEOUT_S) -> int:
     """Ejecuta ffprobe sobre `path` y devuelve la duración en ms."""
-    result = runner([*FFPROBE_CMD, path], capture_output=True, text=True, check=False)
+    try:
+        result = runner(
+            [*FFPROBE_CMD, path],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ProbeError(f"ffprobe excedió el tiempo límite ({timeout} s)") from exc
     if result.returncode != 0:
         raise ProbeError(result.stderr.strip() or "ffprobe falló")
     return parse_duration_ms(result.stdout)

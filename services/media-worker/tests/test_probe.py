@@ -1,10 +1,12 @@
 import logging
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
 from media_worker.probe import (
+    DEFAULT_TIMEOUT_S,
     FFPROBE_CMD,
     ProbeError,
     VideoStatus,
@@ -47,6 +49,31 @@ def test_probe_duration_ms_invokes_ffprobe():
     args, kwargs = runner.call_args
     assert args[0] == [*FFPROBE_CMD, "movie.mp4"]
     assert kwargs["capture_output"] is True
+
+
+def test_probe_duration_ms_passes_default_timeout_to_runner():
+    runner = fake_run(stdout='{"format": {"duration": "1"}}')
+    probe_duration_ms("movie.mp4", runner)
+    assert runner.call_args.kwargs["timeout"] == DEFAULT_TIMEOUT_S
+
+
+def test_probe_duration_ms_passes_custom_timeout_to_runner():
+    runner = fake_run(stdout='{"format": {"duration": "1"}}')
+    probe_duration_ms("movie.mp4", runner, timeout=5)
+    assert runner.call_args.kwargs["timeout"] == 5
+
+
+def test_probe_duration_ms_raises_probe_error_on_timeout():
+    runner = Mock(side_effect=subprocess.TimeoutExpired(cmd="ffprobe", timeout=30))
+    with pytest.raises(ProbeError, match="tiempo"):
+        probe_duration_ms("hang.mp4", runner)
+
+
+def test_inspect_status_failed_on_timeout(caplog):
+    runner = Mock(side_effect=subprocess.TimeoutExpired(cmd="ffprobe", timeout=30))
+    with caplog.at_level(logging.WARNING, logger="media_worker.probe"):
+        assert inspect_status("hang.mp4", runner) == (VideoStatus.FAILED, None)
+    assert "hang.mp4" in caplog.text
 
 
 def test_probe_duration_ms_raises_on_ffprobe_failure():

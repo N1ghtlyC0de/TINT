@@ -1,7 +1,7 @@
 # STATUS — media-worker
 
-Última revisión: 2026-10-08 · Rama: `feat/media-worker-probe`
-Tests: 38 passed · Cobertura: 100 % (mín. ≥ 85 %) · ruff: limpio
+Última revisión: 2026-10-10 · Rama: `feat/media-worker-probe`
+Tests: 42 passed · Cobertura: 100 % (mín. ≥ 85 %) · ruff: limpio
 
 IDs oficiales según el documento "Dominio del worker" (no existe MED-BE-04).
 Flujo de estado oficial: `processing -> ready | failed`.
@@ -15,7 +15,7 @@ Flujo de estado oficial: `processing -> ready | failed`.
 | MED-BE-03 | VideoInspector con ffprobe, metadatos y paso a `failed` | Parcial | `probe.probe_duration_ms`, `inspect_status` (captura `ProbeError` y `OSError`, registra el motivo con `logging`); no persiste el estado en SQL |
 | MED-BE-05 | Persistir `ambilight.json` en el blob y transición a `ready` | Pendiente | Sin extracción de fotogramas, cliente S3 ni cliente SQL |
 | MED-TEST-01 | Pruebas de estrés de procesamiento | Pendiente | Sin pipeline que estresar |
-| MED-TEST-02 | Auditoría de cobertura ≥ 85 % | Hecha | 100 % (79 stmts, 18 branches); `fail_under = 85` |
+| MED-TEST-02 | Auditoría de cobertura ≥ 85 % | Hecha | 100 % (97 stmts, 20 branches); `fail_under = 85` |
 
 ## Sin ID oficial
 
@@ -29,7 +29,7 @@ Flujo de estado oficial: `processing -> ready | failed`.
 | Punto de entrada: reporta `ready (N ms)` / `failed` con runner inyectado | Hecha | `tests/test_main.py` |
 | Extraer fotogramas con FFmpeg y generar `ambilight.json` | Pendiente | Solo helpers puros |
 | Idempotencia al reprocesar | Pendiente | Sin pipeline |
-| Timeout en ffprobe | Pendiente | `probe_duration_ms` no pasa `timeout` a `runner`, y `subprocess.TimeoutExpired` no se captura (no es `OSError`). Anotado, sin implementar |
+| Timeout en ffprobe (`DEFAULT_TIMEOUT_S` = 30 s, configurable; `TimeoutExpired` → `ProbeError` → `failed`) | Hecha | `probe.probe_duration_ms`; `test_probe_duration_ms_*timeout*`, `test_inspect_status_failed_on_timeout` |
 | Lint/format | Hecha | `ruff check` y `ruff format --check` OK |
 
 ## Decisiones tomadas
