@@ -1,26 +1,42 @@
 import { useParams } from 'react-router-dom';
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ReactionBar } from '../components/ReactionBar';
 import { BackLink } from '../components/ui/BackLink';
 import { Card } from '../components/ui/Primitives';
+import { useSocialSocket } from '../hooks/useSocialSocket';
 
 export default function WatchRoom() {
   const { roomId } = useParams();
-  // SIMULACIÓN: Chat y streaming aún no implementados.
-  // Se integrará con sync-core (/ws/sync) y social-core (/ws/social) cuando aplique.
+  // Canal Social (/ws/social): el estado maestro del chat vive en social-core.
+  const { messages, send, status } = useSocialSocket(roomId);
   const guestToken = localStorage.getItem('tint_guest_token');
   const isGuest = !!guestToken;
   const [chat, setChat] = useState('');
-  const [messages, setMessages] = useState<{ nick: string; text: string }[]>([]);
 
   const sendChat = (e: React.FormEvent) => {
     e.preventDefault();
     const text = chat.trim();
     if (!text) return;
-    // Solo pre validación local. El estado maestro vive en social-core.
-    setMessages((m) => [...m.slice(-49), { nick: isGuest ? 'Invitado' : 'Host', text }]);
-    setChat('');
+    if (send(text)) setChat('');
   };
+
+  const chatStatus =
+    status === 'open' ? 'Chat conectado' : status === 'closed' ? 'Chat desconectado' : 'Chat reconectando…';
+
+  // Auto-scroll inteligente: baja al fondo solo si el usuario ya estaba abajo,
+  // para no robar la lectura de mensajes antiguos cuando llegan nuevos.
+  const listRef = useRef<HTMLUListElement | null>(null);
+  const stickRef = useRef(true);
+
+  const onListScroll = (e: React.UIEvent<HTMLUListElement>) => {
+    const el = e.currentTarget;
+    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
+  };
+
+  useEffect(() => {
+    const el = listRef.current;
+    if (el && stickRef.current) el.scrollTop = el.scrollHeight;
+  }, [messages]);
 
   return (
     <div className="min-h-[100dvh] bg-tint-bg text-tint-muted">
@@ -39,6 +55,9 @@ export default function WatchRoom() {
             <span aria-hidden="true" className="h-2 w-2 rounded-full bg-tint-success" />
             <span className="text-[13px] text-white">Sincronizado</span>
           </div>
+          <p className="text-[12px]" role="status" aria-live="polite">
+            {chatStatus}
+          </p>
         </div>
       </header>
 
@@ -110,20 +129,24 @@ export default function WatchRoom() {
           </div>
 
           {/* TODO: conectar a /ws/sync (sync-core) */}
-          {/* TODO: conectar a /ws/social (social-core) + chat/reacciones */}
         </section>
 
-        <aside aria-label="Social" className="flex flex-col gap-4">
-          <Card className="flex min-h-[420px] flex-1 flex-col p-5">
-            <h2 className="text-[15px] font-semibold text-white">Chat (simulado)</h2>
+        <aside aria-label="Social" className="flex min-h-0 flex-col gap-4">
+          <Card className="flex h-[560px] min-h-0 flex-col p-5 lg:h-[calc(100dvh-7rem)]">
+            <h2 className="text-[15px] font-semibold text-white">Chat en vivo</h2>
             {messages.length === 0 ? (
-              <p className="mt-3 rounded-xl border border-dashed border-white/15 bg-white/[0.02] p-4 text-[13px] leading-relaxed">
+              <p className="mt-3 flex-1 rounded-xl border border-dashed border-white/15 bg-white/[0.02] p-4 text-[13px] leading-relaxed">
                 Sin mensajes aún. Saluda y prueba la sincronía con tu grupo.
               </p>
             ) : (
-              <ul className="mt-3 flex-1 space-y-2 overflow-auto">
-                {messages.map((m, i) => (
-                  <li key={i} className="rounded-xl bg-white/5 px-3 py-2 text-[13px]">
+              <ul
+                ref={listRef}
+                onScroll={onListScroll}
+                className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto"
+                aria-live="polite"
+              >
+                {messages.map((m) => (
+                  <li key={m.event_id} className="rounded-xl bg-white/5 px-3 py-2 text-[13px]">
                     <span className="font-semibold text-white">{m.nick}: </span>
                     <span>{m.text}</span>
                   </li>

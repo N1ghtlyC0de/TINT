@@ -1,0 +1,207 @@
+import { act, renderHook } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { useSocialSocket } from './useSocialSocket';
+
+class FakeSocket {
+  static instances: FakeSocket[] = [];
+  url: string;
+  readyState = 0; // CONNECTING
+  onopen: ((e: unknown) => void) | null = null;
+  onmessage: ((e: { data: string }) => void) | null = null;
+  onclose: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  sent: string[] = [];
+  closed = false;
+
+  constructor(url: string) {
+    this.url = url;
+    FakeSocket.instances.push(this);
+  }
+  open() {
+    this.readyState = 1; // OPEN
+    this.onopen?.({});
+  }
+  receive(data: string) {
+    this.onmessage?.({ data });
+  }
+  send(data: string) {
+    this.sent.push(data);
+  }
+  close() {
+    this.readyState = 3;
+    this.closed = true;
+    this.onclose?.();
+  }
+  fail() {
+    this.onerror?.();
+  }
+}
+
+beforeEach(() => {
+  FakeSocket.instances = [];
+  localStorage.clear();
+  vi.useFakeTimers();
+});
+
+function lastSocket() {
+  return FakeSocket.instances[FakeSocket.instances.length - 1];
+}
+
+describe('useSocialSocket', () => {
+  it('conecta con room y token, carga historial y recibe mensajes', () => {
+    localStorage.setItem('tint_guest_token', 'g123');
+    const { result } = renderHook(() =>
+      useSocialSocket('r1', {
+        createSocket: (url) => new FakeSocket(url) as unknown as WebSocket,
+        reconnectBaseMs: 500,
+        reconnectMaxMs: 8000,
+      }),
+    );
+    expect(result.current.status).toBe('connecting');
+    expect(lastSocket().url).toContain('room_id=r1');
+    expect(lastSocket().url).toContain('token=g123');
+
+    act(() => {
+      lastSocket().open();
+      lastSocket().receive(
+        '{"type":"history","room_id":"r1","messages":[{"event_id":"h1","type":"chat_message","room_id":"r1","user_id":"u","nick":"A","text":"previo","occurred_at":"t","received_at":"t"}]}',
+      );
+    });
+    expect(result.current.status).toBe('open');
+    expect(result.current.messages).toHaveLength(1);
+
+    act(() => {
+      lastSocket().receive(
+        '{"type":"chat_message","event_id":"m2","room_id":"r1","user_id":"u2","nick":"B","text":"hola","occurred_at":"t","received_at":"t"}',
+      );
+    });
+    expect(result.current.messages.map((m) => m.text)).toEqual(['previo', 'hola']);
+  });
+
+  it('send usa el socket abierto y valida vacío/cerrado', () => {
+    const { result } = renderHook(() =>
+      useSocialSocket('r1', {
+        createSocket: (url) => new FakeSocket(url) as unknown as WebSocket,
+      }),
+    );
+    expect(result.current.send('   ')).toBe(false);
+    expect(result.current.send('hola')).toBe(false); // aún CONNECTING
+    act(() => lastSocket().open());
+    expect(result.current.send('  hola  ')).toBe(true);
+    const payload = JSON.parse(lastSocket().sent[0]);
+    expect(payload).toMatchObject({ type: 'chat_send', room_id: 'r1', text: 'hola' });
+  });
+
+  it('reconecta con backoff exponencial tras un corte', () => {
+    renderHook(() =>
+      useSocialSocket('r1', {
+        createSocket: (url) => new FakeSocket(url) as unknown as WebSocket,
+        reconnectBaseMs: 500,
+        reconnectMaxMs: 8000,
+      }),
+    );
+    act(() => lastSocket().open());
+    expect(FakeSocket.instances).toHaveLength(1);
+    act(() => lastSocket().close());
+    expect(FakeSocket.instances).toHaveLength(1);
+    act(() => vi.advanceTimersByTime(500));
+    expect(FakeSocket.instances).toHaveLength(2);
+    act(() => {
+      lastSocket().close();
+      vi.advanceTimersByTime(1000);
+    });
+    expect(FakeSocket.instances).toHaveLength(3);
+  });
+
+  it('ignora mensajes desconocidos y queda closed sin room', () => {
+    const { result } = renderHook(() =>
+      useSocialSocket('r1', {
+        createSocket: (url) => new FakeSocket(url) as unknown as WebSocket,
+      }),
+    );
+    act(() => {
+      lastSocket().open();
+      lastSocket().receive('no-json');
+      lastSocket().receive('{"type":"trivia"}');
+    });
+    expect(result.current.messages).toHaveLength(0);
+
+    const noRoom = renderHook(() =>
+      useSocialSocket(undefined, {
+        createSocket: (url) => new FakeSocket(url) as unknown as WebSocket,
+      }),
+    );
+    expect(noRoom.result.current.status).toBe('closed');
+  });
+
+  it('traga ecos: mismo event_id no se muestra dos veces', () => {
+    const { result } = renderHook(() =>
+      useSocialSocket('r1', {
+        createSocket: (url) => new FakeSocket(url) as unknown as WebSocket,
+      }),
+    );
+    const echo =
+      '{"type":"chat_message","event_id":"m1","room_id":"r1","user_id":"u","nick":"A","text":"hola","occurred_at":"t","received_at":"t"}';
+    act(() => {
+      lastSocket().open();
+      lastSocket().receive(echo);
+      lastSocket().receive(echo);
+      lastSocket().receive(echo);
+    });
+    expect(result.current.messages).toHaveLength(1);
+  });
+
+  it('lo ya visto en el historial no se duplica al llegar en vivo', () => {
+    const { result } = renderHook(() =>
+      useSocialSocket('r1', {
+        createSocket: (url) => new FakeSocket(url) as unknown as WebSocket,
+      }),
+    );
+    act(() => {
+      lastSocket().open();
+      lastSocket().receive(
+        '{"type":"history","room_id":"r1","messages":[{"event_id":"h1","type":"chat_message","room_id":"r1","user_id":"u","nick":"A","text":"previo","occurred_at":"t","received_at":"t"}]}',
+      );
+      lastSocket().receive(
+        '{"type":"chat_message","event_id":"h1","room_id":"r1","user_id":"u","nick":"A","text":"previo","occurred_at":"t","received_at":"t"}',
+      );
+    });
+    expect(result.current.messages).toHaveLength(1);
+  });
+
+  it('al desmontar cierra el socket (un solo socket vivo)', () => {
+    const { unmount } = renderHook(() =>
+      useSocialSocket('r1', {
+        createSocket: (url) => new FakeSocket(url) as unknown as WebSocket,
+      }),
+    );
+    act(() => lastSocket().open());
+    const sock = lastSocket();
+    unmount();
+    expect(sock.closed).toBe(true);
+  });
+
+  it('un cierre tardío del socket viejo no mata al vigente', () => {
+    const { result } = renderHook(() =>
+      useSocialSocket('r1', {
+        createSocket: (url) => new FakeSocket(url) as unknown as WebSocket,
+        reconnectBaseMs: 500,
+        reconnectMaxMs: 8000,
+      }),
+    );
+    act(() => lastSocket().open());
+    const old = lastSocket();
+    act(() => old.close());
+    act(() => vi.advanceTimersByTime(500));
+    expect(FakeSocket.instances).toHaveLength(2);
+    act(() => lastSocket().open());
+    // Cierre tardío del socket viejo: debe ignorarse.
+    act(() => {
+      old.close();
+      vi.advanceTimersByTime(8000);
+    });
+    expect(FakeSocket.instances).toHaveLength(2);
+    expect(result.current.send('sigo vivo')).toBe(true);
+    expect(lastSocket().sent).toHaveLength(1);
+  });
+});

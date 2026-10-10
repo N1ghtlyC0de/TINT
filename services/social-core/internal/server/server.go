@@ -2,12 +2,17 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
+	"time"
+
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/chat"
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/socialevent"
 )
 
-const defaultAddr = ":8081"
+const defaultAddr = ":8082"
 
 // Addr resuelve la dirección de escucha a partir del entorno.
 func Addr(getenv func(string) string) string {
@@ -20,8 +25,47 @@ func Addr(getenv func(string) string) string {
 // Run arranca el servidor HTTP y bloquea hasta que falle.
 func Run(getenv func(string) string) error {
 	addr := Addr(getenv)
+	deps := DefaultDeps(getenv)
 	log.Printf("social-core escuchando en %s", addr)
-	return http.ListenAndServe(addr, NewRouter())
+	return http.ListenAndServe(addr, NewRouterWithDeps(deps))
+}
+
+// DefaultDeps cablea memoria o Redis según REDIS_URL.
+func DefaultDeps(getenv func(string) string) *Deps {
+	hub := chat.NewHub()
+	var history chat.Store = chat.NewMemoryStore(0)
+	var store *chat.RedisStore
+	if url := getenv("REDIS_URL"); url != "" {
+		if rs, err := chat.NewRedisStore(url, 0, 0); err == nil {
+			history = rs
+			store = rs
+		}
+	}
+	d := &Deps{
+		Hub:               hub,
+		History:           history,
+		JWTSecret:         getenv("JWT_SECRET"),
+		FirebaseProjectID: getenv("FIREBASE_PROJECT_ID"),
+	}
+	if store != nil {
+		st := store
+		d.Publish = func(ctx context.Context, roomID string, msg socialevent.ChatMessage) error {
+			return st.Publish(ctx, roomID, msg)
+		}
+		d.Subscribe = func(ctx context.Context, roomID string) (<-chan socialevent.ChatMessage, func()) {
+			return st.Subscribe(ctx, roomID)
+		}
+		d.Track = func(ctx context.Context, roomID string, length int, eventID string, occurredAt time.Time) {
+			go func() {
+				tctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+				defer cancel()
+				_ = st.TrackChat(tctx, socialevent.ChatMessage{
+					EventID: eventID, RoomID: roomID, OccurredAt: occurredAt,
+				}, length)
+			}()
+		}
+	}
+	return d
 }
 
 // NewRouter construye el router HTTP del servicio.
