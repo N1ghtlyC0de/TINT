@@ -43,4 +43,21 @@ describe('apiFetch', () => {
     const [, opts] = mockedFetch.mock.calls[0] as [unknown, { headers: Headers }];
     expect(opts.headers.get('Authorization')).toBe('Bearer guest-1');
   });
+
+  it('auth "guest" fuerza el guest token aunque exista token de host', async () => {
+    localStorage.setItem('tint_token', 'host-1');
+    localStorage.setItem('tint_guest_token', 'guest-1');
+    mockedFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({}) });
+    await apiFetch('/rooms/r1/playback', { method: 'GET' }, 'guest');
+    const [, opts] = mockedFetch.mock.calls[0] as [unknown, { headers: Headers }];
+    expect(opts.headers.get('Authorization')).toBe('Bearer guest-1');
+  });
+
+  it('auth "host" usa solo el token de host', async () => {
+    localStorage.setItem('tint_guest_token', 'guest-1');
+    mockedFetch.mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({}) });
+    await apiFetch('/rooms/r1/guests', {}, 'host');
+    const [, opts] = mockedFetch.mock.calls[0] as [unknown, { headers: Headers }];
+    expect(opts.headers.has('Authorization')).toBe(false);
+  });
 });
