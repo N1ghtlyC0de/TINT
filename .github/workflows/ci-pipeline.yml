@@ -32,7 +32,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: services/${{ matrix.service }}/go.mod
-          cache-dependency-path: services/${{ matrix.service }}/go.mod
+          cache-dependency-path: services/${{ matrix.service }}/go.*
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - name: go vet
