@@ -1,17 +1,25 @@
 // Package store persiste el Reloj Maestro de cada sala en Redis
 // (room:{id}:sync_state) y la presencia de hosts entre réplicas.
 //
-// Los comandos usan una transacción optimista (WATCH/MULTI/EXEC): se lee el
-// estado, se calcula el siguiente con master.Apply (única fuente de verdad)
-// y se escribe + publica atómicamente. Si otra réplica modificó la sala en
-// medio, EXEC falla y se reintenta, así ningún comando se pierde.
+// Los comandos usan compare-and-set optimista: se lee el estado (una ida y
+// vuelta), se calcula el siguiente con master.Apply (única fuente de verdad)
+// y un script Lua lo escribe y publica solo si la version no cambió (otra
+// ida y vuelta, atómica en Redis). Si otra réplica escribió en medio, se
+// reintenta con espera aleatoria, así ningún comando se pierde.
+//
+// Dentro de una réplica los comandos de una misma sala se serializan con un
+// candado local: así los conflictos solo pueden venir de otras réplicas.
+// Con WATCH/MULTI, 16 escritores concurrentes agotaban los reintentos.
 package store
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
+	"math/rand/v2"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -27,7 +35,25 @@ const (
 	// (cubre réplicas que mueren sin ejecutar HostGone).
 	PresenceTimeout = 5 * time.Second
 	maxTxRetries    = 50
+	// lockStripes: candados locales repartidos por hash de sala (memoria
+	// acotada sin importar cuántas salas haya).
+	lockStripes = 256
+	// maxBackoff limita la espera aleatoria tras un conflicto entre réplicas.
+	maxBackoff = 4 * time.Millisecond
 )
+
+// casScript aplica el estado calculado en Go solo si nadie escribió antes.
+// KEYS: estado, evt. ARGV: version esperada, dedupe ms, ttl ms, canal,
+// payload, pares campo/valor del estado.
+var casScript = redis.NewScript(`
+if redis.call('EXISTS', KEYS[2]) == 1 then return 'DUP' end
+if redis.call('HGET', KEYS[1], 'version') ~= ARGV[1] then return 'CONFLICT' end
+redis.call('SET', KEYS[2], 1, 'PX', ARGV[2])
+redis.call('HSET', KEYS[1], unpack(ARGV, 6))
+redis.call('PEXPIRE', KEYS[1], ARGV[3])
+redis.call('PUBLISH', ARGV[4], ARGV[5])
+return 'OK'
+`)
 
 var (
 	ErrNotFound = errors.New("la sala no tiene estado de sincronización")
@@ -39,8 +65,9 @@ type Encoder func(master.State) ([]byte, error)
 
 // Store es el repositorio Redis del dominio de sincronización.
 type Store struct {
-	rdb redis.UniversalClient
-	ttl time.Duration
+	rdb   redis.UniversalClient
+	ttl   time.Duration
+	locks [lockStripes]sync.Mutex
 }
 
 // New crea un Store; ttl es el periodo de gracia de la sala (REQ-07).
@@ -79,57 +106,74 @@ func (s *Store) Load(ctx context.Context, roomID string) (master.State, error) {
 // Apply aplica cmd de forma atómica. Devuelve el estado resultante y si el
 // event_id ya se había procesado (en cuyo caso el estado no cambia).
 func (s *Store) Apply(ctx context.Context, roomID, eventID string, cmd master.Command, receivedAtMs, rttMs int64, encode Encoder) (master.State, bool, error) {
+	mu := s.lockFor(roomID)
+	mu.Lock()
+	defer mu.Unlock()
+
 	stateKey := syncevent.StateKey(roomID)
 	evtKey := syncevent.EventKey(roomID, eventID)
-	var (
-		result master.State
-		dup    bool
-	)
-	txf := func(tx *redis.Tx) error {
-		seen, err := tx.Exists(ctx, evtKey).Result()
-		if err != nil {
-			return err
-		}
-		cur, err := load(ctx, tx, roomID)
-		if err != nil {
-			return err
-		}
-		if seen > 0 {
-			result, dup = cur, true
-			return nil
-		}
-		next, err := cur.Apply(cmd, receivedAtMs, rttMs)
-		if err != nil {
-			return err
-		}
-		payload, err := encode(next)
-		if err != nil {
-			return err
-		}
-		_, err = tx.TxPipelined(ctx, func(p redis.Pipeliner) error {
-			p.Set(ctx, evtKey, 1, dedupeWindow)
-			p.HSet(ctx, stateKey, fields(next))
-			p.PExpire(ctx, stateKey, s.ttl)
-			p.Publish(ctx, syncevent.ChannelKey(roomID), payload)
-			return nil
-		})
-		if errors.Is(err, redis.TxFailedErr) {
-			return errConflict
-		}
-		result, dup = next, false
-		return err
-	}
 	for i := 0; i < maxTxRetries; i++ {
-		err := s.rdb.Watch(ctx, txf, stateKey, evtKey)
-		if errors.Is(err, errConflict) || errors.Is(err, redis.TxFailedErr) {
-			continue
+		var seen *redis.IntCmd
+		var raw *redis.MapStringStringCmd
+		if _, err := s.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
+			seen = p.Exists(ctx, evtKey)
+			raw = p.HGetAll(ctx, stateKey)
+			return nil
+		}); err != nil {
+			return master.State{}, false, err
 		}
+		cur, err := decode(raw.Val())
 		if err != nil {
 			return master.State{}, false, err
 		}
-		return result, dup, nil
+		if seen.Val() > 0 {
+			return cur, true, nil
+		}
+		next, err := cur.Apply(cmd, receivedAtMs, rttMs)
+		if err != nil {
+			return master.State{}, false, err
+		}
+		payload, err := encode(next)
+		if err != nil {
+			return master.State{}, false, err
+		}
+		args := []any{cur.Version, dedupeWindow.Milliseconds(), s.ttl.Milliseconds(), syncevent.ChannelKey(roomID), payload}
+		for field, value := range fields(next) {
+			args = append(args, field, value)
+		}
+		res, err := casScript.Run(ctx, s.rdb, []string{stateKey, evtKey}, args...).Text()
+		if err != nil {
+			return master.State{}, false, err
+		}
+		switch res {
+		case "OK":
+			return next, false, nil
+		case "DUP":
+			continue // el siguiente intento devuelve el estado con dup=true
+		}
+		// Otra réplica escribió primero: espera aleatoria para no chocar de nuevo.
+		if err := sleep(ctx, rand.N(maxBackoff)); err != nil {
+			return master.State{}, false, err
+		}
 	}
 	return master.State{}, false, fmt.Errorf("apply sala %s: %w tras %d intentos", roomID, errConflict, maxTxRetries)
+}
+
+func (s *Store) lockFor(roomID string) *sync.Mutex {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(roomID))
+	return &s.locks[h.Sum32()%lockStripes]
+}
+
+func sleep(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 // Touch refresca el periodo de gracia de la sala.
@@ -170,6 +214,10 @@ func load(ctx context.Context, c redis.Cmdable, roomID string) (master.State, er
 	if err != nil {
 		return master.State{}, err
 	}
+	return decode(m)
+}
+
+func decode(m map[string]string) (master.State, error) {
 	if len(m) == 0 {
 		return master.State{}, ErrNotFound
 	}

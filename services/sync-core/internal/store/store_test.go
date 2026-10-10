@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -251,6 +252,45 @@ func TestParseCorruptState(t *testing.T) {
 	mr.HSet(syncevent.StateKey(room), "status", "playing", "position_ms", "x")
 	if _, err := s.Load(context.Background(), room); err == nil {
 		t.Error("estado corrupto debe devolver error")
+	}
+}
+
+// Dos réplicas (dos Store con su propio cliente) y muchos cohosts a la vez:
+// ningún comando debe perderse ni agotar los reintentos.
+func TestApplyHeavyContentionAcrossReplicas(t *testing.T) {
+	mr := miniredis.RunT(t)
+	newReplica := func() *Store {
+		rdb := redis.NewClient(&redis.Options{Addr: mr.Addr(), PoolSize: 32})
+		t.Cleanup(func() { _ = rdb.Close() })
+		return New(rdb, ttl)
+	}
+	a, b := newReplica(), newReplica()
+	ctx := context.Background()
+	if _, err := a.Init(ctx, room, "host-1", t0); err != nil {
+		t.Fatal(err)
+	}
+	const perReplica = 60
+	var wg sync.WaitGroup
+	errs := make(chan error, 2*perReplica)
+	for i := 0; i < perReplica; i++ {
+		for r, s := range []*Store{a, b} {
+			wg.Add(1)
+			go func(s *Store, id string, pos int64) {
+				defer wg.Done()
+				_, _, err := s.Apply(ctx, room, id, master.Command{Type: syncevent.Seek, PositionMs: pos}, t0, 0, encodeVersion)
+				errs <- err
+			}(s, fmt.Sprintf("r%d-e%d", r, i), int64(i))
+		}
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if st, _ := a.Load(ctx, room); st.Version != 2*perReplica {
+		t.Errorf("version = %d, want %d", st.Version, 2*perReplica)
 	}
 }
 
