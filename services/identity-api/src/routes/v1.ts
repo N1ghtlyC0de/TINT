@@ -6,7 +6,7 @@ import { requireAuthHost } from '../middlewares/auth.js';
 import { requireRoomOwner } from '../middlewares/requireRoomOwner.js';
 import { upsertByProvider } from '../modules/users/users.repo.js';
 import { create as createRoom, listByHost, findById, softRemoveById, updateTitle } from '../modules/rooms/rooms.repo.js';
-import { create as createInvitation, findByCode, setRevoked, listByRoom } from '../modules/invitations/invitations.repo.js';
+import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../modules/invitations/invitations.repo.js';
 import { issueGuestToken } from '../modules/auth/auth.service.js';
 
 const router = Router();
@@ -51,7 +51,18 @@ router.post('/rooms', requireAuthHost, validate(createRoomSchema), async (req, r
 
 router.get('/rooms', requireAuthHost, async (req, res) => {
   const rooms = await listByHost(req.user!.id);
-  res.json({ rooms });
+  const latest = await listLatestActiveByRooms(rooms.map((room) => room.id));
+  res.json({
+    rooms: rooms.map((room) => {
+      const invitation = latest.get(room.id);
+      return {
+        ...room,
+        invitation: invitation
+          ? { code: invitation.code, link: `/invite/${invitation.code}`, expiresAt: invitation.expiresAt }
+          : null,
+      };
+    }),
+  });
 });
 
 router.get('/rooms/:id', requireAuthHost, requireRoomOwner, async (req, res) => {
@@ -170,7 +181,7 @@ router.post('/invitations/claim', validate(claimSchema), async (req, res) => {
     return res.status(410).json({ error: 'Deleted' });
   }
   const { token } = issueGuestToken(invitation.roomId, nick);
-  res.json({ token, roomId: invitation.roomId, nick });
+  res.json({ token, roomId: invitation.roomId, nick, roomTitle: room?.title ?? null });
 });
 
 export default router;
