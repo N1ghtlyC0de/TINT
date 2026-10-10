@@ -2,6 +2,13 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import type { Correction } from '../lib/drift';
 import {
+  decodeFrame,
+  encodeFrame,
+  MSGPACK_SUBPROTOCOL,
+  resolveEncoding,
+  type SyncEncoding,
+} from '../lib/syncCodec';
+import {
   backoffDelay,
   buildCommand,
   buildSyncCheck,
@@ -9,7 +16,7 @@ import {
   CLOSE_REVOKED,
   estimateServerNow,
   expectedPosition,
-  parseServerMessage,
+  toServerMessage,
   type CommandExtra,
   type CommandType,
   type SyncSnapshot,
@@ -35,6 +42,8 @@ export interface UseSyncSocketOptions {
   url?: string;
   /** Reloj monotónico local (inyectable para pruebas). */
   now?: () => number;
+  /** Codificación pedida al servidor; por defecto VITE_SYNC_ENCODING (json). */
+  encoding?: SyncEncoding;
 }
 
 export interface SyncCorrection extends Correction {
@@ -114,6 +123,7 @@ export function useSyncSocket({
   getPositionMs,
   url,
   now,
+  encoding,
 }: UseSyncSocketOptions): SyncSocketApi {
   const [connected, setConnected] = useState(false);
   const [state, setState] = useState<SyncSnapshot | null>(null);
@@ -129,6 +139,8 @@ export function useSyncSocket({
   const [lastBroadcast, setLastBroadcast] = useState<SyncBroadcast | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
+  /** Codificación negociada con el socket actual (json si el servidor no aceptó msgpack). */
+  const wireRef = useRef<SyncEncoding>('json');
   const stateRef = useRef<SyncSnapshot | null>(null);
   const canControlRef = useRef(canControl);
   const ownEventsRef = useRef<string[]>([]);
@@ -143,6 +155,7 @@ export function useSyncSocket({
   });
 
   const baseUrl = url || import.meta.env.VITE_SYNC_WS_URL || DEFAULT_SYNC_WS_URL;
+  const requested = encoding ?? resolveEncoding(import.meta.env.VITE_SYNC_ENCODING);
 
   useEffect(() => {
     let disposed = false;
@@ -180,8 +193,8 @@ export function useSyncSocket({
       return expectedPosition(snap, estimateServerNow(snap, nowRef.current()));
     };
 
-    const handleMessage = (ws: WebSocket, raw: string) => {
-      const msg = parseServerMessage(raw);
+    const handleMessage = (ws: WebSocket, data: unknown) => {
+      const msg = toServerMessage(decodeFrame(data));
       if (!msg) return;
       switch (msg.type) {
         case 'STATE':
@@ -218,7 +231,7 @@ export function useSyncSocket({
             // v2 omite drift_ms cuando vale 0.
             setDriftMs(typeof msg.drift_ms === 'number' ? msg.drift_ms : 0);
           }
-          ws.send(JSON.stringify(buildSyncCheck(roomId, currentPosition(), msg.server_time_ms)));
+          ws.send(encodeFrame(buildSyncCheck(roomId, currentPosition(), msg.server_time_ms), wireRef.current));
           break;
         case 'SYNC_CORRECTION':
           if (stateRef.current && msg.version < stateRef.current.version) break;
@@ -276,16 +289,21 @@ export function useSyncSocket({
         setReconnect(null);
         return;
       }
-      const ws = new WebSocket(buildSyncUrl(baseUrl, roomId, token));
+      const target = buildSyncUrl(baseUrl, roomId, token);
+      const ws = requested === 'msgpack' ? new WebSocket(target, [MSGPACK_SUBPROTOCOL]) : new WebSocket(target);
+      if (requested === 'msgpack') ws.binaryType = 'arraybuffer';
       socket = ws;
       wsRef.current = ws;
+      wireRef.current = 'json';
       ws.onopen = () => {
+        // Si el servidor no aceptó el subprotocolo, seguimos en JSON.
+        wireRef.current = ws.protocol === MSGPACK_SUBPROTOCOL ? 'msgpack' : 'json';
         attempt = 0;
         setConnected(true);
         setReconnect(null);
         setLastError(null);
       };
-      ws.onmessage = (ev: MessageEvent) => handleMessage(ws, String(ev.data));
+      ws.onmessage = (ev: MessageEvent) => handleMessage(ws, ev.data);
       // El cierre posterior se encarga de reconectar.
       ws.onerror = () => {};
       ws.onclose = (ev: CloseEvent) => {
@@ -315,7 +333,7 @@ export function useSyncSocket({
       }
       wsRef.current = null;
     };
-  }, [roomId, role, baseUrl]);
+  }, [roomId, role, baseUrl, requested]);
 
   const sendCommand = useCallback(
     (type: CommandType, positionMs: number, extra: CommandExtra = {}): string | null => {
@@ -324,7 +342,7 @@ export function useSyncSocket({
       const ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) return null;
       const cmd = buildCommand(type, roomId, positionMs, new Date(), extra);
-      ws.send(JSON.stringify(cmd));
+      ws.send(encodeFrame(cmd, wireRef.current));
       ownEventsRef.current = [...ownEventsRef.current.slice(-(OWN_EVENTS_MEMORY - 1)), cmd.event_id];
       return cmd.event_id;
     },
