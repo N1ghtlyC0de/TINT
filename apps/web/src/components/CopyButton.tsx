@@ -1,20 +1,34 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { toAbsoluteInviteLink } from '../lib/invite';
+
+/** Tiempo que se muestra la confirmación antes de volver a `Copiar`. */
+export const COPIED_RESET_MS = 3000;
 
 interface CopyButtonProps {
   /** Link relativo (`/invite/:code`) o absoluto. Se normaliza al copiar. */
   link: string;
   className?: string;
+  /** Ms que se muestra la confirmación (default 3000). Útil para tests. */
+  resetMs?: number;
 }
 
-/** Botón de copiar link de invitación con confirmación y estado de error. */
-export function CopyButton({ link, className }: CopyButtonProps) {
+/** Botón de copiar link de invitación con confirmación temporal y estado de error. */
+export function CopyButton({ link, className, resetMs = COPIED_RESET_MS }: CopyButtonProps) {
   const [state, setState] = useState<'idle' | 'copied' | 'error'>('idle');
+  const timerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    };
+  }, []);
 
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(toAbsoluteInviteLink(link));
       setState('copied');
+      if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+      timerRef.current = window.setTimeout(() => setState('idle'), resetMs);
     } catch {
       setState('error');
     }
