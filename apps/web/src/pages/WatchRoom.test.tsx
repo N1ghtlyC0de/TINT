@@ -11,6 +11,10 @@ vi.mock('../lib/api', async (importOriginal) => {
 
 const mockedApi = vi.mocked(apiFetch);
 
+vi.mock('../hooks/useSocialSocket', () => ({
+  useSocialSocket: () => ({ status: 'reconnecting' as const, messages: [], send: vi.fn(() => true) }),
+}));
+
 function renderWatch() {
   return render(
     <MemoryRouter initialEntries={['/watch/r1']}>
