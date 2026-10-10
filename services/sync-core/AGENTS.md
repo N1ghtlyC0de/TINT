@@ -3,6 +3,8 @@
 ## Contexto & Responsabilidad
 Eres el agente encargado del corazón de reproducción en tiempo real de **TINT**, desarrollado en **Golang**. Tu única meta es garantizar latencia ultrabaja (<100 ms) y precisión en la sincronización.
 
+> Diagramas de flujo, secuencia y datos del dominio: [`docs/dominio-reproduccion.md`](../../docs/dominio-reproduccion.md).
+
 ## Stack Técnico
 - Go 1.22 (`net/http` con patrones de ruta de Go 1.22). Dependencias externas, cada una justificada por su impacto en latencia:
   - `github.com/coder/websocket` — WebSocket con `context`, sin goroutines ocultas por conexión y con `SetReadLimit`; la librería estándar no implementa WebSocket.

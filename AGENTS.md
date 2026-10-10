@@ -10,6 +10,10 @@ Este repositorio es un monorepo multi-lenguaje. **Antes de modificar cualquier a
 | Media Worker | `services/media-worker` | [services/media-worker/AGENTS.md](services/media-worker/AGENTS.md) |
 | Analítica | `services/analytics` | [services/analytics/AGENTS.md](services/analytics/AGENTS.md) |
 
+Servicios sin guía propia: `services/identity-api` (usuarios, salas y emisión de tokens HS256 para el Canal Sync).
+
+La documentación de features, con diagramas Mermaid, vive en [`docs/`](docs) (p. ej. [Dominio de Reproducción](docs/dominio-reproduccion.md)). Actualízala cuando cambie un flujo o un contrato.
+
 ## Reglas Globales
 1. **Un cambio, un dominio:** un PR no debe tocar varios dominios salvo contratos compartidos acordados.
 2. **TDD obligatorio:** Red → Green → Refactor. Cobertura mínima **85%** por servicio; el CI (`.github/workflows/ci-pipeline.yml`) bloquea el merge si no se cumple.

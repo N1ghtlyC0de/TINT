@@ -21,7 +21,7 @@
 
 ## 🌌 Características Principales
 
-* ⏱️ **Core Sync (Golang):** Reproducción sincronizada multicanal mediante WebSockets con corrección automática de desfase (*drift*) (< 500 ms).
+* ⏱️ **Core Sync (Golang):** Reproducción sincronizada multicanal mediante WebSockets con corrección automática de desfase (*drift*) (< 500 ms). Ver [Dominio de Reproducción](docs/dominio-reproduccion.md).
 * 🌈 **Efecto Ambilight en Vivo:** Extracción de paleta de colores fotograma a fotograma proyectada como sombra ambiental difuminada.
 * 👏 **Gamificación & Heatmaps:** Reacciones expresivas con *throttling* anti-spam (máx. 5/s), histogramas de emoción en la barra de tiempo y trivias con bonificación por velocidad.
 * 📊 **Analítica Privacy-First:** Ingesta desacoplada en Redis Streams con cumplimiento estricto de la Ley 1581 (sin almacenamiento de conversaciones).
@@ -33,7 +33,8 @@
 | Servicio | Dominio | Tecnologías |
 | :--- | :--- | :--- |
 | [`apps/web`](apps/web) | UI/UX & Cliente Web | React, TypeScript, Tailwind CSS, Vitest |
-| [`services/sync-core`](services/sync-core) | Sincronización & Reloj Maestro | Golang, WebSockets, Redis Pub/Sub |
+| [`services/identity-api`](services/identity-api) | Usuarios, Salas, Invitaciones & Tokens | TypeScript, Express, PostgreSQL (Drizzle), Firebase Auth |
+| [`services/sync-core`](services/sync-core) | Sincronización & Reloj Maestro | Golang, WebSockets (`coder/websocket`), Redis Pub/Sub |
 | [`services/media-worker`](services/media-worker) | Inspección de Vídeo & Ambilight | Python 3.11, FFmpeg, ffprobe, MinIO |
 | [`services/social-core`](services/social-core) | Chat, Reacciones & Trivias | Golang, Redis Sorted Sets |
 | [`services/analytics`](services/analytics) | Telemetría & KPIs Diferidos | Python, Redis Streams (`XREADGROUP`), SQL |
@@ -44,10 +45,12 @@ tint-monorepo/
 ├── apps/
 │   └── web/                # Frontend (React + TS + Tailwind)
 ├── services/
+│   ├── identity-api/       # Usuarios, salas y tokens HS256 (TypeScript)
 │   ├── sync-core/          # Sincronización y hosts (Go)
 │   ├── social-core/        # Gamificación e inmersión (Go)
 │   ├── media-worker/       # Worker de media (Python + FFmpeg)
 │   └── analytics/          # Analítica & insights (Python + SQL)
+├── docs/                   # Documentación de features (diagramas Mermaid)
 ├── scripts/                # Utilidades de CI (gate de cobertura Go)
 ├── docker-compose.yml      # Entorno local (PostgreSQL, Redis, MinIO)
 ├── Makefile
@@ -55,6 +58,8 @@ tint-monorepo/
 ```
 
 > [!TIP]
+> La documentación técnica de cada feature, con diagramas de flujo y secuencia, vive en [`docs/`](docs). Empieza por [Dominio de Reproducción](docs/dominio-reproduccion.md).
+>
 > Cada dominio incluye un `AGENTS.md` con su stack, responsabilidades, límites, modelo de datos y reglas TDD. Léelo antes de contribuir (humano o agente IA).
 
 ---
@@ -68,7 +73,7 @@ tint-monorepo/
 git clone https://github.com/HanamDavid/tint-monorepo.git
 cd tint-monorepo
 
-# 2. Levantar la infraestructura base (PostgreSQL, Redis, MinIO)
+# 2. Levantar la infraestructura base (PostgreSQL, Redis, MinIO) y sync-core
 cp .env.example .env
 docker compose up -d
 
@@ -81,6 +86,12 @@ make test-all
 | PostgreSQL | `localhost:5432` |
 | Redis | `localhost:6379` |
 | MinIO API / Consola | `localhost:9000` / [`localhost:9001`](http://localhost:9001) |
+| sync-core (Canal Sync) | `ws://localhost:8082/ws/sync` · `http://localhost:8082/healthz` |
+| identity-api (`npm run dev`) | `http://localhost:8081/api/v1` |
+| web (`npm run dev`) | `http://localhost:5173` |
+
+> [!NOTE]
+> `JWT_SECRET` (en `.env`) debe ser el mismo para identity-api y sync-core: identity-api firma los tokens del Canal Sync y sync-core los verifica.
 
 ---
 
