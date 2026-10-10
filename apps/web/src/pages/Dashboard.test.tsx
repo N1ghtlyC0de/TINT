@@ -103,4 +103,27 @@ describe('Dashboard', () => {
     expect(mockedApi).toHaveBeenCalledTimes(1);
     expect(screen.getByText('Sala 1')).toBeInTheDocument();
   });
+
+  it('muestra el link de invitación con copiar cuando la sala lo trae', async () => {
+    const user = (await import('@testing-library/user-event')).default;
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    mockedApi.mockResolvedValueOnce({
+      rooms: [{ id: '1', title: 'Sala 1', invitation: { code: 'abc123', link: '/invite/abc123' } }],
+    });
+    renderDashboard();
+    await waitFor(() => expect(screen.getByText('Sala 1')).toBeInTheDocument());
+    expect(
+      screen.getByText(`${window.location.origin}/invite/abc123`),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /copiar/i }));
+    expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/invite/abc123`);
+  });
+
+  it('no muestra link si la sala no trae invitación vigente', async () => {
+    mockedApi.mockResolvedValueOnce({ rooms: [{ id: '1', title: 'Sala 1', invitation: null }] });
+    renderDashboard();
+    await waitFor(() => expect(screen.getByText('Sala 1')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: /copiar/i })).not.toBeInTheDocument();
+  });
 });

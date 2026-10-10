@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../lib/api';
+import { toAbsoluteInviteLink } from '../lib/invite';
 import { Link, useNavigate } from 'react-router-dom';
 import { AppShell } from '../components/layout/AppShell';
+import { CopyButton } from '../components/CopyButton';
 import { Card, EmptyState, ErrorAlert, Skeleton } from '../components/ui/Primitives';
 
-type Room = { id: string; title: string };
+type RoomInvitation = { code: string; link: string; expiresAt: string };
+type Room = { id: string; title: string; invitation?: RoomInvitation | null };
 
 export default function Dashboard() {
   const [rooms, setRooms] = useState<Room[]>([]);
@@ -145,6 +148,17 @@ export default function Dashboard() {
                       Eliminar
                     </button>
                   </div>
+                  {room.invitation && (
+                    <div className="flex items-center gap-2 border-t border-white/5 px-4 py-2">
+                      <span
+                        className="min-w-0 flex-1 truncate text-[12px] text-tint-muted"
+                        title={toAbsoluteInviteLink(room.invitation.link)}
+                      >
+                        {toAbsoluteInviteLink(room.invitation.link)}
+                      </span>
+                      <CopyButton link={room.invitation.link} />
+                    </div>
+                  )}
                 </Card>
               </li>
             ))}
