@@ -1,8 +1,11 @@
 import { useParams } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import { ReactionBar } from '../components/ReactionBar';
+import { CopyButton } from '../components/CopyButton';
 import { BackLink } from '../components/ui/BackLink';
 import { Card } from '../components/ui/Primitives';
+import { apiFetch } from '../lib/api';
+import { toAbsoluteInviteLink, pickLatestActiveInvitation } from '../lib/invite';
 import { useSocialSocket } from '../hooks/useSocialSocket';
 
 export default function WatchRoom() {
@@ -12,6 +15,8 @@ export default function WatchRoom() {
   const guestToken = localStorage.getItem('tint_guest_token');
   const isGuest = !!guestToken;
   const [chat, setChat] = useState('');
+  const [roomTitle, setRoomTitle] = useState<string | null>(null);
+  const [inviteLink, setInviteLink] = useState<string | null>(null);
 
   const sendChat = (e: React.FormEvent) => {
     e.preventDefault();
@@ -19,6 +24,39 @@ export default function WatchRoom() {
     if (!text) return;
     if (send(text)) setChat('');
   };
+
+  // Título y link de invitación: el host los pide al backend; el invitado
+  // usa los guardados al canjear (su token no tiene auth de host).
+  useEffect(() => {
+    if (!roomId) return;
+    if (isGuest) {
+      setRoomTitle(localStorage.getItem('tint_room_title'));
+      setInviteLink(localStorage.getItem('tint_invite_link'));
+      return;
+    }
+    let cancelled = false;
+    Promise.all([apiFetch(`/rooms/${roomId}`), apiFetch(`/rooms/${roomId}/invitations`)])
+      .then(([roomRes, invRes]) => {
+        if (cancelled) return;
+        setRoomTitle(roomRes.room?.title ?? null);
+        const list = (invRes.invitations ?? []) as { code: string; link?: string; expiresAt: string; createdAt?: string; revoked?: boolean }[];
+        const latest = pickLatestActiveInvitation(
+          list.filter((inv) => inv.link).map((inv) => ({ code: inv.code, link: inv.link as string, expiresAt: inv.expiresAt, createdAt: inv.createdAt, revoked: inv.revoked })),
+        );
+        setInviteLink(latest?.link ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setRoomTitle(null);
+          setInviteLink(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [roomId, isGuest]);
+
+  const heading = roomTitle?.trim() ? roomTitle : `Sala ${roomId}`;
 
   const chatStatus =
     status === 'open' ? 'Chat conectado' : status === 'closed' ? 'Chat desconectado' : 'Chat reconectando…';
@@ -44,12 +82,20 @@ export default function WatchRoom() {
         <div className="mx-auto flex h-16 max-w-[1400px] items-center justify-between gap-4 px-4">
           <div className="flex min-w-0 items-center gap-3">
             <BackLink />
-            <h1 className="truncate text-[15px] font-semibold tracking-tight text-white">
-              Sala {roomId}
+            <h1 className="truncate text-[15px] font-semibold tracking-tight text-white" title={heading}>
+              {heading}
             </h1>
             <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[12px] text-tint-muted">
               Rol: {isGuest ? 'participante (invitado)' : 'host (registrado)'}
             </span>
+            {inviteLink && (
+              <span className="hidden min-w-0 items-center gap-2 rounded-full border border-white/10 bg-white/5 py-1 pl-3 pr-1 text-[12px] sm:inline-flex">
+                <span className="max-w-[180px] truncate text-tint-muted" title={toAbsoluteInviteLink(inviteLink)}>
+                  {toAbsoluteInviteLink(inviteLink)}
+                </span>
+                <CopyButton link={inviteLink} />
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2" aria-label="Estado de sincronía">
             <span aria-hidden="true" className="h-2 w-2 rounded-full bg-tint-success" />

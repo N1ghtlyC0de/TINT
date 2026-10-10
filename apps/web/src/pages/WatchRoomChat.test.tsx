@@ -1,8 +1,13 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
-import { vi } from 'vitest';
+import { vi, beforeEach } from 'vitest';
 import WatchRoom from './WatchRoom';
+
+vi.mock('../lib/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/api')>();
+  return { ...actual, apiFetch: vi.fn().mockRejectedValue(new Error('offline')) };
+});
 
 const sendMock = vi.fn(() => true);
 
@@ -36,6 +41,11 @@ function renderWatch() {
 }
 
 describe('WatchRoom chat en vivo', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+  });
+
   it('muestra el historial del socket y envía por el canal social', async () => {
     renderWatch();
     expect(await screen.findByText('Hola grupo')).toBeInTheDocument();

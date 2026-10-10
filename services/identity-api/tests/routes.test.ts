@@ -22,11 +22,12 @@ vi.mock('../src/modules/invitations/invitations.repo.js', () => ({
   findByCode: vi.fn(),
   setRevoked: vi.fn(),
   listByRoom: vi.fn(),
+  listLatestActiveByRooms: vi.fn(),
 }));
 
 import app from '../src/app.js';
 import { create as createRoom, listByHost, findById, isOwner, softRemoveById, updateTitle } from '../src/modules/rooms/rooms.repo.js';
-import { create as createInvitation, findByCode, setRevoked, listByRoom } from '../src/modules/invitations/invitations.repo.js';
+import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../src/modules/invitations/invitations.repo.js';
 
 const room = { id: 'room-1', hostId: 'host-1', title: 'Noche de cine', status: 'active' };
 const deletedRoom = { ...room, status: 'deleted' };
@@ -74,10 +75,26 @@ describe('rutas v1', () => {
 
   it('GET /rooms lista las salas del host', async () => {
     vi.mocked(listByHost).mockResolvedValueOnce([room] as any);
+    vi.mocked(listLatestActiveByRooms).mockResolvedValueOnce(new Map());
     const res = await request(app).get('/api/v1/rooms');
     expect(res.status).toBe(200);
     expect(res.body.rooms).toHaveLength(1);
     expect(listByHost).toHaveBeenCalledWith('host-1');
+  });
+
+  it('GET /rooms incluye la invitacion vigente de cada sala (null si no hay)', async () => {
+    vi.mocked(listByHost).mockResolvedValueOnce([room, { ...room, id: 'room-2' }] as any);
+    vi.mocked(listLatestActiveByRooms).mockResolvedValueOnce(
+      new Map([['room-1', invitation as any]]),
+    );
+    const res = await request(app).get('/api/v1/rooms');
+    expect(res.status).toBe(200);
+    expect(listLatestActiveByRooms).toHaveBeenCalledWith(['room-1', 'room-2']);
+    expect(res.body.rooms[0].invitation).toMatchObject({
+      code: 'abc123def456',
+      link: '/invite/abc123def456',
+    });
+    expect(res.body.rooms[1].invitation).toBeNull();
   });
 
   it('POST /rooms/:id/invitations 403 si no es dueño', async () => {
@@ -287,5 +304,13 @@ describe('rutas v1', () => {
     vi.mocked(findById).mockResolvedValueOnce(deletedRoom as any);
     const res = await request(app).post('/api/v1/invitations/claim').send({ code: 'abc', nick: 'Ana' });
     expect(res.status).toBe(410);
+  });
+
+  it('POST /invitations/claim devuelve el titulo de la sala para el invitado', async () => {
+    vi.mocked(findByCode).mockResolvedValueOnce({ ...invitation } as any);
+    vi.mocked(findById).mockResolvedValueOnce(room as any);
+    const res = await request(app).post('/api/v1/invitations/claim').send({ code: 'abc', nick: 'Ana' });
+    expect(res.status).toBe(200);
+    expect(res.body.roomTitle).toBe('Noche de cine');
   });
 });

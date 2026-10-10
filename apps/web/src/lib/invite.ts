@@ -27,6 +27,44 @@ export function inviteClaimErrorMessage(err: unknown): string {
 }
 
 /**
+ * Invitación tal como la devuelve el backend (campos extra tolerados).
+ */
+export interface RoomInvitationLike {
+  code: string;
+  link: string;
+  expiresAt: string;
+  createdAt?: string;
+  revoked?: boolean;
+}
+
+/**
+ * Elige la invitación vigente más reciente de una lista.
+ * Vigente = no revocada y sin expirar; desempata por createdAt descendente
+ * (las que no traen createdAt se consideran las más viejas).
+ * Retorna null si no hay ninguna vigente.
+ */
+export function pickLatestActiveInvitation(
+  list: RoomInvitationLike[] | null | undefined,
+  now: Date = new Date(),
+): RoomInvitationLike | null {
+  if (!list || list.length === 0) return null;
+  const nowMs = now.getTime();
+  let latest: RoomInvitationLike | null = null;
+  let latestMs = -Infinity;
+  for (const inv of list) {
+    if (!inv || inv.revoked) continue;
+    if (!inv.expiresAt || Number.isNaN(Date.parse(inv.expiresAt))) continue;
+    if (Date.parse(inv.expiresAt) <= nowMs) continue;
+    const createdMs = inv.createdAt && !Number.isNaN(Date.parse(inv.createdAt)) ? Date.parse(inv.createdAt) : -Infinity;
+    if (latest === null || createdMs > latestMs) {
+      latest = inv;
+      latestMs = createdMs;
+    }
+  }
+  return latest;
+}
+
+/**
  * Extrae el código de invitación de un link absoluto, una ruta
  * relativa o el código pelado. Retorna null si no es válido.
  */

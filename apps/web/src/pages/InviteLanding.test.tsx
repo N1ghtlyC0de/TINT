@@ -49,6 +49,21 @@ describe('InviteLanding', () => {
     expect(localStorage.getItem('tint_guest_token')).toBe('guest-tok');
   });
 
+  it('guarda el titulo de la sala y el link para mostrarlos al invitado', async () => {
+    mockedApi.mockResolvedValueOnce({
+      token: 'guest-tok',
+      roomId: 'r1',
+      nick: 'Ana',
+      roomTitle: 'Noche de cine',
+    });
+    renderInvite();
+    await userEvent.type(screen.getByPlaceholderText('Nick'), 'Ana');
+    await userEvent.click(screen.getByText('Unirse'));
+    await waitFor(() => expect(screen.getByText('Sala lista')).toBeInTheDocument());
+    expect(localStorage.getItem('tint_room_title')).toBe('Noche de cine');
+    expect(localStorage.getItem('tint_invite_link')).toBe('/invite/ABC123');
+  });
+
   it('muestra el error si el código expiró o es inválido', async () => {
     mockedApi.mockRejectedValueOnce(new Error('Expired'));
     renderInvite();

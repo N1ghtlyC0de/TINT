@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { toAbsoluteInviteLink, inviteClaimErrorMessage, parseInviteCode } from './invite';
+import {
+  toAbsoluteInviteLink,
+  inviteClaimErrorMessage,
+  parseInviteCode,
+  pickLatestActiveInvitation,
+} from './invite';
 import { ApiError } from './api';
 
 describe('toAbsoluteInviteLink', () => {
@@ -63,5 +68,38 @@ describe('parseInviteCode', () => {
     expect(parseInviteCode('   ')).toBeNull();
     expect(parseInviteCode('http://localhost:5173/dashboard')).toBeNull();
     expect(parseInviteCode('x')).toBeNull();
+  });
+});
+
+describe('pickLatestActiveInvitation', () => {
+  const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  const past = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+  it('elige la vigente más reciente entre varias', () => {
+    const list = [
+      { code: 'vieja11', link: '/invite/vieja11', expiresAt: future, createdAt: '2026-10-09T12:00:00.000Z' },
+      { code: 'nueva22', link: '/invite/nueva22', expiresAt: future, createdAt: '2026-10-10T12:00:00.000Z' },
+    ];
+    expect(pickLatestActiveInvitation(list)?.code).toBe('nueva22');
+  });
+
+  it('ignora revocadas y expiradas', () => {
+    const list = [
+      { code: 'revocada', link: '/invite/revocada', expiresAt: future, createdAt: '2026-10-10T13:00:00.000Z', revoked: true },
+      { code: 'expirada', link: '/invite/expirada', expiresAt: past, createdAt: '2026-10-10T14:00:00.000Z' },
+      { code: 'vigente', link: '/invite/vigente', expiresAt: future, createdAt: '2026-10-10T11:00:00.000Z' },
+    ];
+    expect(pickLatestActiveInvitation(list)?.code).toBe('vigente');
+  });
+
+  it('retorna null si no hay vigente o la lista está vacía', () => {
+    expect(
+      pickLatestActiveInvitation([
+        { code: 'rev', link: '/invite/rev', expiresAt: future, revoked: true },
+        { code: 'exp', link: '/invite/exp', expiresAt: past },
+      ]),
+    ).toBeNull();
+    expect(pickLatestActiveInvitation([])).toBeNull();
+    expect(pickLatestActiveInvitation(null)).toBeNull();
   });
 });
