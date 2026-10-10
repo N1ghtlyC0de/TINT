@@ -1,7 +1,11 @@
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
-import { beforeEach } from 'vitest';
+import { beforeEach, vi } from 'vitest';
 import WatchRoom from './WatchRoom';
+
+vi.mock('../hooks/useSocialSocket', () => ({
+  useSocialSocket: () => ({ status: 'reconnecting' as const, messages: [], send: vi.fn(() => true) }),
+}));
 
 function renderWatch() {
   return render(
