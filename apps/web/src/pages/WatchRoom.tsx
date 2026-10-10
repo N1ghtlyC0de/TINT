@@ -5,7 +5,7 @@ import { CopyButton } from '../components/CopyButton';
 import { BackLink } from '../components/ui/BackLink';
 import { Card } from '../components/ui/Primitives';
 import { apiFetch } from '../lib/api';
-import { toAbsoluteInviteLink } from '../lib/invite';
+import { toAbsoluteInviteLink, pickLatestActiveInvitation } from '../lib/invite';
 
 export default function WatchRoom() {
   const { roomId } = useParams();
@@ -41,9 +41,11 @@ export default function WatchRoom() {
       .then(([roomRes, invRes]) => {
         if (cancelled) return;
         setRoomTitle(roomRes.room?.title ?? null);
-        const list = (invRes.invitations ?? []) as { link?: string }[];
-        const first = list.find((inv) => inv.link) ?? null;
-        setInviteLink(first?.link ?? null);
+        const list = (invRes.invitations ?? []) as { code: string; link?: string; expiresAt: string; createdAt?: string; revoked?: boolean }[];
+        const latest = pickLatestActiveInvitation(
+          list.filter((inv) => inv.link).map((inv) => ({ code: inv.code, link: inv.link as string, expiresAt: inv.expiresAt, createdAt: inv.createdAt, revoked: inv.revoked })),
+        );
+        setInviteLink(latest?.link ?? null);
       })
       .catch(() => {
         if (!cancelled) {

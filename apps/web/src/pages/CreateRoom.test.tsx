@@ -21,6 +21,7 @@ const mockedApi = vi.mocked(apiFetch);
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockedApi.mockReset();
   localStorage.clear();
   vi.unstubAllGlobals();
 });
@@ -36,10 +37,13 @@ function renderManage() {
   );
 }
 
+const FUTURE = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+const PAST = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
 function mockManageLoad() {
   mockedApi.mockResolvedValueOnce({ room: { id: 'r1', title: 'Cine' } });
   mockedApi.mockResolvedValueOnce({
-    invitations: [{ code: 'abc123', link: '/invite/abc123', expiresAt: 'mañana' }],
+    invitations: [{ code: 'abc123', link: '/invite/abc123', expiresAt: FUTURE, createdAt: new Date().toISOString() }],
   });
 }
 
@@ -122,18 +126,70 @@ describe('CreateRoom', () => {
     );
   });
 
-  it('modo gestionar: genera un nuevo link', async () => {
+  it('modo gestionar: genera un link adicional', async () => {
     mockManageLoad();
-    mockedApi.mockResolvedValueOnce({ code: 'nuevo99', link: '/invite/nuevo99', expiresAt: 'luego' });
+    mockedApi.mockResolvedValueOnce({ code: 'nuevo99', link: '/invite/nuevo99', expiresAt: FUTURE });
     renderManage();
     await screen.findByDisplayValue('Cine');
-    await userEvent.click(screen.getByText('Generar nuevo link'));
+    await userEvent.click(screen.getByText('Generar link adicional'));
     await waitFor(() =>
       expect(mockedApi).toHaveBeenCalledWith('/rooms/r1/invitations', { method: 'POST', body: '{}' }),
     );
     await waitFor(() =>
       expect(screen.getByText(`${window.location.origin}/invite/nuevo99`)).toBeInTheDocument(),
     );
+  });
+
+  it('modo gestionar: muestra el link vigente más reciente y no el primero', async () => {
+    mockedApi.mockResolvedValueOnce({ room: { id: 'r1', title: 'Cine' } });
+    mockedApi.mockResolvedValueOnce({
+      invitations: [
+        { code: 'vieja11', link: '/invite/vieja11', expiresAt: FUTURE, createdAt: '2026-10-09T12:00:00.000Z' },
+        { code: 'nueva22', link: '/invite/nueva22', expiresAt: FUTURE, createdAt: '2026-10-10T12:00:00.000Z' },
+      ],
+    });
+    renderManage();
+    await screen.findByDisplayValue('Cine');
+    expect(screen.getByText(`${window.location.origin}/invite/nueva22`)).toBeInTheDocument();
+    expect(screen.queryByText(`${window.location.origin}/invite/vieja11`)).not.toBeInTheDocument();
+  });
+
+  it('modo gestionar: sin link vigente muestra estado vacío con opción de generar', async () => {
+    mockedApi.mockResolvedValueOnce({ room: { id: 'r1', title: 'Cine' } });
+    mockedApi.mockResolvedValueOnce({
+      invitations: [
+        { code: 'revocada', link: '/invite/revocada', expiresAt: FUTURE, revoked: true },
+        { code: 'expirada', link: '/invite/expirada', expiresAt: PAST },
+      ],
+    });
+    renderManage();
+    await screen.findByDisplayValue('Cine');
+    expect(screen.getByText(/sin link vigente/i)).toBeInTheDocument();
+    expect(screen.getByText('Generar link adicional')).toBeInTheDocument();
+  });
+
+  it('modo gestionar: revoca el link actual y avisa que los de adentro no salen', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
+    mockManageLoad();
+    mockedApi.mockResolvedValueOnce({ success: true });
+    mockedApi.mockResolvedValueOnce({ invitations: [] });
+    renderManage();
+    await screen.findByDisplayValue('Cine');
+    await userEvent.click(screen.getByRole('button', { name: /revocar link/i }));
+    await waitFor(() =>
+      expect(mockedApi).toHaveBeenCalledWith('/invitations/abc123/revoke', { method: 'POST' }),
+    );
+    await waitFor(() => expect(screen.getByText(/link revocado/i)).toBeInTheDocument());
+    expect(screen.getByText(/sin link vigente/i)).toBeInTheDocument();
+  });
+
+  it('modo gestionar: entra a la sala en vez de ver la invitación', async () => {
+    mockManageLoad();
+    renderManage();
+    await screen.findByDisplayValue('Cine');
+    const entrar = screen.getByRole('link', { name: /entrar a la sala/i });
+    expect(entrar).toHaveAttribute('href', '/watch/r1');
+    expect(screen.queryByRole('link', { name: /ver invitación/i })).not.toBeInTheDocument();
   });
 
   it('modo gestionar: elimina y vuelve al dashboard', async () => {

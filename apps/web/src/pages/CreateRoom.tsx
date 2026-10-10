@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../lib/api';
-import { toAbsoluteInviteLink } from '../lib/invite';
+import { toAbsoluteInviteLink, pickLatestActiveInvitation } from '../lib/invite';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { AppShell } from '../components/layout/AppShell';
 import { Button } from '../components/ui/Button';
 import { BackLink } from '../components/ui/BackLink';
 import { Field, ErrorAlert, Card } from '../components/ui/Primitives';
 
-type Invitation = { code: string; link: string; expiresAt: string };
+type Invitation = { code: string; link: string; expiresAt: string; createdAt?: string; revoked?: boolean };
 
 export default function CreateRoom() {
   const { id: roomId } = useParams();
@@ -21,6 +21,7 @@ export default function CreateRoom() {
   const [pageLoading, setPageLoading] = useState(isManage);
   const [gone, setGone] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [notice, setNotice] = useState('');
 
   useEffect(() => {
     if (!roomId) return;
@@ -30,7 +31,7 @@ export default function CreateRoom() {
         if (cancelled) return;
         setTitle(roomRes.room?.title ?? '');
         const list = (invRes.invitations ?? []) as Invitation[];
-        setInvitation(list[0] ?? null);
+        setInvitation(pickLatestActiveInvitation(list) ?? null);
         setCopied(false);
       })
       .catch((e: unknown) => {
@@ -80,6 +81,7 @@ export default function CreateRoom() {
   const handleNewLink = async () => {
     if (!roomId) return;
     setError('');
+    setNotice('');
     setLoading(true);
     try {
       const res = await apiFetch(`/rooms/${roomId}/invitations`, { method: 'POST', body: '{}' });
@@ -87,6 +89,31 @@ export default function CreateRoom() {
       setCopied(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'No se pudo generar el link');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRevoke = async () => {
+    if (!roomId || !invitation) return;
+    if (
+      !window.confirm(
+        '¿Revocar este link? Quienes ya están en la sala no salen, pero nadie nuevo podrá entrar con él.',
+      )
+    )
+      return;
+    setError('');
+    setNotice('');
+    setLoading(true);
+    try {
+      await apiFetch(`/invitations/${invitation.code}/revoke`, { method: 'POST' });
+      const invRes = await apiFetch(`/rooms/${roomId}/invitations`);
+      const list = (invRes.invitations ?? []) as Invitation[];
+      setInvitation(pickLatestActiveInvitation(list) ?? null);
+      setCopied(false);
+      setNotice('Link revocado. Quienes ya estaban dentro siguen en la sala; nadie nuevo podrá entrar con ese link.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'No se pudo revocar el link');
     } finally {
       setLoading(false);
     }
@@ -119,7 +146,7 @@ export default function CreateRoom() {
 
   const heading = isManage ? 'Gestionar sala' : 'Crear sala';
   const intro = isManage
-    ? 'Cambia el nombre, obtén el link de nuevo o elimina la sala. Al eliminarla, los links dejan de funcionar.'
+    ? 'Cambia el nombre, genera links adicionales o elimina la sala. Al eliminarla, los links dejan de funcionar.'
     : 'Ponle un nombre claro. Al crearla obtienes un código y un link para invitar.';
 
   return (
@@ -189,18 +216,68 @@ export default function CreateRoom() {
                 <Button type="button" onClick={copyLink} variant="ghost">
                   {copied ? 'Copiado' : 'Copiar link'}
                 </Button>
-                <Link
-                  to={`/invite/${invitation.code}`}
-                  className="inline-flex items-center justify-center whitespace-nowrap rounded-full px-5 py-2.5 text-sm text-tint-muted transition hover:text-white"
-                >
-                  Ver invitación
-                </Link>
+                {!isManage && (
+                  <Link
+                    to={`/invite/${invitation.code}`}
+                    className="inline-flex items-center justify-center whitespace-nowrap rounded-full px-5 py-2.5 text-sm text-tint-muted transition hover:text-white"
+                  >
+                    Ver invitación
+                  </Link>
+                )}
                 {isManage && (
-                  <Button type="button" onClick={handleNewLink} variant="quiet" disabled={loading}>
-                    {loading ? 'Generando…' : 'Generar nuevo link'}
-                  </Button>
+                  <>
+                    <Link
+                      to={`/watch/${roomId}`}
+                      className="inline-flex items-center justify-center whitespace-nowrap rounded-full bg-tint-accent px-5 py-2.5 text-sm font-semibold text-tint-bg transition hover:bg-tint-accentHover active:scale-[0.98]"
+                    >
+                      Entrar a la sala
+                    </Link>
+                    <Button type="button" onClick={handleNewLink} variant="quiet" disabled={loading}>
+                      {loading ? 'Generando…' : 'Generar link adicional'}
+                    </Button>
+                    <Button
+                      type="button"
+                      onClick={handleRevoke}
+                      variant="quiet"
+                      disabled={loading}
+                      aria-label="Revocar link de invitación"
+                    >
+                      {loading ? 'Revocando…' : 'Revocar link'}
+                    </Button>
+                  </>
                 )}
               </div>
+              {isManage && (
+                <p className="mt-3 text-[13px] leading-relaxed text-tint-muted/80">
+                  Los links anteriores siguen funcionando hasta expirar o ser revocados. Revocar solo
+                  impide nuevas entradas; quienes ya están dentro no salen.
+                </p>
+              )}
+              {notice && (
+                <p role="status" className="mt-3 text-sm text-tint-success">
+                  {notice}
+                </p>
+              )}
+            </Card>
+          )}
+
+          {isManage && !invitation && !pageLoading && !gone && (
+            <Card className="mt-4 max-w-xl border-tint-accent/30 p-6">
+              <h2 className="text-lg font-semibold tracking-tight text-white">Sin link vigente</h2>
+              <p className="mt-1 text-sm leading-relaxed">
+                Esta sala no tiene links vigentes (expiraron o fueron revocados). Genera uno nuevo para invitar.
+              </p>
+              {notice && (
+                <p role="status" className="mt-3 text-sm text-tint-success">
+                  {notice}
+                </p>
+              )}
+              <div className="mt-5">
+                <Button type="button" onClick={handleNewLink} disabled={loading}>
+                  {loading ? 'Generando…' : 'Generar link adicional'}
+                </Button>
+              </div>
+              {error && <ErrorAlert message={`Error: ${error}`} />}
             </Card>
           )}
 

@@ -51,13 +51,35 @@ describe('WatchRoom', () => {
   it('el host ve el titulo real de la sala y el link con copiar', async () => {
     mockedApi.mockImplementation((path: string) => {
       if (path === '/rooms/r1') return Promise.resolve({ room: { id: 'r1', title: 'Noche de cine' } });
-      return Promise.resolve({ invitations: [{ code: 'abc123', link: '/invite/abc123' }] });
+      return Promise.resolve({
+        invitations: [
+          { code: 'abc123', link: '/invite/abc123', expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString() },
+        ],
+      });
     });
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.assign(navigator, { clipboard: { writeText } });
     renderWatch();
     expect(await screen.findByText('Noche de cine')).toBeInTheDocument();
     expect(screen.getByText(`${window.location.origin}/invite/abc123`)).toBeInTheDocument();
+  });
+
+  it('el host ve el link vigente más reciente aunque haya varios', async () => {
+    const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    mockedApi.mockImplementation((path: string) => {
+      if (path === '/rooms/r1') return Promise.resolve({ room: { id: 'r1', title: 'Noche de cine' } });
+      return Promise.resolve({
+        invitations: [
+          { code: 'vieja11', link: '/invite/vieja11', expiresAt: future, createdAt: '2026-10-09T12:00:00.000Z' },
+          { code: 'nueva22', link: '/invite/nueva22', expiresAt: future, createdAt: '2026-10-10T12:00:00.000Z' },
+          { code: 'revocada', link: '/invite/revocada', expiresAt: future, createdAt: '2026-10-10T13:00:00.000Z', revoked: true },
+        ],
+      });
+    });
+    renderWatch();
+    expect(await screen.findByText('Noche de cine')).toBeInTheDocument();
+    expect(screen.getByText(`${window.location.origin}/invite/nueva22`)).toBeInTheDocument();
+    expect(screen.queryByText(`${window.location.origin}/invite/vieja11`)).not.toBeInTheDocument();
   });
 
   it('el invitado ve el titulo y el link guardados al canjear', () => {
