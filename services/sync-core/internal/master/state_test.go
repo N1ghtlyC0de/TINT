@@ -1,0 +1,130 @@
+package master
+
+import (
+	"errors"
+	"testing"
+
+	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/syncevent"
+)
+
+const t0 = int64(1_791_655_200_000) // instante fijo del reloj del servidor (unix ms)
+
+func TestInitial(t *testing.T) {
+	s := Initial("host-1", t0)
+	if s.Status != Paused || s.PositionMs != 0 || s.UpdatedAtMs != t0 || s.Rate != 1 || s.Version != 0 || s.HostID != "host-1" {
+		t.Fatalf("estado inicial inesperado: %+v", s)
+	}
+}
+
+func TestPositionAt(t *testing.T) {
+	tests := []struct {
+		name  string
+		state State
+		now   int64
+		want  int64
+	}{
+		{"paused ignora el tiempo", State{Status: Paused, PositionMs: 5000, UpdatedAtMs: t0, Rate: 1}, t0 + 10_000, 5000},
+		{"playing avanza con el reloj", State{Status: Playing, PositionMs: 5000, UpdatedAtMs: t0, Rate: 1}, t0 + 2_500, 7500},
+		{"playing en el mismo instante del ancla", State{Status: Playing, PositionMs: 5000, UpdatedAtMs: t0, Rate: 1}, t0, 5000},
+		{"rate 1.5", State{Status: Playing, PositionMs: 0, UpdatedAtMs: t0, Rate: 1.5}, t0 + 2_000, 3000},
+		{"rate cero se trata como 1", State{Status: Playing, PositionMs: 0, UpdatedAtMs: t0}, t0 + 1_000, 1000},
+		{"instante previo al ancla retrocede", State{Status: Playing, PositionMs: 5000, UpdatedAtMs: t0, Rate: 1}, t0 - 1_000, 4000},
+		{"nunca negativo", State{Status: Playing, PositionMs: 100, UpdatedAtMs: t0, Rate: 1}, t0 - 1_000, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.state.PositionAt(tt.now); got != tt.want {
+				t.Errorf("PositionAt = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApply(t *testing.T) {
+	paused := State{Status: Paused, PositionMs: 1000, UpdatedAtMs: t0, Rate: 1, Version: 7, HostID: "host-1"}
+	playing := State{Status: Playing, PositionMs: 1000, UpdatedAtMs: t0, Rate: 1, Version: 7, HostID: "host-1"}
+	recv := t0 + 3_000
+
+	tests := []struct {
+		name    string
+		from    State
+		cmd     Command
+		rtt     int64
+		want    State
+		wantErr error
+	}{
+		{
+			name: "play fija el ancla compensando medio RTT",
+			from: paused, cmd: Command{Type: syncevent.Play, PositionMs: 1000}, rtt: 80,
+			want: State{Status: Playing, PositionMs: 1000, UpdatedAtMs: recv - 40, Rate: 1, Version: 8, HostID: "host-1"},
+		},
+		{
+			name: "pause congela el fotograma del host",
+			from: playing, cmd: Command{Type: syncevent.Pause, PositionMs: 4000}, rtt: 80,
+			want: State{Status: Paused, PositionMs: 4000, UpdatedAtMs: recv - 40, Rate: 1, Version: 8, HostID: "host-1"},
+		},
+		{
+			name: "seek mientras reproduce conserva playing",
+			from: playing, cmd: Command{Type: syncevent.Seek, PositionMs: 60_000}, rtt: 0,
+			want: State{Status: Playing, PositionMs: 60_000, UpdatedAtMs: recv, Rate: 1, Version: 8, HostID: "host-1"},
+		},
+		{
+			name: "seek en pausa conserva paused",
+			from: paused, cmd: Command{Type: syncevent.Seek, PositionMs: 30_000}, rtt: 0,
+			want: State{Status: Paused, PositionMs: 30_000, UpdatedAtMs: recv, Rate: 1, Version: 8, HostID: "host-1"},
+		},
+		{
+			name: "rtt negativo se ignora",
+			from: paused, cmd: Command{Type: syncevent.Play, PositionMs: 1000}, rtt: -50,
+			want: State{Status: Playing, PositionMs: 1000, UpdatedAtMs: recv, Rate: 1, Version: 8, HostID: "host-1"},
+		},
+		{
+			name: "rate cero se normaliza a 1",
+			from: State{Status: Paused, Version: 1}, cmd: Command{Type: syncevent.Play, PositionMs: 0}, rtt: 0,
+			want: State{Status: Playing, PositionMs: 0, UpdatedAtMs: recv, Rate: 1, Version: 2},
+		},
+		{
+			name: "posicion negativa rechazada",
+			from: paused, cmd: Command{Type: syncevent.Seek, PositionMs: -1},
+			want: paused, wantErr: syncevent.ErrNegativePosition,
+		},
+		{
+			name: "heartbeat no es un comando",
+			from: paused, cmd: Command{Type: syncevent.Heartbeat},
+			want: paused, wantErr: ErrNotCommand,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.from.Apply(tt.cmd, recv, tt.rtt)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("Apply =\n %+v\nwant\n %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestApplyVersionIsMonotonic(t *testing.T) {
+	s := Initial("host-1", t0)
+	cmds := []Command{
+		{Type: syncevent.Play, PositionMs: 0},
+		{Type: syncevent.Seek, PositionMs: 10_000},
+		{Type: syncevent.Pause, PositionMs: 12_000},
+	}
+	for i, c := range cmds {
+		var err error
+		s, err = s.Apply(c, t0+int64(i)*1000, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if s.Version != int64(i+1) {
+			t.Fatalf("version tras %d comandos = %d", i+1, s.Version)
+		}
+	}
+	if s.PositionAt(t0+99_000) != 12_000 {
+		t.Errorf("tras PAUSE la posición debe quedar fija en 12000, got %d", s.PositionAt(t0+99_000))
+	}
+}
