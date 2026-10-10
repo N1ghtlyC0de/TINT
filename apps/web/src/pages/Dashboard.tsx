@@ -83,7 +83,7 @@ export default function Dashboard() {
         {loading && (
           <div className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3" aria-hidden="true">
             {[0, 1, 2].map((i) => (
-              <Skeleton key={i} className="h-44" />
+              <Skeleton key={i} className="h-72" />
             ))}
           </div>
         )}
@@ -108,14 +108,14 @@ export default function Dashboard() {
         {!loading && rooms.length > 0 && (
           <ul className="mt-8 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
             {rooms.map((room) => (
-              <li key={room.id}>
-                <Card className="group overflow-hidden">
-                  <div className="relative h-32 overflow-hidden">
+              <li key={room.id} className="min-h-0">
+                <Card className="group flex h-full flex-col overflow-hidden">
+                  <div className="relative h-32 shrink-0 overflow-hidden">
                     <img
                       src={`https://picsum.photos/seed/tint-${room.id}/640/360`}
                       alt=""
                       loading="lazy"
-                      className="h-full w-full object-cover opacity-60 transition group-hover:opacity-75"
+                      className="h-full w-full object-cover opacity-60 transition duration-300 group-hover:opacity-75"
                     />
                     <div className="absolute inset-0 bg-gradient-to-t from-tint-card via-transparent to-transparent" />
                   </div>
@@ -126,10 +126,33 @@ export default function Dashboard() {
                     <Link
                       to={`/watch/${room.id}`}
                       aria-label={`Abrir ${room.title}`}
-                      className="shrink-0 rounded-full border border-white/15 bg-white/5 px-4 py-1.5 text-[13px] font-medium text-white transition hover:bg-tint-accent hover:text-tint-bg active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tint-accent"
+                      className="shrink-0 rounded-full bg-tint-accent px-4 py-1.5 text-[13px] font-semibold text-tint-bg transition hover:bg-tint-accentHover active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tint-accent"
                     >
                       Abrir
                     </Link>
+                  </div>
+                  <div className="mt-auto border-t border-white/5 px-4 py-2">
+                    {room.invitation ? (
+                      <div className="flex items-center gap-2">
+                        <span
+                          className="min-w-0 flex-1 truncate text-[12px] text-tint-muted"
+                          title={toAbsoluteInviteLink(room.invitation.link)}
+                        >
+                          {toAbsoluteInviteLink(room.invitation.link)}
+                        </span>
+                        <CopyButton link={room.invitation.link} />
+                      </div>
+                    ) : (
+                      <p className="truncate text-[12px] text-tint-muted/70">
+                        Sin link vigente.{' '}
+                        <Link
+                          to={`/rooms/${room.id}`}
+                          className="underline underline-offset-2 hover:text-white"
+                        >
+                          Generar en Gestionar
+                        </Link>
+                      </p>
+                    )}
                   </div>
                   <div className="flex items-center gap-1 border-t border-white/5 px-4 py-2">
                     <Link
@@ -148,17 +171,6 @@ export default function Dashboard() {
                       Eliminar
                     </button>
                   </div>
-                  {room.invitation && (
-                    <div className="flex items-center gap-2 border-t border-white/5 px-4 py-2">
-                      <span
-                        className="min-w-0 flex-1 truncate text-[12px] text-tint-muted"
-                        title={toAbsoluteInviteLink(room.invitation.link)}
-                      >
-                        {toAbsoluteInviteLink(room.invitation.link)}
-                      </span>
-                      <CopyButton link={room.invitation.link} />
-                    </div>
-                  )}
                 </Card>
               </li>
             ))}
