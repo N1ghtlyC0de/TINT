@@ -1,1 +1,4 @@
 # Dependencias de runtime (FFmpeg/ffprobe se instalan en la imagen Docker).
+boto3==1.35.99
+psycopg[binary]==3.2.13
+redis==5.2.1
