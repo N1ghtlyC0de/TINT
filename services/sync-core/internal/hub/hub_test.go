@@ -14,6 +14,7 @@ import (
 
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/auth"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/bus"
+	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/master"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/store"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/syncevent"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/telemetry"
@@ -509,5 +510,77 @@ func TestRedisDown(t *testing.T) {
 	expectSilence(t, hc) // sin estado no se puede calcular drift: se ignora
 	if _, err := h.Connect(context.Background(), guest); err == nil {
 		t.Error("Connect con Redis caído debe fallar")
+	}
+}
+
+// countingStore cuenta las lecturas del estado para verificar la caché.
+type countingStore struct {
+	StateStore
+	loads atomic.Int64
+}
+
+func (c *countingStore) Load(ctx context.Context, roomID string) (master.State, error) {
+	c.loads.Add(1)
+	return c.StateStore.Load(ctx, roomID)
+}
+
+func (e *env) newCountingHub(t *testing.T) (*Hub, *countingStore) {
+	t.Helper()
+	h := e.newHub(t)
+	cs := &countingStore{StateStore: h.store}
+	h.store = cs
+	return h, cs
+}
+
+// Con 500 clientes por sala, cada SYNC_CHECK no puede ir a Redis: el hub
+// mantiene el estado en caché, actualizado por los broadcasts del bus.
+func TestSyncCheckUsesCachedState(t *testing.T) {
+	e := newEnv(t)
+	h, cs := e.newCountingHub(t)
+	hc := connect(t, h, host)
+	next(t, hc)
+	g := connect(t, h, guest)
+	next(t, g)
+
+	send(t, h, hc, cmd("e-play", syncevent.Play, 0))
+	nextOf(t, g, syncevent.Play)
+
+	e.clock.advance(2 * time.Second)
+	for i := 0; i < 10; i++ {
+		send(t, h, g, cmd("c", syncevent.SyncCheck, 2_000))
+	}
+	expectSilence(t, g) // alineado con el PLAY recibido por el bus
+	if n := cs.loads.Load(); n != 0 {
+		t.Errorf("SYNC_CHECK leyó Redis %d veces; debe usar la caché", n)
+	}
+
+	// Tras CacheTTL se refresca una vez desde Redis (red de seguridad).
+	e.clock.advance(CacheTTL)
+	send(t, h, g, cmd("c", syncevent.SyncCheck, 2_000+CacheTTL.Milliseconds()))
+	send(t, h, g, cmd("c", syncevent.SyncCheck, 2_000+CacheTTL.Milliseconds()))
+	if n := cs.loads.Load(); n != 1 {
+		t.Errorf("lecturas tras expirar la caché = %d, want 1", n)
+	}
+}
+
+func TestCacheIgnoresStaleBroadcast(t *testing.T) {
+	e := newEnv(t)
+	h, _ := e.newCountingHub(t)
+	hc := connect(t, h, host)
+	next(t, hc)
+	send(t, h, hc, cmd("e1", syncevent.Seek, 5_000))
+	send(t, h, hc, cmd("e2", syncevent.Seek, 9_000))
+	collect(t, hc, syncevent.Ack, syncevent.Seek)
+	nextOf(t, hc, syncevent.Seek)
+
+	// Un broadcast viejo (version 1) llega tarde: no debe pisar la version 2.
+	old := stateEvent(syncevent.Seek, room, master.State{Status: master.Paused, PositionMs: 5_000, Rate: 1, Version: 1}, e.clock.now())
+	h.Deliver(room, mustJSON(old))
+	if st, ok := h.cached(room); !ok || st.Version != 2 || st.PositionMs != 9_000 {
+		t.Errorf("caché = %+v (ok=%v)", st, ok)
+	}
+	h.Deliver(room, []byte("no-json")) // payload corrupto: se ignora
+	if st, _ := h.cached(room); st.Version != 2 {
+		t.Errorf("payload corrupto alteró la caché: %+v", st)
 	}
 }

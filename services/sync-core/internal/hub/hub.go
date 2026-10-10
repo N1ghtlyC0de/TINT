@@ -41,6 +41,10 @@ const (
 	MaxMissedChecks = 3
 	// MaxMsgsPerSecond limita los mensajes entrantes por conexión.
 	MaxMsgsPerSecond = 20
+	// CacheTTL: cada cuánto se relee el estado de Redis aunque la caché
+	// local (alimentada por el bus) esté al día. Red de seguridad por si se
+	// perdiera un mensaje Pub/Sub durante una reconexión.
+	CacheTTL = 5 * time.Second
 
 	ioTimeout = 2 * time.Second
 )
@@ -80,12 +84,22 @@ type Hub struct {
 	// mu protege rooms. Se mantiene durante Subscribe/Unsubscribe para que
 	// un join y un leave concurrentes de la misma sala no se desordenen.
 	mu    sync.Mutex
-	rooms map[string]map[*Client]struct{}
+	rooms map[string]*roomEntry
+}
+
+// roomEntry son los clientes locales de una sala y la caché de su estado.
+// Con la caché, los SYNC_CHECK (1/s por cliente) no consultan Redis: con
+// 500 clientes serían 500 HGETALL/s compitiendo con los comandos del host.
+type roomEntry struct {
+	clients    map[*Client]struct{}
+	state      master.State
+	hasState   bool
+	loadedAtMs int64
 }
 
 // New crea un Hub.
 func New(s StateStore, b Bus, t Telemetry) *Hub {
-	return &Hub{store: s, bus: b, tel: t, now: time.Now, heartbeat: HeartbeatInterval, rooms: make(map[string]map[*Client]struct{})}
+	return &Hub{store: s, bus: b, tel: t, now: time.Now, heartbeat: HeartbeatInterval, rooms: make(map[string]*roomEntry)}
 }
 
 // WithHeartbeat cambia el intervalo de HEARTBEAT (por defecto 1 s).
@@ -120,6 +134,7 @@ func (h *Hub) Connect(parent context.Context, claims auth.Claims) (*Client, erro
 		h.Disconnect(c)
 		return nil, err
 	}
+	h.cache(room, st, now.UnixMilli())
 	firstHost := false
 	if claims.CanControl() {
 		n, err := h.store.HostSeen(ctx, room, c.id, now.UnixMilli())
@@ -165,11 +180,25 @@ func (h *Hub) Disconnect(c *Client) {
 	}
 }
 
-// Deliver entrega un payload del bus a todos los clientes locales de la sala.
+// Deliver entrega un payload del bus a todos los clientes locales de la
+// sala y, si es un comando, actualiza la caché del estado maestro.
 func (h *Hub) Deliver(roomID string, payload []byte) {
+	var ev syncevent.Event
+	isCommand := json.Unmarshal(payload, &ev) == nil && ev.IsCommand()
+
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	for c := range h.rooms[roomID] {
+	r, ok := h.rooms[roomID]
+	if !ok {
+		return
+	}
+	if isCommand {
+		r.update(master.State{
+			Status: master.Status(ev.Status), PositionMs: ev.PositionMs, UpdatedAtMs: ev.UpdatedAtMs,
+			Rate: ev.Rate, Version: ev.Version,
+		}, h.now().UnixMilli())
+	}
+	for c := range r.clients {
 		c.enqueue(payload)
 	}
 }
@@ -244,9 +273,13 @@ func (h *Hub) handleSyncCheck(ctx context.Context, c *Client, ev syncevent.Event
 	if c.claims.CanControl() {
 		_, _ = h.store.HostSeen(ctx, room, c.id, nowMs) // latido de presencia
 	}
-	st, err := h.store.Load(ctx, room)
-	if err != nil {
-		return // sin estado no hay referencia; el siguiente latido reintenta
+	st, ok := h.fresh(room, nowMs)
+	if !ok {
+		loaded, err := h.store.Load(ctx, room)
+		if err != nil {
+			return // sin estado no hay referencia; el siguiente latido reintenta
+		}
+		st = h.cache(room, loaded, nowMs)
 	}
 	rtt := c.RTT()
 	_, corr := drift.Check(st, ev.PositionMs, nowMs, rtt, h.now().UnixMilli())
@@ -282,15 +315,15 @@ func (h *Hub) join(ctx context.Context, c *Client) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	room := c.claims.RoomID
-	clients, ok := h.rooms[room]
+	r, ok := h.rooms[room]
 	if !ok {
 		if err := h.bus.Subscribe(ctx, room); err != nil {
 			return err
 		}
-		clients = make(map[*Client]struct{})
-		h.rooms[room] = clients
+		r = &roomEntry{clients: make(map[*Client]struct{})}
+		h.rooms[room] = r
 	}
-	clients[c] = struct{}{}
+	r.clients[c] = struct{}{}
 	return nil
 }
 
@@ -299,15 +332,15 @@ func (h *Hub) leave(c *Client) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	room := c.claims.RoomID
-	clients, ok := h.rooms[room]
+	r, ok := h.rooms[room]
 	if !ok {
 		return false
 	}
-	if _, ok := clients[c]; !ok {
+	if _, ok := r.clients[c]; !ok {
 		return false
 	}
-	delete(clients, c)
-	if len(clients) == 0 {
+	delete(r.clients, c)
+	if len(r.clients) == 0 {
 		delete(h.rooms, room)
 		ctx, cancel := context.WithTimeout(context.Background(), ioTimeout)
 		defer cancel()
@@ -316,6 +349,50 @@ func (h *Hub) leave(c *Client) bool {
 		}
 	}
 	return true
+}
+
+// cache guarda st si es más nuevo que lo cacheado y devuelve el estado
+// vigente de la sala (que puede ser uno más nuevo llegado por el bus).
+func (h *Hub) cache(room string, st master.State, nowMs int64) master.State {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	r, ok := h.rooms[room]
+	if !ok {
+		return st
+	}
+	r.update(st, nowMs)
+	return r.state
+}
+
+// fresh devuelve el estado cacheado si existe y no superó CacheTTL.
+func (h *Hub) fresh(room string, nowMs int64) (master.State, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	r, ok := h.rooms[room]
+	if !ok || !r.hasState || nowMs-r.loadedAtMs >= CacheTTL.Milliseconds() {
+		return master.State{}, false
+	}
+	return r.state, true
+}
+
+// cached expone la caché para pruebas.
+func (h *Hub) cached(room string) (master.State, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	r, ok := h.rooms[room]
+	if !ok {
+		return master.State{}, false
+	}
+	return r.state, r.hasState
+}
+
+// update acepta el estado si no es más viejo que el cacheado: los mensajes
+// pueden llegar desordenados y version es el orden total de la sala.
+func (r *roomEntry) update(st master.State, nowMs int64) {
+	if r.hasState && st.Version < r.state.Version {
+		return
+	}
+	r.state, r.hasState, r.loadedAtMs = st, true, nowMs
 }
 
 func (h *Hub) publishHostStatus(ctx context.Context, room string, online bool) {
