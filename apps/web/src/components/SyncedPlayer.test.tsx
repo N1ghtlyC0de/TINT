@@ -115,26 +115,16 @@ describe('SyncedPlayer — controles', () => {
     expect(playSpy).not.toHaveBeenCalled();
   });
 
-  it('host busca con el control deslizante al soltarlo', () => {
+  it('host busca con la barra de progreso al soltar', () => {
     const { sync } = renderPlayer();
     Object.defineProperty(video(), 'duration', { configurable: true, value: 60 });
     fireEvent.loadedMetadata(video());
-    const range = screen.getByRole('slider', { name: 'Buscar posición' });
-    expect(range).toHaveAttribute('max', '60000');
-    fireEvent.change(range, { target: { value: '30000' } });
+    const slider = screen.getByRole('slider', { name: 'Buscar posición' });
+    expect(slider).toHaveAttribute('aria-valuemax', '60000');
+    fireEvent.keyDown(slider, { key: 'End' });
     expect(sync.sendCommand).not.toHaveBeenCalled();
-    fireEvent.pointerUp(range);
-    expect(sync.sendCommand).toHaveBeenCalledWith('SEEK', 30_000);
-  });
-
-  it('host también confirma la búsqueda con teclado', () => {
-    const { sync } = renderPlayer();
-    Object.defineProperty(video(), 'duration', { configurable: true, value: 60 });
-    fireEvent.durationChange(video());
-    const range = screen.getByRole('slider', { name: 'Buscar posición' });
-    fireEvent.change(range, { target: { value: '100' } });
-    fireEvent.keyUp(range, { key: 'ArrowRight' });
-    expect(sync.sendCommand).toHaveBeenCalledWith('SEEK', 100);
+    fireEvent.keyUp(slider, { key: 'End' });
+    expect(sync.sendCommand).toHaveBeenCalledWith('SEEK', 60_000);
   });
 
   it('soltar sin arrastrar no envía SEEK', () => {
