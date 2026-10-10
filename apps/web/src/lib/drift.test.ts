@@ -1,4 +1,83 @@
-import { computeDrift, DRIFT_THRESHOLD_MS, shouldResync } from './drift';
+import {
+  applyCorrection,
+  computeDrift,
+  correctionAction,
+  DRIFT_THRESHOLD_MS,
+  RATE_AHEAD,
+  RATE_BEHIND,
+  RATE_MAX_DURATION_MS,
+  shouldResync,
+  shouldRestoreRate,
+} from './drift';
+
+describe('correctionAction', () => {
+  it('seek → posiciona en target_ms en segundos', () => {
+    expect(correctionAction({ target_ms: 12_500, strategy: 'seek', drift_ms: 900 })).toEqual({
+      kind: 'seek',
+      seconds: 12.5,
+    });
+  });
+
+  it('rate con drift negativo (atrasado) → acelera', () => {
+    expect(correctionAction({ target_ms: 0, strategy: 'rate', drift_ms: -200 })).toEqual({
+      kind: 'rate',
+      playbackRate: RATE_BEHIND,
+    });
+    expect(RATE_BEHIND).toBe(1.05);
+  });
+
+  it('rate con drift positivo (adelantado) → frena', () => {
+    expect(correctionAction({ target_ms: 0, strategy: 'rate', drift_ms: 200 })).toEqual({
+      kind: 'rate',
+      playbackRate: RATE_AHEAD,
+    });
+    expect(RATE_AHEAD).toBe(0.95);
+  });
+
+  it('rate con drift cero → velocidad normal', () => {
+    expect(correctionAction({ target_ms: 0, strategy: 'rate', drift_ms: 0 })).toEqual({
+      kind: 'rate',
+      playbackRate: 1,
+    });
+  });
+});
+
+describe('applyCorrection', () => {
+  it('aplica seek sobre el elemento de vídeo', () => {
+    const video = { currentTime: 0, playbackRate: 1 };
+    const action = applyCorrection(video, { target_ms: 3_000, strategy: 'seek', drift_ms: 700 });
+    expect(action.kind).toBe('seek');
+    expect(video.currentTime).toBe(3);
+    expect(video.playbackRate).toBe(1);
+  });
+
+  it('aplica rate sobre el elemento de vídeo', () => {
+    const video = { currentTime: 5, playbackRate: 1 };
+    applyCorrection(video, { target_ms: 0, strategy: 'rate', drift_ms: -150 });
+    expect(video.playbackRate).toBe(1.05);
+    expect(video.currentTime).toBe(5);
+  });
+});
+
+describe('shouldRestoreRate', () => {
+  it('restaura cuando el desfase baja de 100 ms', () => {
+    expect(shouldRestoreRate(10_050, 10_000, 1_000)).toBe(true);
+    expect(shouldRestoreRate(9_901, 10_000, 1_000)).toBe(true);
+  });
+
+  it('mantiene la corrección si sigue desfasado', () => {
+    expect(shouldRestoreRate(10_200, 10_000, 1_000)).toBe(false);
+  });
+
+  it('restaura siempre tras el tiempo máximo', () => {
+    expect(shouldRestoreRate(20_000, 10_000, RATE_MAX_DURATION_MS)).toBe(true);
+  });
+
+  it('sin posición esperada solo restaura por tiempo', () => {
+    expect(shouldRestoreRate(10_000, null, 1_000)).toBe(false);
+    expect(shouldRestoreRate(10_000, null, RATE_MAX_DURATION_MS + 1)).toBe(true);
+  });
+});
 
 describe('computeDrift', () => {
   it('compensa el tiempo transcurrido cuando está reproduciendo', () => {
