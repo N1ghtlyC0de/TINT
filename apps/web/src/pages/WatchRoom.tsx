@@ -6,6 +6,7 @@ import { BackLink } from '../components/ui/BackLink';
 import { Card } from '../components/ui/Primitives';
 import { apiFetch } from '../lib/api';
 import { toAbsoluteInviteLink, pickLatestActiveInvitation } from '../lib/invite';
+import { formatChatTime, noticeText } from '../lib/socialSocket';
 import { useSocialSocket } from '../hooks/useSocialSocket';
 
 export default function WatchRoom() {
@@ -191,12 +192,26 @@ export default function WatchRoom() {
                 className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto"
                 aria-live="polite"
               >
-                {messages.map((m) => (
-                  <li key={m.event_id} className="rounded-xl bg-white/5 px-3 py-2 text-[13px]">
-                    <span className="font-semibold text-white">{m.nick}: </span>
-                    <span>{m.text}</span>
-                  </li>
-                ))}
+                {messages.map((m) =>
+                  m.type === 'notice' ? (
+                    <li
+                      key={m.event_id}
+                      className="px-3 py-1 text-center text-[12px] italic text-tint-muted/80"
+                    >
+                      {noticeText(m)}
+                    </li>
+                  ) : (
+                    <li key={m.event_id} className="rounded-xl bg-white/5 px-3 py-2 text-[13px]">
+                      <span className="font-semibold text-white">{m.nick}: </span>
+                      <span>{m.text}</span>{' '}
+                      {formatChatTime(m.occurred_at) && (
+                        <time dateTime={m.occurred_at} className="text-[11px] text-tint-muted/70">
+                          {formatChatTime(m.occurred_at)}
+                        </time>
+                      )}
+                    </li>
+                  ),
+                )}
               </ul>
             )}
             <form onSubmit={sendChat} className="mt-4 flex gap-2">

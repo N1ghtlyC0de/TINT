@@ -78,6 +78,27 @@ describe('useSocialSocket', () => {
     expect(result.current.messages.map((m) => m.text)).toEqual(['previo', 'hola']);
   });
 
+  it('agrega los avisos de presencia a la lista', () => {
+    const { result } = renderHook(() =>
+      useSocialSocket('r1', {
+        createSocket: (url) => new FakeSocket(url) as unknown as WebSocket,
+      }),
+    );
+    act(() => {
+      lastSocket().open();
+      lastSocket().receive(
+        '{"type":"notice","event_id":"n1","room_id":"r1","user_id":"u9","nick":"Pedro","kind":"joined","text":"Pedro entró al chat","occurred_at":"2026-10-10T10:00:00Z"}',
+      );
+    });
+    expect(result.current.messages).toHaveLength(1);
+    const [msg] = result.current.messages;
+    expect(msg.type).toBe('notice');
+    if (msg.type === 'notice') {
+      expect(msg.kind).toBe('joined');
+      expect(msg.nick).toBe('Pedro');
+    }
+  });
+
   it('send usa el socket abierto y valida vacío/cerrado', () => {
     const { result } = renderHook(() =>
       useSocialSocket('r1', {

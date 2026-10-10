@@ -26,7 +26,20 @@ export interface SocialError {
   event_id_ref?: string;
 }
 
-export type SocialIncoming = ChatMessage | HistoryEnvelope | SocialError;
+export type NoticeKind = 'joined' | 'left';
+
+export interface PresenceNotice {
+  event_id: string;
+  type: 'notice';
+  room_id: string;
+  user_id: string;
+  nick: string;
+  kind: NoticeKind;
+  text: string;
+  occurred_at: string;
+}
+
+export type SocialIncoming = ChatMessage | HistoryEnvelope | PresenceNotice | SocialError;
 
 export function buildSocialUrl(base: string, roomId: string, token: string): string {
   const sep = base.includes('?') ? '&' : '?';
@@ -58,8 +71,25 @@ export function parseSocialMessage(raw: string): SocialIncoming | null {
   }
   if (typeof data !== 'object' || data === null) return null;
   const type = (data as { type?: unknown }).type;
-  if (type === 'chat_message' || type === 'history' || type === 'error') {
+  if (type === 'chat_message' || type === 'history' || type === 'error' || type === 'notice') {
     return data as SocialIncoming;
   }
   return null;
+}
+
+/** Texto del aviso de presencia según kind y nick (fallback al text del servidor). */
+export function noticeText(msg: PresenceNotice): string {
+  if (msg.kind === 'left') return `${msg.nick} salió del chat`;
+  return `${msg.nick} entró al chat`;
+}
+
+/**
+ * Formatea un ISO-8601 a HH:MM en hora local del navegador.
+ * Retorna '' si la fecha es inválida o vacía.
+ */
+export function formatChatTime(iso: string): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 }
