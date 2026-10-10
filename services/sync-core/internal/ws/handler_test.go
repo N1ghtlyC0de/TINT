@@ -18,6 +18,7 @@ import (
 
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/auth"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/bus"
+	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/codec"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/hub"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/store"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/syncevent"
@@ -365,5 +366,44 @@ func TestRevocationCheckFailsClosed(t *testing.T) {
 	defer cancel()
 	if _, resp, err := websocket.Dial(ctx, s.wsURL(room, tokenWithJTI(t, "j-x")), nil); err == nil || resp == nil || resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("sin Redis no se puede verificar la revocación: err=%v resp=%v", err, resp)
+	}
+}
+
+// O6: el subprotocolo tint.sync.msgpack activa frames binarios MessagePack.
+func TestMsgPackSubprotocol(t *testing.T) {
+	s := newServer(t, time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, s.wsURL(room, token(t, "host", room)), &websocket.DialOptions{
+		Subprotocols: []string{codec.SubprotocolMsgPack},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.CloseNow()
+	if c.Subprotocol() != codec.SubprotocolMsgPack {
+		t.Fatalf("subprotocolo = %q", c.Subprotocol())
+	}
+	typ, raw, err := c.Read(ctx)
+	if err != nil || typ != websocket.MessageBinary {
+		t.Fatalf("frame = %v %v", typ, err)
+	}
+	var st syncevent.Event
+	if err := codec.MsgPack.Decode(raw, &st); err != nil || st.Type != syncevent.State {
+		t.Fatalf("STATE msgpack = %+v (%v)", st, err)
+	}
+	cmd, _ := codec.MsgPack.Encode(syncevent.Event{EventID: "m1", Type: syncevent.Play, RoomID: room, OccurredAt: time.Now()})
+	if err := c.Write(ctx, websocket.MessageBinary, cmd); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		_, raw, err := c.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ev syncevent.Event
+		if codec.MsgPack.Decode(raw, &ev) == nil && ev.Type == syncevent.Ack {
+			return
+		}
 	}
 }

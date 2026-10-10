@@ -29,6 +29,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/auth"
+	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/codec"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/drift"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/master"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/metrics"
@@ -366,7 +367,7 @@ func (h *Hub) applyDelegate(room, holder string) {
 		}
 		ev := baseEvent(syncevent.Control, room, now)
 		ev.CanControl = syncevent.Bool(c.claims.Sub == holder)
-		c.enqueue(mustJSON(ev))
+		c.enqueueEvent(ev)
 	}
 }
 
@@ -401,9 +402,12 @@ func (h *Hub) canControl(c *Client) bool {
 
 // Connect registra una conexión autenticada, crea la sala si no existe y le
 // encola de inmediato el STATE actual (HU-SYNC-01).
-func (h *Hub) Connect(parent context.Context, claims auth.Claims) (*Client, error) {
+func (h *Hub) Connect(parent context.Context, claims auth.Claims, opts ...ConnOption) (*Client, error) {
 	now := h.now()
 	c := newClient(parent, claims, now.UnixMilli())
+	for _, opt := range opts {
+		opt(c)
+	}
 	room := claims.RoomID
 	ctx, cancel := context.WithTimeout(parent, ioTimeout)
 	defer cancel()
@@ -445,7 +449,7 @@ func (h *Hub) Connect(parent context.Context, claims auth.Claims) (*Client, erro
 	ev := stateEvent(syncevent.State, room, st, now)
 	ev.Online = syncevent.Bool(p.Online > 0)
 	ev.CanControl = syncevent.Bool(claims.CanControl() || (p.Delegate != "" && p.Delegate == claims.Sub))
-	c.enqueue(mustJSON(ev))
+	c.enqueueEvent(ev)
 	if _, err := h.sweep(ctx, room, nowMs); err != nil {
 		log.Printf("hub: barrido sala %s: %v", room, err)
 	}
@@ -491,7 +495,8 @@ func (h *Hub) Disconnect(c *Client) {
 // sala y, si es un comando, actualiza la caché del estado maestro.
 func (h *Hub) Deliver(roomID string, payload []byte) {
 	var ev syncevent.Event
-	if json.Unmarshal(payload, &ev) == nil {
+	parsed := json.Unmarshal(payload, &ev) == nil
+	if parsed {
 		switch ev.Type {
 		case syncevent.Control:
 			h.applyDelegate(roomID, ev.Holder) // cada cliente recibe su propio CONTROL
@@ -517,8 +522,20 @@ func (h *Hub) Deliver(roomID string, payload []byte) {
 			Rate: ev.Rate, Version: ev.Version, MediaID: ev.MediaID,
 		}, h.now().UnixMilli())
 	}
+	// El bus siempre viaja en JSON; para los clientes MessagePack se
+	// transcodifica una sola vez y los bytes se comparten entre todos.
+	var packed []byte
 	for c := range r.clients {
-		c.enqueue(payload)
+		if c.codec == codec.JSON {
+			c.enqueue(payload)
+			continue
+		}
+		if packed == nil && parsed {
+			packed, _ = c.codec.Encode(ev)
+		}
+		if packed != nil {
+			c.enqueue(packed)
+		}
 	}
 }
 
@@ -528,19 +545,19 @@ func (h *Hub) Handle(ctx context.Context, c *Client, raw []byte) {
 	now := h.now()
 	if !c.allow(now.UnixMilli()) {
 		h.m.rateLimited.Inc()
-		c.enqueue(mustJSON(errorEvent(c.claims.RoomID, "", syncevent.CodeRateLimited, now)))
+		c.enqueueEvent(errorEvent(c.claims.RoomID, "", syncevent.CodeRateLimited, now))
 		return
 	}
 	var ev syncevent.Event
-	if err := json.Unmarshal(raw, &ev); err != nil {
+	if err := c.codec.Decode(raw, &ev); err != nil {
 		h.m.invalid.Inc()
-		c.enqueue(mustJSON(errorEvent(c.claims.RoomID, "", syncevent.CodeInvalid, now)))
+		c.enqueueEvent(errorEvent(c.claims.RoomID, "", syncevent.CodeInvalid, now))
 		return
 	}
 	ev.ReceivedAt = now // el reloj del servidor siempre es el de recepción
 	if err := ev.ValidateInbound(); err != nil || ev.RoomID != c.claims.RoomID {
 		h.m.invalid.Inc()
-		c.enqueue(mustJSON(errorEvent(c.claims.RoomID, ev.EventID, syncevent.CodeInvalid, now)))
+		c.enqueueEvent(errorEvent(c.claims.RoomID, ev.EventID, syncevent.CodeInvalid, now))
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, ioTimeout)
@@ -556,7 +573,7 @@ func (h *Hub) handleCommand(ctx context.Context, c *Client, ev syncevent.Event, 
 	room := c.claims.RoomID
 	if !h.canControl(c) {
 		h.m.commands.With("forbidden").Inc()
-		c.enqueue(mustJSON(errorEvent(room, ev.EventID, syncevent.CodeForbidden, now)))
+		c.enqueueEvent(errorEvent(room, ev.EventID, syncevent.CodeForbidden, now))
 		return
 	}
 	encode := func(st master.State) ([]byte, error) {
@@ -577,7 +594,7 @@ func (h *Hub) handleCommand(ctx context.Context, c *Client, ev syncevent.Event, 
 			log.Printf("hub: comando %s en sala %s: %v", ev.Type, room, err)
 		}
 		h.m.commands.With(result).Inc()
-		c.enqueue(mustJSON(errorEvent(room, ev.EventID, code, now)))
+		c.enqueueEvent(errorEvent(room, ev.EventID, code, now))
 		return
 	}
 	if dup {
@@ -589,7 +606,7 @@ func (h *Hub) handleCommand(ctx context.Context, c *Client, ev syncevent.Event, 
 	ack.RefEventID = ev.EventID
 	ack.Version = st.Version
 	ack.Duplicate = dup
-	c.enqueue(mustJSON(ack))
+	c.enqueueEvent(ack)
 }
 
 // handleSyncCheck mide el RTT con el reloj del servidor y corrige el drift
@@ -622,7 +639,7 @@ func (h *Hub) handleSyncCheck(ctx context.Context, c *Client, ev syncevent.Event
 	out.Strategy = string(corr.Strategy)
 	out.DriftMs = corr.DriftMs
 	out.Version = corr.Version
-	c.enqueue(mustJSON(out))
+	c.enqueueEvent(out)
 	h.tel.EmitDrift(telemetry.DriftSample{
 		RoomID: room, DriftMs: corr.DriftMs, RTTMs: rtt, Strategy: string(corr.Strategy),
 		Role: string(c.claims.Role), OccurredAt: ev.OccurredAt, ReceivedAt: now,
@@ -640,7 +657,7 @@ func (h *Hub) Tick(c *Client) ([]byte, error) {
 	ev.ServerTimeMs = now.UnixMilli()
 	ev.RTTMs = c.RTT()
 	ev.DriftMs = c.lastDriftMs.Load()
-	return mustJSON(ev), nil
+	return c.codec.Encode(ev)
 }
 
 func (h *Hub) join(ctx context.Context, c *Client) error {

@@ -8,6 +8,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/auth"
+	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/codec"
+	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/syncevent"
 )
 
 var (
@@ -22,6 +24,7 @@ var (
 type Client struct {
 	id     string
 	claims auth.Claims
+	codec  codec.Codec
 	send   chan []byte
 	ctx    context.Context
 	cancel context.CancelCauseFunc
@@ -37,9 +40,30 @@ type Client struct {
 
 func newClient(parent context.Context, claims auth.Claims, nowMs int64) *Client {
 	ctx, cancel := context.WithCancelCause(parent)
-	c := &Client{id: uuid.NewString(), claims: claims, send: make(chan []byte, SendBuffer), ctx: ctx, cancel: cancel}
+	c := &Client{id: uuid.NewString(), claims: claims, codec: codec.JSON, send: make(chan []byte, SendBuffer), ctx: ctx, cancel: cancel}
 	c.lastCheckMs.Store(nowMs)
 	return c
+}
+
+// ConnOption configura una conexión al registrarla.
+type ConnOption func(*Client)
+
+// WithCodec fija el formato negociado por el cliente (JSON por defecto).
+func WithCodec(c codec.Codec) ConnOption {
+	return func(cl *Client) { cl.codec = c }
+}
+
+// Codec devuelve el formato de la conexión.
+func (c *Client) Codec() codec.Codec { return c.codec }
+
+// enqueueEvent codifica ev en el formato del cliente y lo encola.
+func (c *Client) enqueueEvent(ev syncevent.Event) {
+	raw, err := c.codec.Encode(ev)
+	if err != nil {
+		c.close(err) // Event siempre es serializable: sería un bug
+		return
+	}
+	c.enqueue(raw)
 }
 
 // Send es la cola de mensajes salientes del cliente.

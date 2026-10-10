@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/codec"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/syncevent"
 )
 
@@ -282,5 +283,56 @@ func TestRevokedTokenIsDisconnected(t *testing.T) {
 	expectNo(t, b, syncevent.Revoked)
 	if b.Context().Err() != nil {
 		t.Error("otro invitado no debe cerrarse")
+	}
+}
+
+// O6: un cliente MessagePack recibe STATE, broadcasts y HEARTBEAT en su
+// formato y puede enviar comandos codificados igual.
+func TestMsgPackClient(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	hc, err := h.Connect(context.Background(), host, WithCodec(codec.MsgPack))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { h.Disconnect(hc) })
+	g := connect(t, h, guest) // JSON
+	next(t, g)
+
+	readMP := func(typ syncevent.Type) syncevent.Event {
+		t.Helper()
+		for {
+			select {
+			case raw := <-hc.Send():
+				var ev syncevent.Event
+				if err := codec.MsgPack.Decode(raw, &ev); err != nil {
+					t.Fatalf("frame no es msgpack: %v", err)
+				}
+				if ev.Type == typ {
+					return ev
+				}
+			case <-time.After(recvLimit):
+				t.Fatalf("no llegó %s", typ)
+			}
+		}
+	}
+	if st := readMP(syncevent.State); !*st.CanControl {
+		t.Errorf("STATE msgpack = %+v", st)
+	}
+	raw, _ := codec.MsgPack.Encode(syncevent.Event{
+		EventID: "mp-1", Type: syncevent.Seek, RoomID: room, PositionMs: 7000, OccurredAt: t0,
+	})
+	h.Handle(context.Background(), hc, raw)
+	if ev := readMP(syncevent.Seek); ev.PositionMs != 7000 || ev.Version != 1 {
+		t.Errorf("broadcast msgpack = %+v", ev)
+	}
+	if ev := nextOf(t, g, syncevent.Seek); ev.EventID != "mp-1" {
+		t.Errorf("el cliente JSON recibe el mismo comando: %+v", ev)
+	}
+	h.beatAll()
+	readMP(syncevent.Heartbeat)
+	h.Handle(context.Background(), hc, []byte("{json}"))
+	if ev := readMP(syncevent.Error); ev.Code != syncevent.CodeInvalid {
+		t.Errorf("JSON en conexión msgpack = %+v", ev)
 	}
 }

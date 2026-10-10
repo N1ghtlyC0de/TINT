@@ -21,6 +21,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/auth"
+	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/codec"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/hub"
 )
 
@@ -46,7 +47,7 @@ type Revocations interface {
 
 // Hub es la parte del hub que usa la capa de transporte.
 type Hub interface {
-	Connect(ctx context.Context, claims auth.Claims) (*hub.Client, error)
+	Connect(ctx context.Context, claims auth.Claims, opts ...hub.ConnOption) (*hub.Client, error)
 	Disconnect(c *hub.Client)
 	Handle(ctx context.Context, c *hub.Client, raw []byte)
 }
@@ -97,13 +98,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: h.origins})
+	// Subprotocolo opcional: "tint.sync.msgpack" activa frames MessagePack;
+	// sin subprotocolo (o "tint.sync.json") se usa JSON.
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: h.origins, Subprotocols: codec.Subprotocols})
 	if err != nil {
 		return // Accept ya respondió (p. ej. 403 por origen)
 	}
 	conn.SetReadLimit(MaxMessageBytes)
 
-	client, err := h.hub.Connect(context.WithoutCancel(r.Context()), claims)
+	client, err := h.hub.Connect(context.WithoutCancel(r.Context()), claims, hub.WithCodec(codec.ForSubprotocol(conn.Subprotocol())))
 	if err != nil {
 		log.Printf("ws: connect sala %s: %v", roomID, err)
 		_ = conn.Close(websocket.StatusInternalError, "estado de sala no disponible")
@@ -141,7 +144,7 @@ func (h *Handler) writeLoop(conn *websocket.Conn, c *hub.Client) {
 			closeFor(conn, c.Err())
 			return
 		case msg := <-c.Send():
-			if err := write(conn, msg); err != nil {
+			if err := write(conn, c.Codec(), msg); err != nil {
 				conn.CloseNow()
 				return
 			}
@@ -149,10 +152,14 @@ func (h *Handler) writeLoop(conn *websocket.Conn, c *hub.Client) {
 	}
 }
 
-func write(conn *websocket.Conn, msg []byte) error {
+func write(conn *websocket.Conn, cd codec.Codec, msg []byte) error {
 	ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
 	defer cancel()
-	return conn.Write(ctx, websocket.MessageText, msg)
+	typ := websocket.MessageText
+	if cd.Binary() {
+		typ = websocket.MessageBinary
+	}
+	return conn.Write(ctx, typ, msg)
 }
 
 // closeFor traduce la causa de desconexión a un código de cierre WebSocket.
