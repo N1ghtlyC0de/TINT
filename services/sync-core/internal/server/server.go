@@ -50,7 +50,8 @@ func Run(ctx context.Context, getenv func(string) string) error {
 	defer cancel()
 	b := bus.New(rdb)
 	tel := telemetry.New(rdb, telemetryBuffer)
-	h := hub.New(store.New(rdb, cfg.RoomTTL), b, tel).WithHandoff(cfg.HandoffAfter)
+	st := store.New(rdb, cfg.RoomTTL)
+	h := hub.New(st, b, tel).WithHandoff(cfg.HandoffAfter)
 	b.Start(runCtx, h.Deliver)
 	defer b.Close()
 	go tel.Run(runCtx)
@@ -59,7 +60,7 @@ func Run(ctx context.Context, getenv func(string) string) error {
 	verifier := auth.NewVerifier(cfg.JWTSecret, cfg.JWTIssuer, cfg.JWTAudience)
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           NewRouter(ws.NewHandler(h, verifier, cfg.AllowedOrigins)),
+		Handler:           NewRouter(ws.NewHandler(h, verifier, st, cfg.AllowedOrigins)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	errCh := make(chan error, 1)

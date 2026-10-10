@@ -14,6 +14,7 @@ var (
 	ErrSlowConsumer = errors.New("cliente demasiado lento: cola de salida llena")
 	ErrStale        = errors.New("cliente sin responder SYNC_CHECK")
 	ErrClosed       = errors.New("conexión cerrada")
+	ErrRevoked      = errors.New("token revocado")
 )
 
 // Client es una conexión al Canal Sync. Solo la goroutine escritora lee de

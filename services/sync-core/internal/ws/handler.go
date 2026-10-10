@@ -27,12 +27,21 @@ import (
 const (
 	// MaxMessageBytes limita el tamaño de cada mensaje entrante.
 	MaxMessageBytes = 4096
-	writeTimeout    = 5 * time.Second
+	// StatusRevoked cierra una conexión cuyo token fue revocado: el cliente
+	// no debe reconectar con ese token.
+	StatusRevoked websocket.StatusCode = 4001
+	writeTimeout                       = 5 * time.Second
+	checkTimeout                       = 2 * time.Second
 )
 
 // Verifier valida el token del handshake.
 type Verifier interface {
 	Verify(token, roomID string) (auth.Claims, error)
+}
+
+// Revocations consulta los tokens revocados por identity-api.
+type Revocations interface {
+	IsRevoked(ctx context.Context, jti string) (bool, error)
 }
 
 // Hub es la parte del hub que usa la capa de transporte.
@@ -46,12 +55,13 @@ type Hub interface {
 type Handler struct {
 	hub      Hub
 	verifier Verifier
+	revoked  Revocations
 	origins  []string
 }
 
 // NewHandler crea el handler; origins son los patrones de host permitidos.
-func NewHandler(h Hub, v Verifier, origins []string) *Handler {
-	return &Handler{hub: h, verifier: v, origins: origins}
+func NewHandler(h Hub, v Verifier, r Revocations, origins []string) *Handler {
+	return &Handler{hub: h, verifier: v, revoked: r, origins: origins}
 }
 
 // ServeHTTP valida el token antes del upgrade: un token inválido nunca abre
@@ -71,6 +81,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	case err != nil:
 		http.Error(w, "token inválido", http.StatusUnauthorized)
+		return
+	}
+	// Si no se puede comprobar la revocación se rechaza (falla cerrado).
+	ctx, cancel := context.WithTimeout(r.Context(), checkTimeout)
+	revoked, err := h.revoked.IsRevoked(ctx, claims.JTI)
+	cancel()
+	switch {
+	case err != nil:
+		log.Printf("ws: revocación sala %s: %v", roomID, err)
+		http.Error(w, "no se pudo validar el token", http.StatusServiceUnavailable)
+		return
+	case revoked:
+		http.Error(w, "token revocado", http.StatusUnauthorized)
 		return
 	}
 
@@ -139,6 +162,8 @@ func closeFor(conn *websocket.Conn, cause error) {
 		_ = conn.Close(websocket.StatusPolicyViolation, "sin respuesta a HEARTBEAT")
 	case errors.Is(cause, hub.ErrSlowConsumer):
 		_ = conn.Close(websocket.StatusPolicyViolation, "cliente demasiado lento")
+	case errors.Is(cause, hub.ErrRevoked):
+		_ = conn.Close(StatusRevoked, "token revocado")
 	default:
 		_ = conn.Close(websocket.StatusNormalClosure, "")
 	}

@@ -251,3 +251,36 @@ func expectNo(t *testing.T, c *Client, typ syncevent.Type) {
 		}
 	}
 }
+
+// F5: identity-api publica REVOKED; solo se cierra la conexión de ese jti
+// y el mensaje nunca llega a los clientes.
+func TestRevokedTokenIsDisconnected(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	revoked := guest
+	revoked.JTI = "j-1"
+	other := guestTwo
+	other.JTI = "j-2"
+	a := connect(t, h, revoked)
+	next(t, a)
+	b := connect(t, h, other)
+	next(t, b)
+	e.waitSubscribers(t, 1)
+
+	payload := `{"event_id":"r1","type":"REVOKED","room_id":"room-1","jti":"j-1","position_ms":0,"version":0,` +
+		`"occurred_at":"2026-10-10T18:00:00Z","received_at":"2026-10-10T18:00:00Z"}`
+	e.mr.Publish(syncevent.ChannelKey(room), payload)
+
+	select {
+	case <-a.Done():
+		if !errors.Is(a.Err(), ErrRevoked) {
+			t.Errorf("causa = %v", a.Err())
+		}
+	case <-time.After(recvLimit):
+		t.Fatal("la conexión revocada debe cerrarse")
+	}
+	expectNo(t, b, syncevent.Revoked)
+	if b.Context().Err() != nil {
+		t.Error("otro invitado no debe cerrarse")
+	}
+}

@@ -33,6 +33,7 @@ type Claims struct {
 	RoomID string
 	Role   Role
 	Nick   string
+	JTI    string // id del token: permite revocarlo (identity-api)
 }
 
 // CanControl indica si el rol puede emitir PLAY/PAUSE/SEEK.
@@ -85,5 +86,5 @@ func (v *Verifier) Verify(token, roomID string) (Claims, error) {
 	default:
 		return Claims{}, fmt.Errorf("%w: %q", ErrUnknownRole, tc.Role)
 	}
-	return Claims{Sub: tc.Subject, RoomID: tc.RoomID, Role: tc.Role, Nick: tc.Nick}, nil
+	return Claims{Sub: tc.Subject, RoomID: tc.RoomID, Role: tc.Role, Nick: tc.Nick, JTI: tc.ID}, nil
 }

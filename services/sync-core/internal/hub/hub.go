@@ -312,6 +312,24 @@ func (h *Hub) applyDelegate(room, holder string) {
 	}
 }
 
+// revoke cierra las conexiones locales del token revocado.
+func (h *Hub) revoke(room, jti string) {
+	if jti == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	r, ok := h.rooms[room]
+	if !ok {
+		return
+	}
+	for c := range r.clients {
+		if c.claims.JTI == jti {
+			c.close(ErrRevoked)
+		}
+	}
+}
+
 // canControl indica si el cliente puede emitir comandos ahora mismo.
 func (h *Hub) canControl(c *Client) bool {
 	if c.claims.CanControl() {
@@ -411,9 +429,15 @@ func (h *Hub) Disconnect(c *Client) {
 // sala y, si es un comando, actualiza la caché del estado maestro.
 func (h *Hub) Deliver(roomID string, payload []byte) {
 	var ev syncevent.Event
-	if json.Unmarshal(payload, &ev) == nil && ev.Type == syncevent.Control {
-		h.applyDelegate(roomID, ev.Holder) // cada cliente recibe su propio CONTROL
-		return
+	if json.Unmarshal(payload, &ev) == nil {
+		switch ev.Type {
+		case syncevent.Control:
+			h.applyDelegate(roomID, ev.Holder) // cada cliente recibe su propio CONTROL
+			return
+		case syncevent.Revoked:
+			h.revoke(roomID, ev.JTI) // solo entre réplicas: nunca llega a los clientes
+			return
+		}
 	}
 
 	h.mu.Lock()

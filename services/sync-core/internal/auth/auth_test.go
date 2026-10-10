@@ -131,3 +131,11 @@ func TestNewVerifierUsesRealClock(t *testing.T) {
 		t.Fatalf("token vigente con reloj real: %v", err)
 	}
 }
+
+func TestVerifyExposesJTI(t *testing.T) {
+	tok := sign(t, jwt.SigningMethodHS256, []byte(secret), func(c jwt.MapClaims) { c["jti"] = "j-123" })
+	got, err := newVerifier().Verify(tok, room)
+	if err != nil || got.JTI != "j-123" {
+		t.Errorf("Verify = %+v (%v), want JTI j-123", got, err)
+	}
+}
