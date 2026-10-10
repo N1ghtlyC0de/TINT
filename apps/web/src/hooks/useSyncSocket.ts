@@ -99,6 +99,7 @@ export function useSyncSocket({
         rate: s.rate,
         version: s.version,
         server_time_ms: s.server_time_ms,
+        media_id: s.media_id ?? '',
         received_at_perf: nowRef.current(),
       };
       stateRef.current = snapshot;

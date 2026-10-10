@@ -26,6 +26,7 @@ const playingState: SyncSnapshot = {
   rate: 1,
   version: 2,
   server_time_ms: 1_000,
+  media_id: '',
   received_at_perf: 0,
 };
 

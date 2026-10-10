@@ -6,6 +6,10 @@ import {
   estimateServerNow,
   expectedPosition,
   parseServerMessage,
+  stepRate,
+  toServerMessage,
+  CLOSE_REVOKED,
+  RATE_OPTIONS,
   type SyncState,
 } from './syncProtocol';
 
@@ -54,6 +58,14 @@ describe('buildCommand', () => {
       position_ms: 1235,
       occurred_at: '2026-01-01T00:00:00.000Z',
     });
+  });
+
+  it('RATE incluye rate y LOAD incluye media_id', () => {
+    const now = new Date('2026-01-01T00:00:00.000Z');
+    expect(buildCommand('RATE', 'r1', 10, now, { rate: 1.5 })).toMatchObject({ type: 'RATE', rate: 1.5 });
+    const load = buildCommand('LOAD', 'r1', 0, now, { media_id: 'm-9' });
+    expect(load).toMatchObject({ type: 'LOAD', media_id: 'm-9', position_ms: 0 });
+    expect(load).not.toHaveProperty('rate');
   });
 
   it('genera event_id distintos', () => {
@@ -110,4 +122,33 @@ describe('parseServerMessage', () => {
       expect(parseServerMessage(raw)).toBeNull();
     },
   );
+});
+
+describe('protocolo v2', () => {
+  it.each(['RATE', 'LOAD', 'CONTROL'])('acepta el tipo %s', (type) => {
+    expect(parseServerMessage(JSON.stringify({ type }))).toEqual({ type });
+  });
+
+  it('toServerMessage valida objetos ya decodificados (MessagePack)', () => {
+    expect(toServerMessage({ type: 'CONTROL', can_control: true })).toEqual({ type: 'CONTROL', can_control: true });
+    expect(toServerMessage({ type: 'NOPE' })).toBeNull();
+    expect(toServerMessage(null)).toBeNull();
+    expect(toServerMessage('STATE')).toBeNull();
+  });
+
+  it('expone el código de cierre por revocación y las velocidades', () => {
+    expect(CLOSE_REVOKED).toBe(4001);
+    expect(RATE_OPTIONS).toEqual([0.5, 0.75, 1, 1.25, 1.5, 2]);
+  });
+
+  it.each([
+    [1, 1, 1.25],
+    [1, -1, 0.75],
+    [2, 1, 2],
+    [0.5, -1, 0.5],
+    [1.1, 1, 1.25],
+    [3, -1, 1.5],
+  ])('stepRate(%f, %i) → %f', (rate, dir, out) => {
+    expect(stepRate(rate, dir as 1 | -1)).toBe(out);
+  });
 });
