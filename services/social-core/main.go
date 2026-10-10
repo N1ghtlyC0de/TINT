@@ -1,4 +1,4 @@
-// Command social-core expone el canal de interacción social (reacciones, heatmaps y trivias) de TINT.
+// Command social-core expone el Canal Social (/ws/social) de TINT: chat en vivo.
 package main
 
 import (
