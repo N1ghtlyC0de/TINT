@@ -184,11 +184,12 @@ func fields(s master.State) map[string]any {
 		"rate":          strconv.FormatFloat(s.Rate, 'f', -1, 64),
 		"version":       s.Version,
 		"host_id":       s.HostID,
+		"media_id":      s.MediaID,
 	}
 }
 
 func parse(m map[string]string) (master.State, error) {
-	st := master.State{Status: master.Status(m["status"]), HostID: m["host_id"]}
+	st := master.State{Status: master.Status(m["status"]), HostID: m["host_id"], MediaID: m["media_id"]}
 	var err error
 	ints := []struct {
 		field string

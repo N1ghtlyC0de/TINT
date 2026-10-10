@@ -3,6 +3,7 @@ package syncevent
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -147,5 +148,99 @@ func TestJSONContract(t *testing.T) {
 	}
 	if Bool(true) == nil || !*Bool(true) {
 		t.Error("Bool helper")
+	}
+}
+
+func TestValidateInboundV2(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Event)
+		want   error
+	}{
+		{"rate válida", func(e *Event) { e.Type, e.Rate = Rate, 1.5 }, nil},
+		{"rate mínima", func(e *Event) { e.Type, e.Rate = Rate, MinRate }, nil},
+		{"rate máxima", func(e *Event) { e.Type, e.Rate = Rate, MaxRate }, nil},
+		{"rate cero", func(e *Event) { e.Type, e.Rate = Rate, 0 }, ErrInvalidRate},
+		{"rate demasiado alta", func(e *Event) { e.Type, e.Rate = Rate, 4.01 }, ErrInvalidRate},
+		{"rate demasiado baja", func(e *Event) { e.Type, e.Rate = Rate, 0.2 }, ErrInvalidRate},
+		{"load válido", func(e *Event) { e.Type, e.MediaID = Load, "media-1" }, nil},
+		{"load sin media", func(e *Event) { e.Type = Load }, ErrInvalidMedia},
+		{"load con media enorme", func(e *Event) { e.Type, e.MediaID = Load, strings.Repeat("m", MaxMediaIDLen+1) }, ErrInvalidMedia},
+		{"el cliente no emite CONTROL", func(e *Event) { e.Type = Control }, ErrUnsupportedType},
+		{"el cliente no emite REVOKED", func(e *Event) { e.Type = Revoked }, ErrUnsupportedType},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := validEvent()
+			tt.mutate(&e)
+			if err := e.ValidateInbound(); !errors.Is(err, tt.want) {
+				t.Errorf("ValidateInbound() = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateV2Types(t *testing.T) {
+	for _, typ := range []Type{Rate, Load, Control, Revoked} {
+		e := validEvent()
+		e.Type = typ
+		if err := e.Validate(); err != nil {
+			t.Errorf("%s: %v", typ, err)
+		}
+	}
+}
+
+func TestIsCommandV2(t *testing.T) {
+	for _, typ := range []Type{Rate, Load} {
+		if !(Event{Type: typ}).IsCommand() {
+			t.Errorf("%s debe ser comando", typ)
+		}
+	}
+	for _, typ := range []Type{Control, Revoked} {
+		if (Event{Type: typ}).IsCommand() {
+			t.Errorf("%s no debe ser comando", typ)
+		}
+	}
+}
+
+func TestKeysV2(t *testing.T) {
+	cases := map[string]string{
+		RevokedKey("j1"):        "token:revoked:j1",
+		MembersKey("abc"):       "room:abc:members",
+		DelegateKey("abc"):      "room:abc:delegate",
+		HostStatusKey("abc"):    "room:abc:host_online",
+		HostlessSinceKey("abc"): "room:abc:hostless_since",
+	}
+	for got, want := range cases {
+		if got != want {
+			t.Errorf("clave = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestJSONContractV2(t *testing.T) {
+	e := validEvent()
+	e.Type = Control
+	e.CanControl = Bool(false) // false debe viajar explícito
+	raw, _ := json.Marshal(e)
+	var m map[string]any
+	_ = json.Unmarshal(raw, &m)
+	if v, ok := m["can_control"]; !ok || v != false {
+		t.Errorf("can_control=false debe serializarse: %s", raw)
+	}
+	for _, k := range []string{"media_id", "rtt_ms", "holder", "jti"} {
+		if _, ok := m[k]; ok {
+			t.Errorf("el campo vacío %q no debe serializarse: %s", k, raw)
+		}
+	}
+	e = validEvent()
+	e.MediaID, e.RTTMs, e.Holder, e.JTI = "m1", 42, "guest:1", "j1"
+	raw, _ = json.Marshal(e)
+	m = nil
+	_ = json.Unmarshal(raw, &m)
+	for _, k := range []string{"media_id", "rtt_ms", "holder", "jti"} {
+		if _, ok := m[k]; !ok {
+			t.Errorf("falta %q en %s", k, raw)
+		}
 	}
 }

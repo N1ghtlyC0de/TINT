@@ -253,3 +253,31 @@ func TestParseCorruptState(t *testing.T) {
 		t.Error("estado corrupto debe devolver error")
 	}
 }
+
+func TestApplyPersistsMediaAndRate(t *testing.T) {
+	s, _, _ := setup(t)
+	ctx := context.Background()
+	if _, err := s.Init(ctx, room, "host-1", t0); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Apply(ctx, room, "e1", master.Command{Type: syncevent.Load, MediaID: "m-1"}, t0, 0, encodeVersion); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.Apply(ctx, room, "e2", master.Command{Type: syncevent.Rate, PositionMs: 10, Rate: 1.5}, t0+1, 0, encodeVersion); err != nil {
+		t.Fatal(err)
+	}
+	st, err := s.Load(ctx, room)
+	if err != nil || st.MediaID != "m-1" || st.Rate != 1.5 || st.Version != 2 {
+		t.Errorf("estado = %+v (%v)", st, err)
+	}
+}
+
+// Estados escritos antes de existir media_id siguen siendo legibles.
+func TestLoadStateWithoutMediaField(t *testing.T) {
+	s, mr, _ := setup(t)
+	mr.HSet(syncevent.StateKey(room), "status", "paused", "position_ms", "5", "updated_at_ms", "1", "rate", "1", "version", "2", "host_id", "h")
+	st, err := s.Load(context.Background(), room)
+	if err != nil || st.MediaID != "" || st.Version != 2 {
+		t.Errorf("estado = %+v (%v)", st, err)
+	}
+}

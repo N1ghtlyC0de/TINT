@@ -128,3 +128,62 @@ func TestApplyVersionIsMonotonic(t *testing.T) {
 		t.Errorf("tras PAUSE la posición debe quedar fija en 12000, got %d", s.PositionAt(t0+99_000))
 	}
 }
+
+func TestApplyV2(t *testing.T) {
+	playing := State{Status: Playing, PositionMs: 1000, UpdatedAtMs: t0, Rate: 1, Version: 3, HostID: "h", MediaID: "m1"}
+	paused := playing
+	paused.Status = Paused
+	recv := t0 + 2_000
+
+	tests := []struct {
+		name    string
+		from    State
+		cmd     Command
+		want    State
+		wantErr error
+	}{
+		{
+			name: "rate re-ancla y conserva playing y media",
+			from: playing, cmd: Command{Type: syncevent.Rate, PositionMs: 3000, Rate: 1.5},
+			want: State{Status: Playing, PositionMs: 3000, UpdatedAtMs: recv, Rate: 1.5, Version: 4, HostID: "h", MediaID: "m1"},
+		},
+		{
+			name: "rate en pausa conserva paused",
+			from: paused, cmd: Command{Type: syncevent.Rate, PositionMs: 1000, Rate: 0.5},
+			want: State{Status: Paused, PositionMs: 1000, UpdatedAtMs: recv, Rate: 0.5, Version: 4, HostID: "h", MediaID: "m1"},
+		},
+		{
+			name: "rate fuera de rango",
+			from: playing, cmd: Command{Type: syncevent.Rate, PositionMs: 1000, Rate: 9},
+			want: playing, wantErr: syncevent.ErrInvalidRate,
+		},
+		{
+			name: "load pausa, reinicia rate y cambia media",
+			from: State{Status: Playing, PositionMs: 9000, UpdatedAtMs: t0, Rate: 2, Version: 3, HostID: "h", MediaID: "m1"},
+			cmd:  Command{Type: syncevent.Load, PositionMs: 0, MediaID: "m2"},
+			want: State{Status: Paused, PositionMs: 0, UpdatedAtMs: recv, Rate: 1, Version: 4, HostID: "h", MediaID: "m2"},
+		},
+		{
+			name: "load sin media",
+			from: playing, cmd: Command{Type: syncevent.Load},
+			want: playing, wantErr: syncevent.ErrInvalidMedia,
+		},
+		{
+			name: "seek conserva la media y la velocidad",
+			from: State{Status: Playing, PositionMs: 0, UpdatedAtMs: t0, Rate: 1.25, Version: 3, MediaID: "m1"},
+			cmd:  Command{Type: syncevent.Seek, PositionMs: 5000},
+			want: State{Status: Playing, PositionMs: 5000, UpdatedAtMs: recv, Rate: 1.25, Version: 4, MediaID: "m1"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.from.Apply(tt.cmd, recv, 0)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("Apply =\n %+v\nwant\n %+v", got, tt.want)
+			}
+		})
+	}
+}

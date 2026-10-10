@@ -584,3 +584,43 @@ func TestCacheIgnoresStaleBroadcast(t *testing.T) {
 		t.Errorf("payload corrupto alteró la caché: %+v", st)
 	}
 }
+
+func TestRateAndLoadBroadcastWithMedia(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	hc := connect(t, h, host)
+	next(t, hc)
+	g := connect(t, h, guest)
+	next(t, g)
+
+	load := cmd("e-load", syncevent.Load, 0)
+	load["media_id"] = "media-42"
+	send(t, h, hc, load)
+	if ev := nextOf(t, g, syncevent.Load); ev.MediaID != "media-42" || ev.Status != "paused" || ev.Rate != 1 || ev.Version != 1 {
+		t.Errorf("broadcast LOAD = %+v", ev)
+	}
+
+	rate := cmd("e-rate", syncevent.Rate, 2000)
+	rate["rate"] = 1.5
+	send(t, h, hc, rate)
+	ev := nextOf(t, g, syncevent.Rate)
+	if ev.Rate != 1.5 || ev.PositionMs != 2000 || ev.MediaID != "media-42" || ev.Version != 2 {
+		t.Errorf("broadcast RATE = %+v", ev)
+	}
+	if st, ok := h.cached(room); !ok || st.MediaID != "media-42" || st.Rate != 1.5 {
+		t.Errorf("la caché debe reflejar media y rate: %+v", st)
+	}
+
+	// Un participante nuevo ve el vídeo actual en su STATE.
+	g2 := connect(t, h, guestTwo)
+	if st := next(t, g2); st.MediaID != "media-42" || st.Rate != 1.5 {
+		t.Errorf("STATE = %+v", st)
+	}
+
+	bad := cmd("e-bad", syncevent.Rate, 0)
+	bad["rate"] = 10.0
+	send(t, h, hc, bad)
+	if ev := nextOf(t, hc, syncevent.Error); ev.Code != syncevent.CodeInvalid || ev.RefEventID != "e-bad" {
+		t.Errorf("RATE fuera de rango = %+v", ev)
+	}
+}

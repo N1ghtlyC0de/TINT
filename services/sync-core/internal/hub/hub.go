@@ -195,7 +195,7 @@ func (h *Hub) Deliver(roomID string, payload []byte) {
 	if isCommand {
 		r.update(master.State{
 			Status: master.Status(ev.Status), PositionMs: ev.PositionMs, UpdatedAtMs: ev.UpdatedAtMs,
-			Rate: ev.Rate, Version: ev.Version,
+			Rate: ev.Rate, Version: ev.Version, MediaID: ev.MediaID,
 		}, h.now().UnixMilli())
 	}
 	for c := range r.clients {
@@ -242,11 +242,11 @@ func (h *Hub) handleCommand(ctx context.Context, c *Client, ev syncevent.Event, 
 		out.OccurredAt = ev.OccurredAt
 		return json.Marshal(out)
 	}
-	cmd := master.Command{Type: ev.Type, PositionMs: ev.PositionMs}
+	cmd := master.Command{Type: ev.Type, PositionMs: ev.PositionMs, Rate: ev.Rate, MediaID: ev.MediaID}
 	st, dup, err := h.store.Apply(ctx, room, ev.EventID, cmd, now.UnixMilli(), c.RTT(), encode)
 	if err != nil {
 		code := syncevent.CodeInternal
-		if errors.Is(err, syncevent.ErrNegativePosition) {
+		if errors.Is(err, syncevent.ErrNegativePosition) || errors.Is(err, syncevent.ErrInvalidRate) || errors.Is(err, syncevent.ErrInvalidMedia) {
 			code = syncevent.CodeInvalid
 		} else {
 			log.Printf("hub: comando %s en sala %s: %v", ev.Type, room, err)
@@ -415,6 +415,7 @@ func stateEvent(typ syncevent.Type, room string, st master.State, now time.Time)
 	ev.Rate = st.Rate
 	ev.UpdatedAtMs = st.UpdatedAtMs
 	ev.ServerTimeMs = now.UnixMilli()
+	ev.MediaID = st.MediaID
 	return ev
 }
 

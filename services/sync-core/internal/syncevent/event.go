@@ -15,6 +15,8 @@ const (
 	Play  Type = "PLAY"
 	Pause Type = "PAUSE"
 	Seek  Type = "SEEK"
+	Rate  Type = "RATE" // cambia la velocidad de reproducción
+	Load  Type = "LOAD" // carga otro vídeo (media_id) y pausa
 
 	// Latido servidor → cliente; el cliente responde con SYNC_CHECK.
 	Heartbeat Type = "HEARTBEAT"
@@ -26,6 +28,19 @@ const (
 	HostStatus     Type = "HOST_STATUS"
 	Ack            Type = "ACK"
 	Error          Type = "ERROR"
+	// Control indica a cada cliente si puede emitir comandos (delegación).
+	Control Type = "CONTROL"
+
+	// Revoked solo viaja por el bus entre réplicas (lo publica identity-api):
+	// cierra las conexiones del token revocado y nunca llega a los clientes.
+	Revoked Type = "REVOKED"
+)
+
+// Límites de los comandos RATE y LOAD.
+const (
+	MinRate       = 0.25
+	MaxRate       = 4.0
+	MaxMediaIDLen = 128
 )
 
 // Códigos de error enviados en mensajes ERROR.
@@ -64,6 +79,17 @@ type Event struct {
 	RefEventID string `json:"ref_event_id,omitempty"`
 	Code       string `json:"code,omitempty"`
 	Duplicate  bool   `json:"duplicate,omitempty"`
+
+	// Vídeo actual de la sala (STATE y broadcasts de comandos).
+	MediaID string `json:"media_id,omitempty"`
+	// RTT suavizado de este cliente (HEARTBEAT).
+	RTTMs int64 `json:"rtt_ms,omitempty"`
+	// Delegación de control: can_control va al cliente; holder (sub del
+	// delegado) solo viaja por el bus entre réplicas.
+	CanControl *bool  `json:"can_control,omitempty"`
+	Holder     string `json:"holder,omitempty"`
+	// Token revocado (REVOKED, solo bus).
+	JTI string `json:"jti,omitempty"`
 }
 
 var (
@@ -73,6 +99,8 @@ var (
 	ErrMissingTimestamp = errors.New("occurred_at y received_at son obligatorios")
 	ErrNegativePosition = errors.New("position_ms no puede ser negativo")
 	ErrReceivedBefore   = errors.New("received_at no puede ser anterior a occurred_at")
+	ErrInvalidRate      = errors.New("rate debe estar entre 0.25 y 4")
+	ErrInvalidMedia     = errors.New("media_id es obligatorio y de máximo 128 caracteres")
 )
 
 // Validate verifica que un evento completo (ya sellado por el servidor)
@@ -82,7 +110,7 @@ func (e Event) Validate() error {
 		return err
 	}
 	switch e.Type {
-	case Play, Pause, Seek, Heartbeat, SyncCheck, State, SyncCorrection, HostStatus, Ack, Error:
+	case Play, Pause, Seek, Rate, Load, Heartbeat, SyncCheck, State, SyncCorrection, HostStatus, Ack, Error, Control, Revoked:
 	default:
 		return fmt.Errorf("%w: %q", ErrUnsupportedType, e.Type)
 	}
@@ -103,12 +131,39 @@ func (e Event) ValidateInbound() error {
 		return err
 	}
 	switch e.Type {
-	case Play, Pause, Seek, SyncCheck:
+	case Play, Pause, Seek, Rate, Load, SyncCheck:
 	default:
 		return fmt.Errorf("%w: %q", ErrUnsupportedType, e.Type)
 	}
 	if e.OccurredAt.IsZero() {
 		return ErrMissingTimestamp
+	}
+	return e.validateArgs()
+}
+
+// validateArgs valida los argumentos propios de RATE y LOAD.
+func (e Event) validateArgs() error {
+	switch e.Type {
+	case Rate:
+		return ValidateRate(e.Rate)
+	case Load:
+		return ValidateMedia(e.MediaID)
+	}
+	return nil
+}
+
+// ValidateRate verifica que la velocidad esté en [MinRate, MaxRate].
+func ValidateRate(rate float64) error {
+	if rate < MinRate || rate > MaxRate {
+		return ErrInvalidRate
+	}
+	return nil
+}
+
+// ValidateMedia verifica el identificador de vídeo de LOAD.
+func ValidateMedia(mediaID string) error {
+	if mediaID == "" || len(mediaID) > MaxMediaIDLen {
+		return ErrInvalidMedia
 	}
 	return nil
 }
@@ -128,7 +183,11 @@ func (e Event) validateBase() error {
 
 // IsCommand indica si el evento es un comando de reproducción del Host.
 func (e Event) IsCommand() bool {
-	return e.Type == Play || e.Type == Pause || e.Type == Seek
+	switch e.Type {
+	case Play, Pause, Seek, Rate, Load:
+		return true
+	}
+	return false
 }
 
 // Latency devuelve el tiempo de tránsito del evento.
@@ -154,6 +213,32 @@ func ChannelKey(roomID string) string {
 // HostsKey devuelve el set de conexiones de host/co-host activas.
 func HostsKey(roomID string) string {
 	return "room:" + roomID + ":hosts_online"
+}
+
+// RevokedKey marca un jti revocado por identity-api.
+func RevokedKey(jti string) string {
+	return "token:revoked:" + jti
+}
+
+// MembersKey es el ZSET de participantes vivos (miembro = sub, score = último latido).
+func MembersKey(roomID string) string {
+	return "room:" + roomID + ":members"
+}
+
+// DelegateKey guarda el sub del participante con control delegado.
+func DelegateKey(roomID string) string {
+	return "room:" + roomID + ":delegate"
+}
+
+// HostStatusKey guarda el último HOST_STATUS publicado ("1"/"0") para
+// publicar solo transiciones aunque varias réplicas lo evalúen.
+func HostStatusKey(roomID string) string {
+	return "room:" + roomID + ":host_online"
+}
+
+// HostlessSinceKey guarda desde cuándo (unix ms) la sala no tiene host.
+func HostlessSinceKey(roomID string) string {
+	return "room:" + roomID + ":hostless_since"
 }
 
 // Int64 y Bool crean punteros para campos opcionales donde el cero es válido.

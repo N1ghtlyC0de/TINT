@@ -31,12 +31,15 @@ type State struct {
 	Rate        float64 // velocidad de reproducción
 	Version     int64   // orden total de comandos aplicados
 	HostID      string
+	MediaID     string // vídeo actual de la sala ("" = sin vídeo)
 }
 
 // Command es una orden del Host sobre el reproductor.
 type Command struct {
 	Type       syncevent.Type
-	PositionMs int64 // posición del reproductor del Host al emitir el comando
+	PositionMs int64   // posición del reproductor del Host al emitir el comando
+	Rate       float64 // nueva velocidad (RATE)
+	MediaID    string  // nuevo vídeo (LOAD)
 }
 
 // Initial devuelve una sala nueva: pausada al inicio del video.
@@ -58,9 +61,7 @@ func (s State) PositionAt(nowMs int64) int64 {
 // posición hace ~rtt/2, así que el ancla se fija en ese instante.
 // Ante un error devuelve el estado sin cambios.
 func (s State) Apply(cmd Command, receivedAtMs, rttMs int64) (State, error) {
-	switch cmd.Type {
-	case syncevent.Play, syncevent.Pause, syncevent.Seek:
-	default:
+	if !(syncevent.Event{Type: cmd.Type}).IsCommand() {
 		return s, ErrNotCommand
 	}
 	if cmd.PositionMs < 0 {
@@ -68,15 +69,25 @@ func (s State) Apply(cmd Command, receivedAtMs, rttMs int64) (State, error) {
 	}
 
 	next := s
+	next.Rate = s.rate()
 	switch cmd.Type {
 	case syncevent.Play:
 		next.Status = Playing
 	case syncevent.Pause:
 		next.Status = Paused
+	case syncevent.Rate:
+		if err := syncevent.ValidateRate(cmd.Rate); err != nil {
+			return s, err
+		}
+		next.Rate = cmd.Rate
+	case syncevent.Load:
+		if err := syncevent.ValidateMedia(cmd.MediaID); err != nil {
+			return s, err
+		}
+		next.Status, next.Rate, next.MediaID = Paused, 1, cmd.MediaID
 	}
 	next.PositionMs = cmd.PositionMs
 	next.UpdatedAtMs = receivedAtMs - max(rttMs, 0)/2
-	next.Rate = s.rate()
 	next.Version++
 	return next, nil
 }
