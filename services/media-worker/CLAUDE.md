@@ -4,7 +4,7 @@
 ## Estructura del proyecto (no hace falta re-explorarla)
 
 - Monorepo en `/home/camilo/Work/tint`: `apps/web`, `services/{sync-core,social-core,media-worker,analytics}`, `scripts/`, `.github/workflows/` (CI/CD), `Makefile` (`make test-python`), `docker-compose.yml`.
-- Este servicio (`services/media-worker`): `src/media_worker/` (`__main__.py` CLI, `probe.py`, `ambilight.py`), `tests/`, `videos/` (vídeos de prueba, fuera de `src/` para que el `Dockerfile`, que solo copia `src/`, no los incluya), `README.md` (uso), `STATUS.md`.
+- Este servicio (`services/media-worker`): `src/media_worker/` (`__main__.py` CLI y `--consume`, `probe.py`, `ambilight.py`, `pipeline.py`, `consumer.py`, `storage.py`, `repository.py`, `config.py`), `tests/` (dobles en `tests/fakes.py`), `videos/` (vídeos de prueba, fuera de `src/` para que el `Dockerfile`, que solo copia `src/`, no los incluya), `README.md` (uso), `STATUS.md`.
 
 ## Reglas de ramas (importante)
 

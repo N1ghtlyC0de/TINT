@@ -27,6 +27,7 @@ Eres el agente responsable del procesamiento multimedia asíncrono de **TINT**. 
 
 | Entidad | Almacén | Campos clave |
 | :--- | :--- | :--- |
+| `media:uploads` | Redis Stream (grupo `media-workers`) | `video_id` (disparador; el worker hace `XACK` tras procesar) |
 | `videos` | PostgreSQL | `id`, `storage_key`, `duration_ms`, `status` (`processing` → `ready` \| `failed`), `updated_at` |
 | `{video_id}/source.*` | MinIO (`tint-media`) | Archivo original |
 | `{video_id}/ambilight.json` | MinIO (`tint-media`) | `[{ "t_ms", "top", "bottom", "left", "right" }]` colores hex a 1 FPS |
