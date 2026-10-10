@@ -376,6 +376,22 @@ func TestTickDetectsStaleClient(t *testing.T) {
 	}
 }
 
+func TestWithHeartbeat(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t).WithHeartbeat(100 * time.Millisecond)
+	if h.HeartbeatInterval() != 100*time.Millisecond {
+		t.Fatalf("HeartbeatInterval = %v", h.HeartbeatInterval())
+	}
+	g := connect(t, h, guest)
+	if g.Context().Err() != nil || g.Claims() != guest {
+		t.Fatal("cliente recién conectado debe estar activo")
+	}
+	e.clock.advance(301 * time.Millisecond)
+	if _, err := h.Tick(g); !errors.Is(err, ErrStale) {
+		t.Errorf("con latido de 100 ms, 301 ms sin respuesta es stale: %v", err)
+	}
+}
+
 func TestSlowConsumerIsKicked(t *testing.T) {
 	e := newEnv(t)
 	h := e.newHub(t)

@@ -43,6 +43,9 @@ func newClient(parent context.Context, claims auth.Claims, nowMs int64) *Client 
 // Send es la cola de mensajes salientes del cliente.
 func (c *Client) Send() <-chan []byte { return c.send }
 
+// Context se cancela cuando el cliente debe desconectarse.
+func (c *Client) Context() context.Context { return c.ctx }
+
 // Done se cierra cuando el cliente debe desconectarse.
 func (c *Client) Done() <-chan struct{} { return c.ctx.Done() }
 

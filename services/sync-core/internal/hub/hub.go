@@ -35,7 +35,7 @@ const (
 	// SendBuffer es la cola de salida por cliente; si se llena, el cliente
 	// es demasiado lento y se desconecta para no frenar a los demás.
 	SendBuffer = 64
-	// HeartbeatInterval es la frecuencia de HEARTBEAT (y de SYNC_CHECK).
+	// HeartbeatInterval es la frecuencia por defecto de HEARTBEAT (y de SYNC_CHECK).
 	HeartbeatInterval = time.Second
 	// MaxMissedChecks: latidos sin SYNC_CHECK antes de cerrar la conexión.
 	MaxMissedChecks = 3
@@ -75,6 +75,8 @@ type Hub struct {
 	tel   Telemetry
 	now   func() time.Time
 
+	heartbeat time.Duration
+
 	// mu protege rooms. Se mantiene durante Subscribe/Unsubscribe para que
 	// un join y un leave concurrentes de la misma sala no se desordenen.
 	mu    sync.Mutex
@@ -83,8 +85,17 @@ type Hub struct {
 
 // New crea un Hub.
 func New(s StateStore, b Bus, t Telemetry) *Hub {
-	return &Hub{store: s, bus: b, tel: t, now: time.Now, rooms: make(map[string]map[*Client]struct{})}
+	return &Hub{store: s, bus: b, tel: t, now: time.Now, heartbeat: HeartbeatInterval, rooms: make(map[string]map[*Client]struct{})}
 }
+
+// WithHeartbeat cambia el intervalo de HEARTBEAT (por defecto 1 s).
+func (h *Hub) WithHeartbeat(d time.Duration) *Hub {
+	h.heartbeat = d
+	return h
+}
+
+// HeartbeatInterval devuelve el intervalo de HEARTBEAT configurado.
+func (h *Hub) HeartbeatInterval() time.Duration { return h.heartbeat }
 
 // Connect registra una conexión autenticada, crea la sala si no existe y le
 // encola de inmediato el STATE actual (HU-SYNC-01).
@@ -259,7 +270,7 @@ func (h *Hub) handleSyncCheck(ctx context.Context, c *Client, ev syncevent.Event
 // responder SYNC_CHECK durante MaxMissedChecks intervalos.
 func (h *Hub) Tick(c *Client) ([]byte, error) {
 	now := h.now()
-	if now.UnixMilli()-c.lastCheckMs.Load() > (HeartbeatInterval * MaxMissedChecks).Milliseconds() {
+	if now.UnixMilli()-c.lastCheckMs.Load() > (h.heartbeat * MaxMissedChecks).Milliseconds() {
 		return nil, ErrStale
 	}
 	ev := baseEvent(syncevent.Heartbeat, c.claims.RoomID, now)
