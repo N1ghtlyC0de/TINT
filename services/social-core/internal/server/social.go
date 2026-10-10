@@ -37,6 +37,73 @@ type Deps struct {
 	mu     sync.Mutex
 	relays map[string]*roomRelay
 	seen   *seenIDs
+	// presence cuenta conexiones por sala y usuario para emitir un solo
+	// aviso de entrada/salida aunque el usuario abra varias pestañas.
+	presence map[string]map[string]int
+}
+
+// presenceJoin suma una conexión; true si es la primera del usuario en la sala.
+func (d *Deps) presenceJoin(roomID, userID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.presence == nil {
+		d.presence = make(map[string]map[string]int)
+	}
+	users := d.presence[roomID]
+	if users == nil {
+		users = make(map[string]int)
+		d.presence[roomID] = users
+	}
+	users[userID]++
+	return users[userID] == 1
+}
+
+// presenceLeave resta una conexión; true si fue la última del usuario.
+func (d *Deps) presenceLeave(roomID, userID string) bool {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	users := d.presence[roomID]
+	if users == nil || users[userID] <= 0 {
+		return false
+	}
+	users[userID]--
+	if users[userID] > 0 {
+		return false
+	}
+	delete(users, userID)
+	if len(users) == 0 {
+		delete(d.presence, roomID)
+	}
+	return true
+}
+
+func noticeText(nick string, kind socialevent.NoticeKind) string {
+	if kind == socialevent.NoticeLeft {
+		return nick + " salió del chat"
+	}
+	return nick + " entró al chat"
+}
+
+// emitNotice envía un aviso de presencia solo en vivo: no se guarda en el
+// historial, no se publica a otras réplicas ni se registra en analítica.
+func (d *Deps) emitNotice(roomID string, claims auth.Claims, kind socialevent.NoticeKind) {
+	now := d.now()
+	n := socialevent.Notice{
+		EventID: d.newID(), Type: socialevent.TypeNotice, RoomID: roomID,
+		UserID: claims.Subject, Nick: claims.Nick, Kind: kind,
+		Text: noticeText(claims.Nick, kind), OccurredAt: now,
+	}
+	if err := n.Validate(); err != nil {
+		return
+	}
+	raw, err := json.Marshal(n)
+	if err != nil {
+		return
+	}
+	if d.markSeen(n.EventID) {
+		return
+	}
+	d.Hub.Broadcast(roomID, raw)
 }
 
 func (d *Deps) now() time.Time {
@@ -130,6 +197,11 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 	histRaw, _ := json.Marshal(socialevent.HistoryEnvelope{Type: socialevent.TypeHistory, RoomID: roomID, Messages: recent})
 	_ = c.Write(ctx, websocket.MessageText, histRaw)
 
+	// Aviso de entrada (solo en vivo, tras el historial).
+	if d.presenceJoin(roomID, claims.Subject) {
+		d.emitNotice(roomID, claims, socialevent.NoticeJoined)
+	}
+
 	// Escritor hacia este cliente; termina cuando el handler retorna.
 	done := make(chan struct{})
 	defer close(done)
@@ -201,6 +273,12 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		}
 		// broadcastOnce traga el eco de Redis si el relay lo vio primero.
 		d.broadcastOnce(roomID, out)
+	}
+
+	// Salida explícita antes del defer: el que se va no recibe su propio aviso.
+	d.Hub.Leave(roomID, connID)
+	if d.presenceLeave(roomID, claims.Subject) {
+		d.emitNotice(roomID, claims, socialevent.NoticeLeft)
 	}
 }
 

@@ -89,8 +89,23 @@ func TestSocialNoDuplicateWithPubSub(t *testing.T) {
 	if _, err := readOne(t, a, 5*time.Second); err != nil {
 		t.Fatalf("A history: %v", err)
 	}
+	if m, err := readOne(t, a, 5*time.Second); err != nil {
+		t.Fatalf("A notice propio: %v", err)
+	} else if m["type"] != "notice" || m["kind"] != "joined" {
+		t.Fatalf("A = %v, want notice joined", m)
+	}
 	if _, err := readOne(t, b, 5*time.Second); err != nil {
 		t.Fatalf("B history: %v", err)
+	}
+	if m, err := readOne(t, b, 5*time.Second); err != nil {
+		t.Fatalf("B notice propio: %v", err)
+	} else if m["type"] != "notice" || m["kind"] != "joined" {
+		t.Fatalf("B = %v, want notice joined", m)
+	}
+	if m, err := readOne(t, a, 5*time.Second); err != nil {
+		t.Fatalf("A notice de B: %v", err)
+	} else if m["type"] != "notice" || m["kind"] != "joined" {
+		t.Fatalf("A = %v, want notice joined de B", m)
 	}
 
 	send := socialevent.ChatSend{
@@ -112,8 +127,12 @@ func TestSocialNoDuplicateWithPubSub(t *testing.T) {
 		if got["type"] != "chat_message" {
 			t.Fatalf("%s = %v, want chat_message", name, got)
 		}
-		if _, err := readOne(t, c, 300*time.Millisecond); err == nil {
-			t.Fatalf("%s recibió el mensaje DUPLICADO (eco Pub/Sub)", name)
+		// Ventana anti-eco: solo falla si llega OTRO chat_message. Un notice
+		// de salida es legítimo (el check de 300ms del otro cliente autocierra
+		// su conexión al expirar el contexto — así es nhooyr — y eso emite left).
+		// Esa lectura con timeout es además la última en esta conexión.
+		if m, err := readOne(t, c, 300*time.Millisecond); err == nil && m["type"] == "chat_message" {
+			t.Fatalf("%s recibió el mensaje DUPLICADO (eco Pub/Sub): %v", name, m)
 		}
 	}
 	_ = chat.HistoryKey
