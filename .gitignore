@@ -11,3 +11,7 @@
 
 # Logs
 *.log
+
+# Local agent tooling (no commitear)
+.agents/
+skills-lock.json
