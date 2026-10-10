@@ -31,6 +31,7 @@ import (
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/auth"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/drift"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/master"
+	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/metrics"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/store"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/syncevent"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/telemetry"
@@ -99,6 +100,9 @@ type Hub struct {
 	sweepEvery time.Duration
 	handoff    time.Duration
 
+	reg *metrics.Registry
+	m   hubMetrics
+
 	// mu protege rooms. Se mantiene durante Subscribe/Unsubscribe para que
 	// un join y un leave concurrentes de la misma sala no se desordenen.
 	mu    sync.Mutex
@@ -118,11 +122,65 @@ type roomEntry struct {
 
 // New crea un Hub.
 func New(s StateStore, b Bus, t Telemetry) *Hub {
-	return &Hub{
+	h := &Hub{
 		store: s, bus: b, tel: t, now: time.Now,
 		heartbeat: HeartbeatInterval, sweepEvery: SweepInterval, handoff: HandoffAfter,
-		rooms: make(map[string]*roomEntry),
+		rooms: make(map[string]*roomEntry), reg: metrics.NewRegistry(),
 	}
+	h.m = newHubMetrics(h.reg, h.roomCount)
+	return h
+}
+
+// latencyBuckets (segundos) centrados en el objetivo de 100 ms.
+var latencyBuckets = []float64{0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1}
+
+// hubMetrics son las métricas operativas del hub (GET /metrics).
+type hubMetrics struct {
+	connections *metrics.Gauge
+	commands    *metrics.CounterVec
+	invalid     *metrics.Counter
+	rateLimited *metrics.Counter
+	disconnects *metrics.CounterVec
+	corrections *metrics.CounterVec
+	apply       *metrics.Histogram
+	delivery    *metrics.Histogram
+}
+
+func newHubMetrics(r *metrics.Registry, rooms func() float64) hubMetrics {
+	m := hubMetrics{
+		connections: r.Gauge("sync_connections", "Conexiones WebSocket activas en esta réplica."),
+		commands:    r.CounterVec("sync_commands_total", "Comandos de reproducción por resultado.", "result"),
+		invalid:     r.Counter("sync_messages_invalid_total", "Mensajes entrantes inválidos."),
+		rateLimited: r.Counter("sync_messages_rate_limited_total", "Mensajes rechazados por rate limit."),
+		disconnects: r.CounterVec("sync_disconnects_total", "Desconexiones por motivo.", "reason"),
+		corrections: r.CounterVec("sync_corrections_total", "Correcciones de drift por estrategia.", "strategy"),
+		apply:       r.Histogram("sync_command_apply_seconds", "Duración de la escritura atómica de un comando en Redis.", latencyBuckets),
+		delivery:    r.Histogram("sync_broadcast_delivery_seconds", "Recepción del comando → entrega del broadcast en esta réplica (Pub/Sub).", latencyBuckets),
+	}
+	r.GaugeFunc("sync_rooms", "Salas con clientes en esta réplica.", rooms)
+	return m
+}
+
+// Registry devuelve el registro de métricas del hub, para exponerlo y
+// añadirle las de otros componentes.
+func (h *Hub) Registry() *metrics.Registry { return h.reg }
+
+func (h *Hub) roomCount() float64 {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return float64(len(h.rooms))
+}
+
+func disconnectReason(cause error) string {
+	switch {
+	case errors.Is(cause, ErrStale):
+		return "stale"
+	case errors.Is(cause, ErrSlowConsumer):
+		return "slow"
+	case errors.Is(cause, ErrRevoked):
+		return "revoked"
+	}
+	return "normal"
 }
 
 // WithHeartbeat cambia el intervalo de HEARTBEAT (por defecto 1 s).
@@ -355,6 +413,7 @@ func (h *Hub) Connect(parent context.Context, claims auth.Claims) (*Client, erro
 	if err := h.join(ctx, c); err != nil {
 		return nil, err
 	}
+	h.m.connections.Inc()
 	hostID := ""
 	if claims.Role == auth.RoleHost {
 		hostID = claims.Sub
@@ -396,11 +455,14 @@ func (h *Hub) Connect(parent context.Context, claims auth.Claims) (*Client, erro
 // Disconnect da de baja al cliente. Es idempotente. La sala sobrevive con
 // su TTL de gracia (REQ-07); si era el último host se avisa a los demás.
 func (h *Hub) Disconnect(c *Client) {
+	cause := c.Err()
 	c.close(ErrClosed)
 	left, ok := h.leave(c)
 	if !ok {
 		return
 	}
+	h.m.connections.Dec()
+	h.m.disconnects.With(disconnectReason(cause)).Inc()
 	ctx, cancel := context.WithTimeout(context.Background(), ioTimeout)
 	defer cancel()
 	room := c.claims.RoomID
@@ -447,6 +509,9 @@ func (h *Hub) Deliver(roomID string, payload []byte) {
 		return
 	}
 	if ev.IsCommand() {
+		if d := h.now().Sub(ev.ReceivedAt); d >= 0 {
+			h.m.delivery.Observe(d.Seconds())
+		}
 		r.update(master.State{
 			Status: master.Status(ev.Status), PositionMs: ev.PositionMs, UpdatedAtMs: ev.UpdatedAtMs,
 			Rate: ev.Rate, Version: ev.Version, MediaID: ev.MediaID,
@@ -462,16 +527,19 @@ func (h *Hub) Deliver(roomID string, payload []byte) {
 func (h *Hub) Handle(ctx context.Context, c *Client, raw []byte) {
 	now := h.now()
 	if !c.allow(now.UnixMilli()) {
+		h.m.rateLimited.Inc()
 		c.enqueue(mustJSON(errorEvent(c.claims.RoomID, "", syncevent.CodeRateLimited, now)))
 		return
 	}
 	var ev syncevent.Event
 	if err := json.Unmarshal(raw, &ev); err != nil {
+		h.m.invalid.Inc()
 		c.enqueue(mustJSON(errorEvent(c.claims.RoomID, "", syncevent.CodeInvalid, now)))
 		return
 	}
 	ev.ReceivedAt = now // el reloj del servidor siempre es el de recepción
 	if err := ev.ValidateInbound(); err != nil || ev.RoomID != c.claims.RoomID {
+		h.m.invalid.Inc()
 		c.enqueue(mustJSON(errorEvent(c.claims.RoomID, ev.EventID, syncevent.CodeInvalid, now)))
 		return
 	}
@@ -487,6 +555,7 @@ func (h *Hub) Handle(ctx context.Context, c *Client, raw []byte) {
 func (h *Hub) handleCommand(ctx context.Context, c *Client, ev syncevent.Event, now time.Time) {
 	room := c.claims.RoomID
 	if !h.canControl(c) {
+		h.m.commands.With("forbidden").Inc()
 		c.enqueue(mustJSON(errorEvent(room, ev.EventID, syncevent.CodeForbidden, now)))
 		return
 	}
@@ -497,16 +566,24 @@ func (h *Hub) handleCommand(ctx context.Context, c *Client, ev syncevent.Event, 
 		return json.Marshal(out)
 	}
 	cmd := master.Command{Type: ev.Type, PositionMs: ev.PositionMs, Rate: ev.Rate, MediaID: ev.MediaID}
+	started := time.Now()
 	st, dup, err := h.store.Apply(ctx, room, ev.EventID, cmd, now.UnixMilli(), c.RTT(), encode)
+	h.m.apply.Observe(time.Since(started).Seconds())
 	if err != nil {
-		code := syncevent.CodeInternal
+		code, result := syncevent.CodeInternal, "error"
 		if errors.Is(err, syncevent.ErrNegativePosition) || errors.Is(err, syncevent.ErrInvalidRate) || errors.Is(err, syncevent.ErrInvalidMedia) {
-			code = syncevent.CodeInvalid
+			code, result = syncevent.CodeInvalid, "invalid"
 		} else {
 			log.Printf("hub: comando %s en sala %s: %v", ev.Type, room, err)
 		}
+		h.m.commands.With(result).Inc()
 		c.enqueue(mustJSON(errorEvent(room, ev.EventID, code, now)))
 		return
+	}
+	if dup {
+		h.m.commands.With("duplicate").Inc()
+	} else {
+		h.m.commands.With("ok").Inc()
 	}
 	ack := baseEvent(syncevent.Ack, room, now)
 	ack.RefEventID = ev.EventID
@@ -538,6 +615,7 @@ func (h *Hub) handleSyncCheck(ctx context.Context, c *Client, ev syncevent.Event
 	if corr == nil {
 		return
 	}
+	h.m.corrections.With(string(corr.Strategy)).Inc()
 	out := baseEvent(syncevent.SyncCorrection, room, now)
 	out.TargetMs = syncevent.Int64(corr.TargetMs)
 	out.PositionMs = corr.TargetMs

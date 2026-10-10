@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,7 +19,7 @@ import (
 
 func TestHealthz(t *testing.T) {
 	rec := httptest.NewRecorder()
-	NewRouter(http.NotFoundHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	NewRouter(http.NotFoundHandler(), http.NotFoundHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
@@ -33,7 +35,7 @@ func TestHealthz(t *testing.T) {
 
 func TestHealthzRejectsPost(t *testing.T) {
 	rec := httptest.NewRecorder()
-	NewRouter(http.NotFoundHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/healthz", nil))
+	NewRouter(http.NotFoundHandler(), http.NotFoundHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/healthz", nil))
 
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rec.Code)
@@ -43,12 +45,12 @@ func TestHealthzRejectsPost(t *testing.T) {
 func TestWSRouteDelegatesToSyncHandler(t *testing.T) {
 	sync := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusTeapot) })
 	rec := httptest.NewRecorder()
-	NewRouter(sync).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ws/sync?room_id=x", nil))
+	NewRouter(sync, http.NotFoundHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ws/sync?room_id=x", nil))
 	if rec.Code != http.StatusTeapot {
 		t.Errorf("GET /ws/sync status = %d", rec.Code)
 	}
 	rec = httptest.NewRecorder()
-	NewRouter(sync).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/ws/sync", nil))
+	NewRouter(sync, http.NotFoundHandler()).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/ws/sync", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("POST /ws/sync status = %d", rec.Code)
 	}
@@ -119,6 +121,17 @@ func TestRunServesAndShutsDownGracefully(t *testing.T) {
 	if resp != nil {
 		_ = resp.Body.Close()
 	}
+	resp, err = http.Get("http://" + addr + "/metrics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	for _, want := range []string{"sync_connections 0", "sync_store_conflicts_total 0", "sync_telemetry_dropped_total 0"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("/metrics sin %q", want)
+		}
+	}
 
 	cancel()
 	select {
@@ -128,5 +141,14 @@ func TestRunServesAndShutsDownGracefully(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Run no terminó tras cancelar el contexto")
+	}
+}
+
+func TestMetricsRoute(t *testing.T) {
+	m := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(299) })
+	rec := httptest.NewRecorder()
+	NewRouter(http.NotFoundHandler(), m).ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != 299 {
+		t.Errorf("GET /metrics debe delegar en el handler de métricas: %d", rec.Code)
 	}
 }

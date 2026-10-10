@@ -56,11 +56,15 @@ func Run(ctx context.Context, getenv func(string) string) error {
 	defer b.Close()
 	go tel.Run(runCtx)
 	go h.Run(runCtx)
+	reg := h.Registry()
+	reg.CounterFunc("sync_store_conflicts_total", "Reintentos de escritura por conflicto entre réplicas.", func() float64 { return float64(st.Conflicts()) })
+	reg.CounterFunc("sync_telemetry_dropped_total", "Muestras de drift descartadas por buffer lleno.", func() float64 { return float64(tel.Dropped()) })
+	reg.CounterFunc("sync_telemetry_failed_total", "Muestras de drift que no se pudieron escribir en Redis.", func() float64 { return float64(tel.Failed()) })
 
 	verifier := auth.NewVerifier(cfg.JWTSecret, cfg.JWTIssuer, cfg.JWTAudience)
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           NewRouter(ws.NewHandler(h, verifier, st, cfg.AllowedOrigins)),
+		Handler:           NewRouter(ws.NewHandler(h, verifier, st, cfg.AllowedOrigins), reg.Handler()),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	errCh := make(chan error, 1)
@@ -84,11 +88,13 @@ func Run(ctx context.Context, getenv func(string) string) error {
 	}
 }
 
-// NewRouter construye el router HTTP del servicio.
-func NewRouter(sync http.Handler) http.Handler {
+// NewRouter construye el router HTTP del servicio. /metrics expone métricas
+// Prometheus: en producción debe quedar detrás del ingress, no público.
+func NewRouter(sync, metrics http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthz)
 	mux.Handle("GET /ws/sync", sync)
+	mux.Handle("GET /metrics", metrics)
 	return mux
 }
 

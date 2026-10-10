@@ -20,6 +20,7 @@ import (
 	"math/rand/v2"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -68,6 +69,8 @@ type Store struct {
 	rdb   redis.UniversalClient
 	ttl   time.Duration
 	locks [lockStripes]sync.Mutex
+
+	conflicts atomic.Int64 // reintentos por escrituras de otras réplicas
 }
 
 // New crea un Store; ttl es el periodo de gracia de la sala (REQ-07).
@@ -152,12 +155,16 @@ func (s *Store) Apply(ctx context.Context, roomID, eventID string, cmd master.Co
 			continue // el siguiente intento devuelve el estado con dup=true
 		}
 		// Otra réplica escribió primero: espera aleatoria para no chocar de nuevo.
+		s.conflicts.Add(1)
 		if err := sleep(ctx, rand.N(maxBackoff)); err != nil {
 			return master.State{}, false, err
 		}
 	}
 	return master.State{}, false, fmt.Errorf("apply sala %s: %w tras %d intentos", roomID, errConflict, maxTxRetries)
 }
+
+// Conflicts cuenta los reintentos por escrituras concurrentes de otras réplicas.
+func (s *Store) Conflicts() int64 { return s.conflicts.Load() }
 
 func (s *Store) lockFor(roomID string) *sync.Mutex {
 	h := fnv.New32a()

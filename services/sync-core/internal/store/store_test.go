@@ -321,3 +321,27 @@ func TestLoadStateWithoutMediaField(t *testing.T) {
 		t.Errorf("estado = %+v (%v)", st, err)
 	}
 }
+
+// Otra réplica escribe entre la lectura y el CAS: se reintenta y se cuenta.
+func TestApplyCountsConflicts(t *testing.T) {
+	s, mr, _ := setup(t)
+	ctx := context.Background()
+	if _, err := s.Init(ctx, room, "h", t0); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	racy := func(st master.State) ([]byte, error) {
+		calls++
+		if calls == 1 {
+			mr.HSet(syncevent.StateKey(room), "version", "5") // escritura concurrente
+		}
+		return encodeVersion(st)
+	}
+	st, _, err := s.Apply(ctx, room, "e1", master.Command{Type: syncevent.Seek, PositionMs: 1}, t0, 0, racy)
+	if err != nil || st.Version != 6 {
+		t.Fatalf("Apply tras conflicto = %+v (%v)", st, err)
+	}
+	if s.Conflicts() != 1 {
+		t.Errorf("Conflicts = %d, want 1", s.Conflicts())
+	}
+}
