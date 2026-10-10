@@ -7,7 +7,7 @@ import { requireRoomOwner } from '../middlewares/requireRoomOwner.js';
 import { upsertByProvider } from '../modules/users/users.repo.js';
 import { create as createRoom, listByHost, findById, softRemoveById, updateTitle } from '../modules/rooms/rooms.repo.js';
 import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../modules/invitations/invitations.repo.js';
-import { issueGuestToken } from '../modules/auth/auth.service.js';
+import { issueGuestToken, generateSyncTicket } from '../modules/auth/auth.service.js';
 
 const router = Router();
 
@@ -143,6 +143,18 @@ router.post('/rooms/:id/invitations', requireAuthHost, requireRoomOwner, validat
     expiresAt: invitation.expiresAt,
     link: `/invite/${invitation.code}`,
   });
+});
+
+router.post('/rooms/:id/sync-ticket', requireAuthHost, requireRoomOwner, async (req, res) => {
+  const rawId = req.params.id;
+  const roomId = Array.isArray(rawId) ? rawId[0] : rawId;
+  const user = req.user!;
+  const { token, expiresAt } = generateSyncTicket({
+    userId: user.id,
+    roomId,
+    nick: user.displayName || user.email,
+  });
+  res.json({ token, expiresAt: expiresAt.toISOString() });
 });
 
 router.post('/invitations/:code/revoke', requireAuthHost, async (req, res) => {

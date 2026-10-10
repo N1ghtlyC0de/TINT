@@ -9,6 +9,7 @@ const envSchema = z.object({
   JWT_SECRET: z.string().default('dev-secret-change-in-prod'),
   GUEST_TOKEN_TTL_HOURS: z.string().default('4'),
   INVITATION_DEFAULT_TTL_HOURS: z.string().default('24'),
+  SYNC_TICKET_TTL_SECONDS: z.coerce.number().int().positive().default(600),
   DATABASE_URL: z.string().default('postgres://tint:tint@localhost:5432/tint'),
   REDIS_URL: z.string().default('redis://localhost:6379'),
   FIREBASE_PROJECT_ID: z.string().min(1, 'FIREBASE_PROJECT_ID es obligatorio'),
