@@ -119,3 +119,15 @@ def test_default_process_is_the_pipeline(monkeypatch):
     blobs = Blobs({STAGED: b"x"})
     assert handle_upload(VIDEO_ID, repo_with(("processing", STAGED)), blobs) is VideoStatus.FAILED
     called.assert_called_once()
+
+
+def test_unsupported_extension_marks_failed_without_downloading():
+    key = f"{INCOMING_PREFIX}{VIDEO_ID}/original.avi"
+    blobs = Blobs({key: b"x"})
+    blobs.download = Mock()
+    repo = repo_with(("processing", key))
+    process = Mock()
+    assert handle_upload(VIDEO_ID, repo, blobs, process=process) is VideoStatus.FAILED
+    repo.mark_failed.assert_called_once_with(VIDEO_ID)
+    blobs.download.assert_not_called()
+    process.assert_not_called()

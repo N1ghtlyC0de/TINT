@@ -9,9 +9,12 @@ import pytest
 from fakes import FakeBlobStore, FakePopen, FakeRepository, fake_run, solid_frame
 
 from media_worker.pipeline import (
+    SUPPORTED_EXTENSIONS,
     InvalidVideoIdError,
+    UnsupportedFormatError,
     VideoNotFoundError,
     process_video,
+    validate_extension,
     validate_video_id,
 )
 from media_worker.probe import VideoStatus
@@ -241,3 +244,28 @@ def test_already_normalized_video_is_published_without_running_ffmpeg(upload):
     cmd = popen.calls[0][0]
     assert cmd[cmd.index("-i") + 1] == str(upload)
     assert upload.read_bytes() == b"video-bytes"
+
+
+def test_supported_extensions_are_mp4_mov_mkv_webm():
+    assert SUPPORTED_EXTENSIONS == frozenset({".mp4", ".mov", ".mkv", ".webm"})
+
+
+@pytest.mark.parametrize("name", ["a.mp4", "a.MOV", "a.Mkv", "a.webm", "incoming/x/original.MP4"])
+def test_validate_extension_accepts_supported_formats(name):
+    assert validate_extension(name) == name
+
+
+@pytest.mark.parametrize("name", ["a.avi", "a.gif", "a.mp3", "a.m4v", "a", "a.mp4.exe", "a."])
+def test_validate_extension_rejects_everything_else(name):
+    with pytest.raises(UnsupportedFormatError):
+        validate_extension(name)
+
+
+def test_unsupported_format_is_an_error_before_touching_sql_or_bucket(tmp_path):
+    upload = tmp_path / "clip.avi"
+    upload.write_bytes(b"x")
+    repo, blobs = setup()
+    runner = pipeline_runner()
+    with pytest.raises(UnsupportedFormatError, match=r"\.avi"):
+        process_video("v1", upload, repo, blobs, runner, FakePopen())
+    assert repo.history == [] and blobs.objects == {} and runner.call_args_list == []

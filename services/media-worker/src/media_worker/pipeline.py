@@ -6,7 +6,7 @@ import logging
 import re
 import subprocess
 import tempfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from media_worker.ambilight import AmbilightError, extract_ambilight
 from media_worker.normalize import NormalizeError, is_normalized, normalize_video
@@ -17,6 +17,14 @@ logger = logging.getLogger(__name__)
 
 # El id forma parte de las claves del bucket: se rechaza cualquier cosa que no sea un id plano.
 VIDEO_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
+
+
+# Contenedores que se aceptan para preprocesar; cualquier otro se rechaza antes de tocar nada.
+SUPPORTED_EXTENSIONS = frozenset({".mp4", ".mov", ".mkv", ".webm"})
+
+
+class UnsupportedFormatError(ValueError):
+    """La extensión del archivo no es una de `SUPPORTED_EXTENSIONS`."""
 
 
 class InvalidVideoIdError(ValueError):
@@ -32,6 +40,15 @@ def validate_video_id(video_id: object) -> str:
     if isinstance(video_id, str) and VIDEO_ID_PATTERN.fullmatch(video_id):
         return video_id
     raise InvalidVideoIdError(f"video_id inválido: {video_id!r}")
+
+
+def validate_extension(name: str | Path) -> str | Path:
+    """Devuelve `name` si su extensión es admitida; si no, lanza `UnsupportedFormatError`."""
+    suffix = PurePosixPath(str(name)).suffix.lower()
+    if suffix in SUPPORTED_EXTENSIONS:
+        return name
+    allowed = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+    raise UnsupportedFormatError(f"formato {suffix or '(sin extensión)'} no admitido ({allowed})")
 
 
 def process_video(
@@ -51,10 +68,12 @@ def process_video(
     llama (la API), que lo borra cuando quiera.
 
     Los errores de entrada se lanzan antes de tocar SQL o el bucket: `InvalidVideoIdError` si el
-    id no es válido y `VideoNotFoundError` si la fila no existe. Los errores de infraestructura
+    id no es válido, `UnsupportedFormatError` si la extensión no es mp4/mov/mkv/webm y
+    `VideoNotFoundError` si la fila no existe. Los errores de infraestructura
     (SQL, S3) se propagan sin marcar `failed` para que quien llama pueda reintentar.
     """
     validate_video_id(video_id)
+    validate_extension(source)
     if not repo.start_processing(video_id):
         raise VideoNotFoundError(f"vídeo {video_id} no existe en la tabla videos")
 

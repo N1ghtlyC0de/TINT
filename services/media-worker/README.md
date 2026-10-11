@@ -28,13 +28,27 @@ Variables propias del disparador (aparte de `Settings`, que no conoce Redis):
 El vídeo **nunca se guarda en el bucket sin preprocesar**:
 
 1. Valida `video_id` (solo ids planos: `[A-Za-z0-9][A-Za-z0-9_-]{0,127}`); si no, lanza `InvalidVideoIdError` sin tocar SQL ni el bucket.
-2. Marca `processing` (si la fila no existe, lanza `VideoNotFoundError`).
-3. Inspecciona el archivo con ffprobe y obtiene la duración en ms.
-4. Si el original ya es MP4 con vídeo H.264 `yuv420p` y audio AAC (o sin audio), según ffprobe (`normalize.is_normalized`), **no se re-codifica**: se publica tal cual. Si no, normaliza con FFmpeg a MP4 (H.264 yuv420p + AAC, `-movflags +faststart`) en un archivo temporal que se borra siempre al terminar. Al re-codificar usa `libx264 -preset veryfast -crf 23` y `aac 128k`, con timeout de 4 h (`normalize.DEFAULT_TIMEOUT_S`) tras el cual mata FFmpeg. Solo se acepta entrada mp4 por ahora.
-5. Sobre el vídeo **normalizado**, extrae un fotograma por segundo con FFmpeg y calcula el color de la franja del 10 % de cada borde.
-6. Sube el normalizado como `source.mp4` y `ambilight.json` (siempre las mismas claves) y marca `ready` con `duration_ms` y `storage_key`.
+2. Comprueba la extensión del archivo: solo `.mp4`, `.mov`, `.mkv` y `.webm` (sin distinguir mayúsculas). Cualquier otra lanza `UnsupportedFormatError` sin tocar SQL ni el bucket. Si el evento llega por el disparador (`jobs.py`), la extensión de la clave `incoming/…` se comprueba **antes de descargar**: el vídeo queda en `failed` y no se descarga nada.
+3. Marca `processing` (si la fila no existe, lanza `VideoNotFoundError`).
+4. Inspecciona el archivo con ffprobe y obtiene la duración en ms.
+5. Si el original ya es MP4 con vídeo H.264 `yuv420p` y audio AAC (o sin audio), según ffprobe (`normalize.is_normalized`), **no se re-codifica**: se publica tal cual. Si no, normaliza con FFmpeg a MP4 (H.264 yuv420p + AAC, `-movflags +faststart`) en un archivo temporal que se borra siempre al terminar. Al re-codificar usa `libx264 -preset veryfast -crf 23` y `aac 128k`, con timeout de 4 h (`normalize.DEFAULT_TIMEOUT_S`) tras el cual mata FFmpeg.
+6. Sobre el vídeo **normalizado**, extrae un fotograma por segundo con FFmpeg y calcula el color de la franja del 10 % de cada borde.
+7. Sube el normalizado como `source.mp4` y `ambilight.json` (siempre las mismas claves) y marca `ready` con `duration_ms` y `storage_key`.
 
 Si el archivo está corrupto, no existe o FFmpeg falla (normalización o Ambilight, incluido el timeout), el vídeo queda en `failed` y no se sube nada. Si falla la infraestructura (SQL, MinIO), la excepción se propaga sin marcar `failed`, para que quien llama decida si reintenta.
+
+## Pruebas locales con películas reales (2026-10-11)
+
+Se ejecutó `process_video` con `ffprobe`/`ffmpeg` reales, pero con repositorio y bucket en memoria (`tests/fakes.py`): no se tocó PostgreSQL ni MinIO y los resultados no se guardaron en disco.
+
+| Archivo | Formato | Resultado | Binarios | Tiempo |
+| :-- | :-- | :-- | :-- | :-- |
+| `source.mp4` (2 h, 710 MB) | H.264 + AAC, mp4 | `ready`, publicado sin re-codificar | solo `ffprobe` | 153 s |
+| `silence.mp4` (~2 h, 1,9 GB) | H.264 + AAC, mp4 | `ready`, publicado sin re-codificar | solo `ffprobe` | 305 s |
+| `BadApple.webm` (3,6 min) | AV1 + Opus, webm | `ready`, re-codificado a MP4 | `ffprobe` + `ffmpeg` | 23 s |
+| MKV de 30 s (copia de stream) | H.264 + AAC, mkv | `is_normalized` = `False` (se normalizaría) | solo la comprobación | — |
+
+En lo ya normalizado el tiempo es casi todo Ambilight (7 149 y 7 112 muestras). La re-codificación completa de una película de 2 h no se ha medido todavía.
 
 ## Configuración (`config.Settings.from_env`)
 

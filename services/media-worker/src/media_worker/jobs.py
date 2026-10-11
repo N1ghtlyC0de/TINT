@@ -15,7 +15,13 @@ import tempfile
 import uuid
 from pathlib import Path, PurePosixPath
 
-from media_worker.pipeline import InvalidVideoIdError, VideoNotFoundError, process_video
+from media_worker.pipeline import (
+    InvalidVideoIdError,
+    UnsupportedFormatError,
+    VideoNotFoundError,
+    process_video,
+    validate_extension,
+)
 from media_worker.probe import VideoStatus
 from media_worker.storage import BlobNotFoundError
 
@@ -49,6 +55,14 @@ def handle_upload(video_id: str, repo, blobs, process=None) -> VideoStatus | Non
     if status == VideoStatus.READY.value and not key.startswith(INCOMING_PREFIX):
         logger.info("vídeo %s ya publicado en %s; evento duplicado", video_id, key)
         return VideoStatus.READY
+
+    try:
+        validate_extension(key)
+    except UnsupportedFormatError as exc:
+        # Reintentar no cambia la extensión: se marca failed sin descargar el archivo.
+        logger.warning("vídeo %s rechazado: %s", video_id, exc)
+        repo.mark_failed(video_id)
+        return VideoStatus.FAILED
 
     process = process or process_video
     with tempfile.TemporaryDirectory(prefix="tint-media-") as workdir:

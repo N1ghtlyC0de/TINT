@@ -1,7 +1,7 @@
 # STATUS — media-worker
 
 Última revisión: 2026-10-11 · Rama: `feat/media-worker-probe`, al día con `develop` (solo para esta tarea de documentación; el trabajo nuevo sale de `develop`).
-Tests: 154 passed · Cobertura: 100 % (mín. ≥ 85 %) · ruff: limpio
+Tests: 182 passed · Cobertura: 100 % (mín. ≥ 85 %) · ruff: limpio
 
 Flujo de estado del worker: `processing -> ready | failed` (sin `pending`; ese estado es de `identity-api` antes de confirmar la subida).
 
@@ -22,7 +22,7 @@ No existe MED-BE-04.
 
 | Tarea | Notas |
 | :-- | :-- |
-| Probar con películas de 2 a 3 h | Medir tiempo y memoria de la **normalización** (`normalize.py`, timeout 4 h; el Ambilight ya está medido, ver Rendimiento); con eso decidir límites de subida, el `preset` de x264 y los timeouts de FFmpeg |
+| Medir la **re-codificación** de una película de 2 a 3 h | Tiempo y memoria de `normalize.py` (timeout 4 h) con un original que no sea H.264 + AAC (el Ambilight de películas ya normalizadas está medido, ver Pruebas locales); con eso decidir límites de subida, el `preset` de x264 y los timeouts de FFmpeg |
 | Revisar el consumidor con tareas largas | Que no reclame un mensaje que sigue en proceso y lo duplique |
 | Borrar `videos/` | Los archivos llegan por la subida; comprobar antes que ningún test los use |
 | Repetir el E2E manual | Postgres real, MinIO y FFmpeg reales, con `WAIT_WORKER=1 npm run test:integration` |
@@ -32,7 +32,7 @@ No existe MED-BE-04.
 - **Se adopta el flujo de `develop`:** subida directa a MinIO con URL firmada, `identity-api` dueño del esquema `videos`, cola Redis `media:uploads`. No se rediseña en este prototipo.
 - **Preprocesar antes de publicar:** el original vive en `incoming/{id}/original.*` y nada se publica en `{id}/source.mp4` hasta pasar validación, normalización y Ambilight. Solo `process_video` publica ahí.
 - **Núcleo sin Redis:** `pipeline`, `repository`, `storage` y `Settings` no conocen Redis; su configuración vive en `TriggerSettings`.
-- **Formato estándar:** MP4 H.264 (yuv420p) + AAC con `+faststart`, clave fija `{id}/source.mp4`. Solo entrada mp4 por ahora.
+- **Formato estándar:** MP4 H.264 (yuv420p) + AAC con `+faststart`, clave fija `{id}/source.mp4`. Entrada admitida: `.mp4`, `.mov`, `.mkv` y `.webm` (`pipeline.SUPPORTED_EXTENSIONS`); cualquier otra lanza `UnsupportedFormatError` antes de tocar SQL o el bucket, y el disparador la marca `failed` sin descargar el archivo. El filtro en la firma del PUT de `identity-api` queda pendiente (otro dominio, otro PR).
 - **Normalización:** `normalize.py` omite la re-codificación si ffprobe indica que el original ya es MP4 + H.264 `yuv420p` + AAC (o sin audio); en ese caso se publica tal cual (sin forzar `faststart` ni descartar pistas extra). Ante cualquier duda del chequeo se re-codifica. Primer vídeo y primer audio; el audio es opcional. Escribe en un directorio temporal que se borra siempre; el Ambilight se extrae del normalizado. Un fallo o timeout de FFmpeg marca `failed` y no sube nada.
 - **Autenticación:** la verifica `identity-api` (Firebase); el worker no autentica.
 - **Esquema `videos`:** el worker solo hace `UPDATE` de `status`, `duration_ms`, `storage_key` y `updated_at`. Si la fila no existe lanza `VideoNotFoundError`. Columnas nuevas se piden en un PR aparte a `identity-api`.
@@ -51,11 +51,27 @@ No existe MED-BE-04.
 - El coste está en decodificar el vídeo completo (~99 % de la CPU). No hay opciones de FFmpeg que lo mejoren conservando la salida.
 - `-skip_frame nokey` sería mucho más rápido (1 h: 37 s → 3,6 s) pero muestrea keyframes y cambia los colores: decisión de producto, no adoptada.
 
+## Pruebas locales con películas reales (2026-10-11)
+
+`process_video` con `ffprobe`/`ffmpeg` reales y repositorio/bucket en memoria (nada se guardó en disco ni en MinIO):
+
+| Archivo | Resultado | Tiempo |
+| :-- | :-- | :-- |
+| `source.mp4` (2 h, 710 MB, H.264 + AAC) | `ready`, sin re-codificar (solo `ffprobe`); `source.mp4` publicado idéntico en tamaño al original | 153 s |
+| `silence.mp4` (~2 h, 1,9 GB, H.264 + AAC) | `ready`, sin re-codificar; 7 112 muestras Ambilight | 305 s |
+| `BadApple.webm` (3,6 min, AV1 + Opus) | `ready`, re-codificado a MP4 (`ffprobe` + `ffmpeg`); 219 muestras | 23 s |
+| MKV de 30 s (H.264 + AAC) | `is_normalized` = `False`, se normalizaría | — |
+
+- En lo ya normalizado el tiempo es casi todo Ambilight (~23 muestras/s de proceso).
+- No se midió la re-codificación completa de una película de 2 h (ver Pendiente).
+- Los formatos fuera de la lista admitida se cubren solo con pruebas unitarias.
+
 ## Siguiente prototipo
 
 Se coordina con `identity-api` (PRs #11 y #18 abiertos):
 
-- HLS en lugar de un solo archivo; más formatos de entrada.
+- HLS en lugar de un solo archivo; más formatos de entrada (hoy solo mp4, mov, mkv y webm).
+- Rechazar formatos no admitidos en `identity-api` al firmar el PUT (`incoming/{id}/original.<ext>`), para no subir archivos que el worker descartará.
 - Quitar Redis del flujo de vídeo, con API propia y proceso en segundo plano en el worker.
 - Biblioteca de vídeos reutilizable (hoy `videos.room_id` es NOT NULL).
 - Acciones del dueño sobre sus vídeos (listar, borrar, reintentar).
