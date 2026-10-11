@@ -1,7 +1,11 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiFetch } from '../lib/api';
-import { useRoomPlayback, type UseRoomPlaybackOptions } from './useRoomPlayback';
+import {
+  PLAYBACK_PROCESSING_POLL_MS,
+  useRoomPlayback,
+  type UseRoomPlaybackOptions,
+} from './useRoomPlayback';
 
 vi.mock('../lib/api', () => ({ apiFetch: vi.fn() }));
 const mockedApiFetch = vi.mocked(apiFetch);
@@ -180,5 +184,146 @@ describe('useRoomPlayback', () => {
     await flush();
     expect(mockedApiFetch).not.toHaveBeenCalled();
     expect(result.current.loading).toBe(false);
+  });
+
+  it('expone status y ambilightUrl (null si identity-api no los envía)', async () => {
+    mockedApiFetch.mockResolvedValueOnce(playback('m1', 'u'));
+    const { result } = setup({ roomId: 'r1', mediaId: 'm1' });
+    expect(result.current).toMatchObject({ status: null, ambilightUrl: null });
+    await flush();
+    expect(result.current).toMatchObject({ status: null, ambilightUrl: null });
+  });
+
+  it('normaliza status desconocidos a null', async () => {
+    mockedApiFetch.mockResolvedValueOnce({ ...playback('m1', 'u'), status: 'raro' });
+    const { result } = setup({ roomId: 'r1', mediaId: 'm1' });
+    await flush();
+    expect(result.current.status).toBeNull();
+  });
+
+  it('con vídeo ready expone la URL de ambilight y no re-consulta', async () => {
+    mockedApiFetch.mockResolvedValue({ ...playback('m1', 'u'), status: 'ready', ambilightUrl: 'https://minio/m1/ambilight.json' });
+    const { result } = setup({ roomId: 'r1', mediaId: 'm1' });
+    await flush();
+    expect(result.current).toMatchObject({ status: 'ready', ambilightUrl: 'https://minio/m1/ambilight.json' });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PLAYBACK_PROCESSING_POLL_MS * 3);
+    });
+    expect(mockedApiFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('mientras se procesa re-consulta cada ~5 s sin cambiar la URL del vídeo', async () => {
+    mockedApiFetch
+      .mockResolvedValueOnce({ ...playback('m1', 'https://minio/m1?sig=1'), status: 'pending', ambilightUrl: null })
+      .mockResolvedValueOnce({ ...playback('m1', 'https://minio/m1?sig=2'), status: 'processing', ambilightUrl: null })
+      .mockResolvedValueOnce({ ...playback('m1', 'https://minio/m1?sig=3'), status: 'ready', ambilightUrl: 'https://a' });
+    const { result } = setup({ roomId: 'r1', mediaId: 'm1' });
+    await flush();
+    expect(result.current).toMatchObject({ status: 'pending', url: 'https://minio/m1?sig=1' });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PLAYBACK_PROCESSING_POLL_MS - 1);
+    });
+    expect(mockedApiFetch).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+    expect(mockedApiFetch).toHaveBeenCalledTimes(2);
+    expect(result.current).toMatchObject({ status: 'processing', url: 'https://minio/m1?sig=1', loading: false });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PLAYBACK_PROCESSING_POLL_MS);
+    });
+    expect(result.current).toMatchObject({ status: 'ready', ambilightUrl: 'https://a', url: 'https://minio/m1?sig=1' });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PLAYBACK_PROCESSING_POLL_MS * 3);
+    });
+    expect(mockedApiFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('deja de re-consultar al llegar a failed', async () => {
+    mockedApiFetch
+      .mockResolvedValueOnce({ ...playback('m1', 'u'), status: 'processing' })
+      .mockResolvedValue({ ...playback('m1', 'u'), status: 'failed' });
+    const { result } = setup({ roomId: 'r1', mediaId: 'm1' });
+    await flush();
+    for (let i = 0; i < 4; i += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(PLAYBACK_PROCESSING_POLL_MS);
+      });
+    }
+    expect(result.current.status).toBe('failed');
+    expect(mockedApiFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('respeta un máximo de re-consultas', async () => {
+    mockedApiFetch.mockResolvedValue({ ...playback('m1', 'u', 60 * 60_000), status: 'processing' });
+    setup({ roomId: 'r1', mediaId: 'm1', opts: { processingPollMs: 1_000, maxProcessingPolls: 3 } });
+    await flush();
+    for (let i = 0; i < 6; i += 1) {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+    }
+    expect(mockedApiFetch).toHaveBeenCalledTimes(4);
+  });
+
+  it('un fallo al re-consultar no muestra error y sigue intentando', async () => {
+    mockedApiFetch
+      .mockResolvedValueOnce({ ...playback('m1', 'u'), status: 'processing' })
+      .mockRejectedValueOnce(new Error('503'))
+      .mockResolvedValueOnce({ ...playback('m1', 'u'), status: 'ready' });
+    const { result } = setup({ roomId: 'r1', mediaId: 'm1' });
+    await flush();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PLAYBACK_PROCESSING_POLL_MS);
+    });
+    expect(result.current.error).toBeNull();
+    expect(result.current.status).toBe('processing');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PLAYBACK_PROCESSING_POLL_MS);
+    });
+    expect(result.current.status).toBe('ready');
+  });
+
+  it('si al re-consultar la sala ya tiene otro vídeo, lo adopta entero', async () => {
+    mockedApiFetch
+      .mockResolvedValueOnce({ ...playback('m1', 'https://minio/m1'), status: 'processing' })
+      .mockResolvedValueOnce({ ...playback('m2', 'https://minio/m2'), status: 'ready' });
+    const { result } = setup({ roomId: 'r1', mediaId: undefined });
+    await flush();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PLAYBACK_PROCESSING_POLL_MS);
+    });
+    expect(result.current).toMatchObject({ mediaId: 'm2', url: 'https://minio/m2', status: 'ready' });
+  });
+
+  it('una carga completa invalida la re-consulta en vuelo', async () => {
+    let resolvePoll!: (v: unknown) => void;
+    mockedApiFetch
+      .mockResolvedValueOnce({ ...playback('m1', 'https://minio/m1'), status: 'processing' })
+      .mockReturnValueOnce(new Promise((r) => (resolvePoll = r)))
+      .mockResolvedValueOnce({ ...playback('m2', 'https://minio/m2'), status: 'pending' });
+    const { result, rerender } = setup({ roomId: 'r1', mediaId: 'm1' });
+    await flush();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PLAYBACK_PROCESSING_POLL_MS);
+    });
+    rerender({ roomId: 'r1', mediaId: 'm2' });
+    await flush();
+    resolvePoll({ ...playback('m1', 'https://minio/m1'), status: 'ready' });
+    await flush();
+    expect(result.current).toMatchObject({ mediaId: 'm2', status: 'pending' });
+  });
+
+  it('limpia la re-consulta al desmontar', async () => {
+    mockedApiFetch.mockResolvedValue({ ...playback('m1', 'u'), status: 'pending' });
+    const { unmount } = setup({ roomId: 'r1', mediaId: 'm1' });
+    await flush();
+    unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PLAYBACK_PROCESSING_POLL_MS * 5);
+    });
+    expect(mockedApiFetch).toHaveBeenCalledTimes(1);
   });
 });
