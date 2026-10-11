@@ -9,6 +9,7 @@ Eres el agente especializado en la capa de presentación de **TINT**. Tu foco es
 - Vitest + Testing Library (`jsdom`) + cobertura `v8`
 - ESLint 9 (`typescript-eslint`, `react-hooks`)
 - `@msgpack/msgpack` — codificación MessagePack opcional del Canal Sync (implementación oficial, sin dependencias, mismo modelo de datos que el JSON del protocolo).
+- `framer-motion` 11.11.17 — animaciones declarativas (`AnimatePresence`, `MotionConfig reducedMotion="user"`) del cuestionario `/test-me`; respeta `prefers-reduced-motion` y evita escribir keyframes CSS a mano.
 
 ## Responsabilidades
 - Reproductor, sala, chat, reacciones, trivias y visualización Ambilight/Heatmap.
@@ -49,6 +50,18 @@ Eres el agente especializado en la capa de presentación de **TINT**. Tu foco es
 | `src/components/host/*` | Paneles del host: "Cambiar vídeo" (subida desde el navegador con progreso y cancelar → `LOAD{media_id}`; secundaria: clave del bucket con `PUT /rooms/:id/media`) y "Participantes" (listar y retirar invitados con confirmación). |
 
 El cálculo del drift es **autoritativo en sync-core**: el cliente solo aplica las `SYNC_CORRECTION` que recibe. Flujos y diagramas en [`docs/dominio-reproduccion.md`](../../docs/dominio-reproduccion.md).
+
+## Cuestionario oculto `/test-me`
+Ruta sin `ProtectedRoute` ni enlaces desde la UI (solo por URL) para aprender cómo funciona el monorepo. Se carga con `React.lazy` para que `framer-motion` no entre al bundle principal.
+
+| Pieza | Rol |
+| :--- | :--- |
+| `src/data/quizQuestions.ts` | Banco de 60 preguntas en 7 categorías; cada una cita sus archivos fuente. Su prueba verifica que las rutas existan en el repo, el conteo por categoría y que la respuesta correcta no se concentre en una posición. |
+| `src/lib/quiz.ts` | Lógica pura: baraja (rng inyectable), 100 pts por acierto con multiplicador de racha (x2 desde 3, x3 desde 5), rangos y reducer. |
+| `src/lib/quizSounds.ts` | Efectos sintetizados con Web Audio (sin archivos); silencio persistido en `localStorage.tint_quiz_muted`. |
+| `src/hooks/useQuiz.ts` · `src/components/quiz/*` · `src/pages/TestMe.tsx` | Estado + sonidos, tarjeta, panel inferior con respuesta y fuentes, marcador y resumen con confeti. |
+
+Si cambia un dato documentado (puertos, contratos, límites), actualiza la pregunta correspondiente. Al agregar preguntas, ajusta `expected` de la categoría y cita solo datos en los que la documentación no se contradiga.
 
 ## Reglas de Dominio
 1. **Canales Aislados:** Mantén el uso de dos hooks separados: `useSyncSocket` (vídeo/comandos) y `useSocialSocket` (chat, reacciones, ambilight). Nunca mezcles los sockets.
