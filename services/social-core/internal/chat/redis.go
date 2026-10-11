@@ -89,10 +89,31 @@ func (s *RedisStore) Publish(ctx context.Context, roomID string, msg socialevent
 	return s.client.Publish(ctx, ChannelKey(roomID), raw).Err()
 }
 
-// Subscribe devuelve un canal con los mensajes publicados por otras réplicas.
-func (s *RedisStore) Subscribe(ctx context.Context, roomID string) (<-chan socialevent.ChatMessage, func()) {
-	out := make(chan socialevent.ChatMessage, 64)
-	sub := s.client.Subscribe(ctx, ChannelKey(roomID))
+// PublishReaction emite una reacción al canal de la sala (multirréplica).
+func (s *RedisStore) PublishReaction(ctx context.Context, roomID string, r socialevent.Reaction) error {
+	raw, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	return s.client.Publish(ctx, ChannelKey(roomID), raw).Err()
+}
+
+// IsRevoked indica si identity-api revocó el jti (EXISTS token:revoked:{jti}).
+// Un error de Redis se devuelve tal cual: el llamador debe fallar cerrado.
+func (s *RedisStore) IsRevoked(ctx context.Context, jti string) (bool, error) {
+	n, err := s.client.Exists(ctx, RevokedKey(jti)).Result()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// Subscribe abre UNA suscripción por sala a room:{id}:social (eventos de
+// otras réplicas) y room:{id}:sync (solo para REVOKED de identity-api).
+func (s *RedisStore) Subscribe(ctx context.Context, roomID string) (<-chan Inbound, func()) {
+	out := make(chan Inbound, 64)
+	social, sync := ChannelKey(roomID), SyncChannelKey(roomID)
+	sub := s.client.Subscribe(ctx, social, sync)
 	ch := sub.Channel()
 	done := make(chan struct{})
 	go func() {
@@ -107,18 +128,69 @@ func (s *RedisStore) Subscribe(ctx context.Context, roomID string) (<-chan socia
 				if !ok {
 					return
 				}
-				var m socialevent.ChatMessage
-				if err := json.Unmarshal([]byte(payload.Payload), &m); err != nil {
+				in, ok := decodeInbound(payload.Channel == sync, []byte(payload.Payload))
+				if !ok {
+					continue
+				}
+				if in.RevokedJTI != "" {
+					// Una revocación no se descarta aunque el buffer esté lleno.
+					select {
+					case out <- in:
+					case <-ctx.Done():
+						return
+					case <-done:
+						return
+					}
 					continue
 				}
 				select {
-				case out <- m:
+				case out <- in:
 				default:
 				}
 			}
 		}
 	}()
 	return out, func() { close(done); _ = sub.Close() }
+}
+
+// decodeInbound traduce un payload de Pub/Sub. Del canal de sync solo
+// interesa REVOKED; del social, los chat_message y reaction de otras
+// réplicas (se re-serializan por tipo: nunca se reenvía JSON arbitrario).
+func decodeInbound(fromSync bool, raw []byte) (Inbound, bool) {
+	if fromSync {
+		var ev struct {
+			Type string `json:"type"`
+			JTI  string `json:"jti"`
+		}
+		if json.Unmarshal(raw, &ev) != nil || ev.Type != "REVOKED" || ev.JTI == "" {
+			return Inbound{}, false
+		}
+		return Inbound{RevokedJTI: ev.JTI}, true
+	}
+	var head struct {
+		Type    socialevent.Type `json:"type"`
+		EventID string           `json:"event_id"`
+	}
+	if json.Unmarshal(raw, &head) != nil || head.EventID == "" {
+		return Inbound{}, false
+	}
+	var v any
+	switch head.Type {
+	case socialevent.TypeChatMessage:
+		v = &socialevent.ChatMessage{}
+	case socialevent.TypeReaction:
+		v = &socialevent.Reaction{}
+	default:
+		return Inbound{}, false
+	}
+	if json.Unmarshal(raw, v) != nil {
+		return Inbound{}, false
+	}
+	payload, err := json.Marshal(v)
+	if err != nil {
+		return Inbound{}, false
+	}
+	return Inbound{EventID: head.EventID, Payload: payload}, true
 }
 
 // TrackChat publica telemetría sin texto (solo message_length, Ley 1581).

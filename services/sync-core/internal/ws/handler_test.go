@@ -332,14 +332,22 @@ func tokenWithJTI(t *testing.T, jti string) string {
 	return tok
 }
 
-// F5: un token revocado no abre el socket y uno vivo se cierra con 4001.
+// F5: un token revocado abre el socket y se cierra de inmediato con 4001
+// (el navegador solo ve el código si hubo upgrade; un 401 llega como 1006 y
+// el cliente reconectaría para siempre). Uno vivo se cierra con 4001 al
+// llegar REVOKED por el bus.
 func TestRevokedTokens(t *testing.T) {
 	s := newServer(t, time.Second)
 	_ = s.mr.Set(syncevent.RevokedKey("j-old"), "1")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if _, resp, err := websocket.Dial(ctx, s.wsURL(room, tokenWithJTI(t, "j-old")), nil); err == nil || resp == nil || resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("token revocado: err=%v resp=%v", err, resp)
+	old, _, err := websocket.Dial(ctx, s.wsURL(room, tokenWithJTI(t, "j-old")), nil)
+	if err != nil {
+		t.Fatalf("token revocado debe hacer upgrade: %v", err)
+	}
+	defer old.CloseNow()
+	if _, data, err := old.Read(ctx); websocket.CloseStatus(err) != StatusRevoked {
+		t.Errorf("token revocado: lectura = %q %v, want cierre %d sin STATE", data, err, StatusRevoked)
 	}
 
 	c, _, err := websocket.Dial(ctx, s.wsURL(room, tokenWithJTI(t, "j-live")), nil)
@@ -356,6 +364,61 @@ func TestRevokedTokens(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+func expiredToken(t *testing.T, roomID string) string {
+	t.Helper()
+	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": "u-x", "room_id": roomID, "role": "participant", "jti": "j-exp",
+		"iss": "tint-identity", "aud": "tint:room", "exp": time.Now().Add(-time.Minute).Unix(),
+	}).SignedString([]byte(secret))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tok
+}
+
+// Un token expirado pero bien firmado hace upgrade y se cierra con 4003
+// (terminal: el cliente debe pedir otro token en lugar de reconectar).
+func TestExpiredTokenClosesWith4003(t *testing.T) {
+	s := newServer(t, time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, s.wsURL(room, expiredToken(t, room)), nil)
+	if err != nil {
+		t.Fatalf("token expirado debe hacer upgrade: %v", err)
+	}
+	defer c.CloseNow()
+	if _, data, err := c.Read(ctx); websocket.CloseStatus(err) != StatusTokenExpired {
+		t.Errorf("lectura = %q %v, want cierre %d", data, err, StatusTokenExpired)
+	}
+}
+
+// Los cierres terminales no se saltan las demás validaciones del handshake.
+func TestTerminalClosesKeepPreUpgradeChecks(t *testing.T) {
+	s := newServer(t, time.Second)
+	_ = s.mr.Set(syncevent.RevokedKey("j-old"), "1")
+	evil := &websocket.DialOptions{HTTPHeader: http.Header{"Origin": {"https://evil.example"}}}
+	tests := []struct {
+		name string
+		url  string
+		opts *websocket.DialOptions
+		want int
+	}{
+		{"revocado desde otro origen", s.wsURL(room, tokenWithJTI(t, "j-old")), evil, http.StatusForbidden},
+		{"expirado desde otro origen", s.wsURL(room, expiredToken(t, room)), evil, http.StatusForbidden},
+		{"expirado de otra sala", s.wsURL(room, expiredToken(t, "otra")), nil, http.StatusForbidden},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_, resp, err := websocket.Dial(ctx, tt.url, tt.opts)
+			if err == nil || resp == nil || resp.StatusCode != tt.want {
+				t.Errorf("err=%v resp=%v, want %d", err, resp, tt.want)
+			}
+		})
 	}
 }
 

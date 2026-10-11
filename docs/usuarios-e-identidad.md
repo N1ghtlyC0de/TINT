@@ -85,7 +85,7 @@ erDiagram
     users {
         uuid id PK "gen_random_uuid()"
         text provider "firebase"
-        text provider_sub "uid de Firebase"
+        text provider_sub "uid de Firebase; UK (provider, provider_sub)"
         text email "nullable"
         text display_name "nullable"
         text avatar_url "nullable"
@@ -136,11 +136,11 @@ erDiagram
 
 | Tabla | Migración | Notas |
 | :--- | :--- | :--- |
-| `users` | `0000_shiny_quasimodo.sql` | Se crea en el primer `requireAuthHost` (*upsert* por `provider` + `provider_sub`). |
-| `rooms` | `0000`, `0001_add-room-status.sql` y `0002_room_media.sql` | `DELETE /rooms/:id` es un **borrado lógico** (`status = 'deleted'`): la sala desaparece de los listados y sus rutas responden 410. Si se borra el usuario, se borran sus salas. |
+| `users` | `0000_shiny_quasimodo.sql` y `0005_users_provider_unique.sql` | Se crea en el primer `requireAuthHost` con un *upsert* atómico (`INSERT … ON CONFLICT (provider, provider_sub) DO UPDATE`) que en cada login refresca `email`, `display_name` y `avatar_url`. El índice único `users_provider_sub_unique` (`0005`) impide duplicados por logins concurrentes; la migración fusiona antes los duplicados existentes (conserva el más antiguo y le reasigna salas, invitaciones y vídeos). |
+| `rooms` | `0000`, `0001_add-room-status.sql` y `0002_room_media.sql` | `DELETE /rooms/:id` es un **borrado lógico** (`status = 'deleted'`): la sala desaparece de los listados y sus rutas responden 410. Además revoca todas las sesiones de invitado activas (ver §6.5). Si se borra el usuario, se borran sus salas. |
 | `invitations` | `0000` | El código `nanoid(12)` es la URL `/invite/:code`. Una invitación sirve para muchos invitados. |
 | `guest_sessions` | `0003_guest_sessions.sql` | Una fila por guest token emitido. Permite listar y revocar. |
-| `videos` | `0004_videos.sql` | Vídeos subidos a MinIO. identity-api crea la fila (`pending`) y media-worker la avanza a `processing` → `ready`/`failed`. |
+| `videos` | `0004_videos.sql` | Vídeos subidos a MinIO. identity-api crea la fila (`pending`) y, al confirmar la subida, la pasa a `processing` con un `UPDATE … WHERE status = 'pending'` (solo esa transición encola); media-worker la deja en `ready`/`failed`. |
 
 Las migraciones se generan con `drizzle-kit generate` y se aplican con `npx drizzle-kit migrate`, usando `DATABASE_URL`.
 
@@ -331,6 +331,8 @@ Ver la secuencia completa en [Dominio de Reproducción §6.6](dominio-reproducci
 1. `POST /rooms/:id/guests/:jti/revoke` marca `guest_sessions.revoked`.
 2. Escribe `token:revoked:{jti}` en Redis y publica `REVOKED`.
 3. sync-core cierra la conexión con código `4001`, y el token deja de servir en la API y en el canal.
+
+**Borrar la sala** (`DELETE /rooms/:id`) hace lo mismo con todas sus sesiones no revocadas y no vencidas: `SET token:revoked:{jti}` + `REVOKED` por cada `jti` y, solo cuando Redis lo acepta todo, `guest_sessions.revoked = true`. Falla cerrado: si Redis falla, la sala queda borrada pero se responde **503**; repetir el `DELETE` sobre la sala ya borrada vuelve a revocar las sesiones pendientes y responde 410.
 
 ---
 

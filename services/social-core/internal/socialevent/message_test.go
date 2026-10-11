@@ -16,12 +16,11 @@ func TestChatMessageValidateBranches(t *testing.T) {
 		t.Fatalf("ok = %v", err)
 	}
 	cases := map[string]ChatMessage{
-		"sin event":   {Type: TypeChatMessage, RoomID: "r1", UserID: "u", Text: "hola", OccurredAt: now, ReceivedAt: now},
-		"tipo malo":   {EventID: "e", Type: "x", RoomID: "r1", Text: "hola", OccurredAt: now, ReceivedAt: now},
-		"sin sala":    {EventID: "e", Type: TypeChatMessage, Text: "hola", OccurredAt: now, ReceivedAt: now},
-		"vacío":       {EventID: "e", Type: TypeChatMessage, RoomID: "r1", Text: "  ", OccurredAt: now, ReceivedAt: now},
-		"sin times":   {EventID: "e", Type: TypeChatMessage, RoomID: "r1", Text: "hola"},
-		"received<oc": {EventID: "e", Type: TypeChatMessage, RoomID: "r1", Text: "hola", OccurredAt: now, ReceivedAt: now.Add(-time.Second)},
+		"sin event": {Type: TypeChatMessage, RoomID: "r1", UserID: "u", Text: "hola", OccurredAt: now, ReceivedAt: now},
+		"tipo malo": {EventID: "e", Type: "x", RoomID: "r1", Text: "hola", OccurredAt: now, ReceivedAt: now},
+		"sin sala":  {EventID: "e", Type: TypeChatMessage, Text: "hola", OccurredAt: now, ReceivedAt: now},
+		"vacío":     {EventID: "e", Type: TypeChatMessage, RoomID: "r1", Text: "  ", OccurredAt: now, ReceivedAt: now},
+		"sin times": {EventID: "e", Type: TypeChatMessage, RoomID: "r1", Text: "hola"},
 	}
 	for name, m := range cases {
 		if err := m.Validate(); err == nil {

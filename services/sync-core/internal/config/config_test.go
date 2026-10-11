@@ -22,7 +22,7 @@ func TestLoadDefaults(t *testing.T) {
 		JWTSecret:      "s3cr3t",
 		JWTIssuer:      "tint-identity",
 		JWTAudience:    "tint:room",
-		AllowedOrigins: []string{"localhost:5173"},
+		AllowedOrigins: []string{"localhost:5173", "127.0.0.1:5173"}, // Vite en ambos hosts locales
 		RoomTTL:        12 * time.Hour,
 		HandoffAfter:   5 * time.Minute,
 	}

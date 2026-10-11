@@ -11,17 +11,17 @@ Documentación de referencia: [Usuarios, identidad y permisos](../../docs/usuari
 - Auth del Host: ID tokens de Firebase (RS256) verificados con `jwks-rsa` + `jsonwebtoken`.
 - Tokens propios: `jsonwebtoken` HS256 con `JWT_SECRET`.
 - Redis (`ioredis`): revocación de tokens y aviso a sync-core.
-- MinIO/S3 (`@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner`): URLs GET y PUT pre-firmadas, calculadas en local, y `HEAD` para confirmar subidas.
+- MinIO/S3 (`@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner`): URLs GET y PUT pre-firmadas, calculadas en local, `HEAD` para confirmar subidas (y su tamaño real) y `DeleteObject` para descartar las que superan el límite.
 - Vitest + supertest + cobertura `v8`.
 
 ## Responsabilidades
-- Crear o recuperar el usuario en su primer inicio de sesión (*upsert* por `provider_sub`).
+- Crear o recuperar el usuario en cada inicio de sesión: *upsert* atómico `INSERT … ON CONFLICT (provider, provider_sub) DO UPDATE` que refresca email, nombre y avatar.
 - Salas (`rooms`) e invitaciones (`invitations`, código `nanoid(12)`).
 - **Guest token** (`role: participant`, 4 h) al reclamar una invitación, registrado en `guest_sessions`.
 - **Sync-ticket** (`role: host`, 10 min) para el Canal Sync.
 - Subida de vídeo: reservar (`videos`), firmar el PUT directo a MinIO, confirmar y encolar en `media:uploads`.
 - Vídeo de la sala (`media_id`, `media_key`) y URL firmada de reproducción, con el estado del procesamiento.
-- Salas: renombrar y borrado lógico (`status`).
+- Salas: renombrar y borrado lógico (`status`). Borrar una sala revoca todas sus sesiones de invitado activas.
 - Listar y retirar invitados: BD + `token:revoked:{jti}` + `PUBLISH REVOKED`.
 
 ## Límites de Dominio
@@ -34,11 +34,11 @@ Documentación de referencia: [Usuarios, identidad y permisos](../../docs/usuari
 ## Modelo de Datos Involucrado
 | Tabla / clave | Tipo | Descripción |
 | :--- | :--- | :--- |
-| `users` | PostgreSQL | `id`, `provider` (`firebase`), `provider_sub`, `email`, `display_name`, `avatar_url`, timestamps |
+| `users` | PostgreSQL | `id`, `provider` (`firebase`), `provider_sub`, `email`, `display_name`, `avatar_url`, timestamps. Único `(provider, provider_sub)` (migración `0005`) |
 | `rooms` | PostgreSQL | `id`, `host_id` → `users`, `title` (≤150), `status` (`active`/`deleted`, borrado lógico), `media_id`, `media_key`, timestamps |
 | `invitations` | PostgreSQL | `id`, `code` (único, 12), `room_id`, `created_by`, `expires_at`, `revoked` |
 | `guest_sessions` | PostgreSQL | `jti` (PK), `room_id`, `sub` (`guest:<uuid>`), `nick` (≤64), `joined_at`, `expires_at`, `revoked` |
-| `videos` | PostgreSQL | `id` (= `video_id`), `room_id`, `uploaded_by`, `storage_key`, `content_type`, `size_bytes`, `duration_ms`, `status` (`pending` → `processing` → `ready`/`failed`; media-worker la actualiza) |
+| `videos` | PostgreSQL | `id` (= `video_id`), `room_id`, `uploaded_by`, `storage_key`, `content_type`, `size_bytes`, `duration_ms`, `status` (`pending` → `processing` al confirmar, en identity-api → `ready`/`failed`, en media-worker) |
 | `token:revoked:{jti}` | Redis String | Marca de revocación con `EXAT` = `exp` del token (la lee sync-core) |
 | `media:uploads` | Redis Stream | `XADD * video_id <id>` al confirmar una subida (lo consume media-worker, grupo `media-workers`) |
 | `room:{id}:sync` | Redis Pub/Sub | Solo se publica `REVOKED{jti}` |
@@ -46,22 +46,22 @@ Documentación de referencia: [Usuarios, identidad y permisos](../../docs/usuari
 ER completo y ciclos de vida en [usuarios-e-identidad.md](../../docs/usuarios-e-identidad.md#3-esquema-de-datos-postgresql).
 
 ## API
-Prefijo `/api/v1`. Los errores siempre tienen la forma `{ "error": "<texto>" }`; los 400 de zod añaden `details`.
+Prefijo `/api/v1`. Los errores siempre tienen la forma `{ "error": "<texto>" }`; los 400 de zod añaden `details`. Los 500 son siempre `{ "error": "Internal error" }`: el detalle se registra en el servidor y nunca llega al cliente.
 
 | Método y ruta | Autorización | Descripción |
 | :--- | :--- | :--- |
 | `GET /healthz` | — | Estado del servicio |
 | `POST /auth/verify` | Firebase | Verifica el token y crea o recupera el usuario |
-| `POST /rooms` | Firebase | Crea sala + invitación inicial |
+| `POST /rooms` | Firebase | Crea sala (`title` 1–150) + invitación inicial |
 | `GET /rooms` | Firebase | Salas activas del usuario, con su invitación vigente |
-| `GET /rooms/:id` · `PATCH /rooms/:id` · `DELETE /rooms/:id` | Firebase + dueño | Detalle, renombrar (`{ title }`) y borrado lógico (410 si ya estaba borrada) |
+| `GET /rooms/:id` · `PATCH /rooms/:id` · `DELETE /rooms/:id` | Firebase + dueño | Detalle, renombrar (`{ title }` ≤ 150) y borrado lógico. El borrado revoca las sesiones de invitado activas (`token:revoked:{jti}` + `REVOKED`); si Redis falla responde 503 y repetir el `DELETE` sobre la sala ya borrada re-publica las pendientes (410 cuando termina) |
 | `GET /rooms/:id/invitations` | Firebase + dueño | Invitaciones de la sala con `link` |
-| `POST /rooms/:id/invitations` | Firebase + dueño | Nueva invitación (`ttlHours` opcional) |
-| `POST /invitations/:code/revoke` | Firebase + dueño | Cierra la invitación (no retira a quienes ya entraron) |
+| `POST /rooms/:id/invitations` | Firebase + dueño | Nueva invitación (`ttlHours` opcional, entero 1–720) |
+| `POST /invitations/:code/revoke` | Firebase + dueño | Cierra la invitación (no retira a quienes ya entraron). 404 si la invitación o su sala no existen, 403 si no es el dueño |
 | `POST /invitations/claim` | — | `{ code, nick }` → `{ token, roomId, nick, roomTitle }`. Errores: 404, 409 (revocada), 410 (vencida o sala borrada) |
-| `POST /rooms/:id/sync-ticket` | Firebase + dueño | Sync-ticket HS256 para `/ws/sync` |
+| `POST /rooms/:id/sync-ticket` | Firebase + dueño | Sync-ticket HS256 para `/ws/sync`. `nick` = `displayName`, si no la parte local del email, si no `Host` (nunca el email completo) |
 | `POST /rooms/:id/media/uploads` | Firebase + dueño | `{ filename, contentType: video/*, sizeBytes }` → `{ videoId, uploadUrl, storageKey, expiresAt, headers }` (PUT firmado a MinIO; 413 si supera `MAX_UPLOAD_BYTES`) |
-| `POST /rooms/:id/media/uploads/:videoId/complete` | Firebase + dueño | HEAD del objeto (409 `Upload missing`), `XADD media:uploads` (503 si Redis falla) y asigna el vídeo → `{ mediaId, mediaKey, status }` |
+| `POST /rooms/:id/media/uploads/:videoId/complete` | Firebase + dueño | HEAD del objeto (409 `Upload missing`; 413 y se borra si el tamaño real supera `sizeBytes` o `MAX_UPLOAD_BYTES`), `pending → processing` condicional, `XADD media:uploads` (503 si Redis falla, vuelve a `pending`) y asigna el vídeo → `{ mediaId, mediaKey, status }`. Idempotente: si ya no está en `pending` devuelve el estado actual sin re-encolar |
 | `PUT /rooms/:id/media` | Firebase + dueño | `{ mediaKey }` → `{ mediaId, mediaKey }` (objeto que ya está en el bucket) |
 | `GET /rooms/:id/playback` | dueño **o** guest token de la sala | `{ mediaId, url, expiresAt, status, ambilightUrl }` (o `null`s) |
 | `GET /rooms/:id/guests` | Firebase + dueño | Invitados de la sala (sin `sub`) |
@@ -74,7 +74,7 @@ Middlewares: `requireAuthHost`, `requireRoomOwner`, `requireRoomGuest`, `require
 2. **Falla cerrado:** si no se puede comprobar una revocación (BD o Redis caídos), responde 503; nunca aceptes el token por defecto.
 3. **Secretos:** `JWT_SECRET` debe coincidir con el de sync-core. Nunca lo subas al repo; usa `.env` local.
 4. **Migraciones:** todo cambio de `src/db/schema.ts` va acompañado de su migración generada con `npx drizzle-kit generate`, commiteada junto con `migrations/meta`.
-5. **Dependencias inyectables:** Redis (`setRedisClient`), el firmado (`setMediaSigner`) y los repos se reemplazan por dobles en las pruebas. Las pruebas no dependen de Postgres, Redis ni MinIO reales.
+5. **Dependencias inyectables:** Redis (`setRedisClient`), el firmado (`setMediaSigner`), el bucket (`setMediaStore`: `stat`/`remove`) y los repos se reemplazan por dobles en las pruebas. Las pruebas no dependen de Postgres, Redis ni MinIO reales.
 6. **TDD:** prueba primero (supertest para rutas y mocks de repos). Cobertura mínima **85 %** (`vitest.config.ts`).
 7. **Privacidad:** `GET /guests` nunca devuelve `sub`; no registres tokens ni emails en los logs.
 

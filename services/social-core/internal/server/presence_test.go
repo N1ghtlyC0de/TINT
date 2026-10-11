@@ -2,9 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"net/http/httptest"
 	"strings"
@@ -17,12 +14,10 @@ import (
 // guestTokenAs emite un guest token con nick personalizado.
 func guestTokenAs(t *testing.T, secret, sub, nick, room string, exp time.Time) string {
 	t.Helper()
-	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	raw, _ := json.Marshal(map[string]any{"sub": sub, "room_id": room, "role": "participant", "nick": nick, "exp": exp.Unix()})
-	body := base64.RawURLEncoding.EncodeToString(raw)
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write([]byte(header + "." + body))
-	return header + "." + body + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+	return signGuestToken(t, secret, map[string]any{
+		"sub": sub, "room_id": room, "role": "participant", "nick": nick,
+		"jti": "jti-" + sub, "iss": "tint-identity", "aud": "tint:room", "exp": exp.Unix(),
+	})
 }
 
 // collector bombea mensajes en background a un canal.

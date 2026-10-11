@@ -123,7 +123,7 @@ gitGraph
 | `49904f8` | sync-core | Contrato v2: tipos `RATE`, `LOAD`, `CONTROL`, `REVOKED`; campos `media_id`, `rtt_ms`, `can_control`, `holder`, `jti`. |
 | `3096e5d` | sync-core | **perf**: compare-and-set con Lua y candado por sala (reemplaza `WATCH/MULTI`). |
 | `3a395b3` | sync-core | Barrido de presencia, `HOST_STATUS` ante caída de réplica, delegación de control, latido único por réplica, RTT/drift en `HEARTBEAT`. |
-| `b0b1631` | sync-core | Revocación: 401 en el handshake y cierre `4001` en vivo. |
+| `b0b1631` | sync-core | Revocación: 401 en el handshake y cierre `4001` en vivo (luego el handshake pasó a upgrade + `4001`, ver §6.8). |
 | `e2d2683` | sync-core | `GET /metrics` (paquete propio, sin dependencias). |
 | `9970dfc` | identity-api | `vitest` y `@vitest/coverage-v8` alineados: `npm ci` sin flags. |
 | `ae88d2d` | identity-api | `PUT /rooms/:id/media` y `GET /rooms/:id/playback` con URL firmada de MinIO. |
@@ -150,7 +150,7 @@ gitGraph
 | :--- | :--- |
 | F3 Vídeo de la sala con URL firmada | identity-api (`media`, `playback`) + web (`useRoomPlayback`, panel "Cambiar vídeo") |
 | F4 `HOST_STATUS` ante caída de réplica | sync-core (barrido + script Lua de transiciones) |
-| F5 Revocación de invitados | identity-api (`guest_sessions`, `revoke`) + sync-core (401 / `4001`) + web (panel "Participantes", pantalla de retiro) |
+| F5 Revocación de invitados | identity-api (`guest_sessions`, `revoke`) + sync-core (`4001` en el handshake y en vivo) + web (panel "Participantes", pantalla de retiro) |
 | F6 Comandos `RATE` y `LOAD` | sync-core (`master`) + web (selector de velocidad, cambio de vídeo) |
 | F7 Delegación de control | sync-core (`CONTROL`) + web (`canControl`, aviso de control temporal) |
 | UX 1–6 | web (`SyncStatus`, `SyncToasts`, `SeekBar`, `usePlayerShortcuts`, reconexión, fundido) + `rtt_ms`/`drift_ms` en `HEARTBEAT` |
@@ -340,10 +340,14 @@ sequenceDiagram
     C->>WS: GET /ws/sync?room_id&token<br/>Sec-WebSocket-Protocol opcional: tint.sync.msgpack
     WS->>WS: Verify: alg, iss, aud, exp, room_id, rol
     WS->>R: EXISTS token:revoked:{jti}
-    alt inválido o revocado
+    alt inválido (firma, iss, aud, rol)
         WS-->>C: 401
     else otra sala u origen no permitido
         WS-->>C: 403
+    else expirado pero bien firmado
+        WS-->>C: 101 y cierre 4003 "token expirado"
+    else revocado
+        WS-->>C: 101 y cierre 4001 "token revocado"
     else Redis no responde
         WS-->>C: 503 (falla cerrado)
     else válido
@@ -410,11 +414,13 @@ sequenceDiagram
         C->>H: SYNC_CHECK { echo_server_ts, position_ms }
         H->>H: RTT EWMA con el reloj del servidor<br/>drift = pos − PositionAt(recv − RTT/2)
         alt |drift| > 500 ms
-            H-->>C: SYNC_CORRECTION { target_ms, strategy }
+            H-->>C: SYNC_CORRECTION { target_ms, strategy, version, status, rate, media_id }
             H-)T: sync_drift (no bloqueante)
         end
     end
 ```
+
+`SYNC_CORRECTION` incluye, además de `target_ms`, `strategy`, `drift_ms` y `version`, los campos opcionales `status`, `rate` (velocidad de la sala) y `media_id` del estado en esa `version`. Un cliente que perdió un broadcast (p. ej. por una reconexión del Pub/Sub) puede usarlos para reconciliar estado y vídeo; los clientes que no los conocen los ignoran. La web aún no los aplica.
 
 ```mermaid
 flowchart TD
@@ -499,10 +505,14 @@ sequenceDiagram
     SC-->>Inv: cierre 4001 "token revocado"
     Note over Inv: la web no reconecta, borra el token<br/>y muestra "Fuiste retirado de la sala"
     Inv->>SC: reintento con el mismo token
-    SC-->>Inv: 401
+    SC-->>Inv: 101 y cierre 4001 (no 401: el navegador vería 1006)
     Inv->>ID: GET /rooms/:id/playback
     ID-->>Inv: 401 Token revoked
 ```
+
+Un token revocado o expirado pero bien firmado **hace upgrade y se cierra** con `4001`/`4003` (tras la comprobación de origen): si el handshake respondiera 401, el navegador solo vería un cierre `1006` y la web reintentaría para siempre. Un token de otra sala o con firma inválida se sigue rechazando antes del upgrade (no se filtra información). `4003` es nuevo: la web debe tratarlo como terminal y pedir otro token (pendiente en `useSyncSocket.ts`).
+
+`DELETE /rooms/:id` aplica esta misma secuencia a **todas** las sesiones de invitado activas de la sala (no revocadas y no vencidas), así que borrar una sala corta a los invitados conectados. `guest_sessions.revoked` se marca después de Redis: si Redis falla, la respuesta es 503 (la sala ya quedó borrada) y repetir el `DELETE` vuelve a publicar los `REVOKED` pendientes (responde 410 cuando termina).
 
 ### 6.7 Subida y cambio de vídeo
 
@@ -525,7 +535,8 @@ sequenceDiagram
     ID-->>Host: { videoId, uploadUrl, headers }
     Host->>MI: PUT {videoId}/source.mp4 (progreso en la UI)
     Host->>ID: POST /rooms/:id/media/uploads/:videoId/complete
-    ID->>MI: HEAD (409 si no llegó)
+    ID->>MI: HEAD (409 si no llegó, 413 y DELETE si supera sizeBytes o MAX_UPLOAD_BYTES)
+    ID->>PG: UPDATE videos SET status = processing WHERE status = pending
     ID->>R: XADD media:uploads video_id
     ID->>PG: rooms.media_id = videoId
     ID-->>Host: { mediaId }
@@ -544,7 +555,7 @@ sequenceDiagram
 | :--- | :--- | :--- |
 | Reservar | `POST /rooms/:id/media/uploads` | 400 (no es `video/*`), 413 (> `MAX_UPLOAD_BYTES`, 2 GiB), 403, 410 |
 | Subir | `PUT uploadUrl` a MinIO (Content-Type firmado, 15 min) | CORS según `MINIO_CORS_ALLOW_ORIGIN` |
-| Confirmar | `POST /rooms/:id/media/uploads/:videoId/complete` | 409 `Upload missing`, 503 si Redis falla (se puede reintentar), 404 |
+| Confirmar | `POST /rooms/:id/media/uploads/:videoId/complete` | 409 `Upload missing`, 413 si el objeto real supera el `sizeBytes` declarado o `MAX_UPLOAD_BYTES` (se borra del bucket y el vídeo sigue en `pending`), 503 si Redis falla (el vídeo vuelve a `pending` y se puede reintentar), 404. **Idempotente:** solo la transición `pending → processing` encola y asigna; si el vídeo ya no está en `pending` responde 200 con el estado actual sin re-encolar. |
 | Procesar | `media:uploads` → media-worker | El vídeo queda en `failed` si ffprobe no lo acepta; la reproducción del original sigue |
 | Reproducir | `GET /rooms/:id/playback` | 401 si el token fue revocado, 410 si la sala se borró |
 
@@ -556,6 +567,7 @@ Sigue existiendo `PUT /rooms/:id/media { mediaKey }`, para asignar un objeto que
 stateDiagram-v2
     [*] --> Validando: GET /ws/sync
     Validando --> Rechazada: 400 / 401 / 403 / 503
+    Validando --> CerradaTerminal: 101 y cierre 4001 (revocado) / 4003 (expirado), sin hub.Connect
     Validando --> Conectada: 101 + hub.Connect
     Validando --> Cerrada1011: Redis no disponible al conectar
     Conectada --> Cerrada1008: cola llena (64) o 3 latidos sin respuesta
@@ -565,6 +577,7 @@ stateDiagram-v2
     Cerrada1008 --> Desconectada
     Cerrada1009 --> Desconectada
     Cerrada4001 --> Desconectada
+    CerradaTerminal --> [*]
     Cerrada1000 --> Desconectada
     Desconectada --> [*]: hub.Disconnect (presencia, barrido si era host o delegado, TTL)
 ```
@@ -620,7 +633,7 @@ erDiagram
 
 | Clave | Escrita por | Vida |
 | :--- | :--- | :--- |
-| `room:{id}:sync_state` | `store.Init`/`Apply`/`Touch` | 12 h desde la última actividad |
+| `room:{id}:sync_state` | `store.Init`/`Apply`/`Touch`; `Beat` renueva el TTL en el barrido | 12 h desde la última actividad o desde que no quedan clientes conectados |
 | `room:{id}:evt:{event_id}` | `store.Apply` | 1 min |
 | `room:{id}:hosts_online`, `room:{id}:members` | `Beat` en el barrido; `HostSeen`/`HostGone`/`MemberGone` | 12 h; cuentan 5 s desde el último latido |
 | `room:{id}:host_online`, `room:{id}:hostless_since` | `SetHostStatus` (Lua) | 12 h |
@@ -680,7 +693,7 @@ flowchart LR
 | :--- | :--- | :--- |
 | `POST /rooms/:id/sync-ticket` | Host dueño (Firebase) | `{ token, expiresAt }` (HS256, `role: host`, 10 min) |
 | `POST /rooms/:id/media/uploads` | Host dueño | `{ videoId, uploadUrl, storageKey, expiresAt, headers }`: reserva el vídeo y firma el PUT a MinIO |
-| `POST /rooms/:id/media/uploads/:videoId/complete` | Host dueño | `{ mediaId, mediaKey, status }`: HEAD del objeto, `XADD media:uploads` y asignación a la sala |
+| `POST /rooms/:id/media/uploads/:videoId/complete` | Host dueño | `{ mediaId, mediaKey, status }`: HEAD del objeto (tamaño real), `pending → processing`, `XADD media:uploads` y asignación a la sala. Idempotente |
 | `PUT /rooms/:id/media` | Host dueño | `{ mediaId, mediaKey }`: asigna un objeto que ya está en el bucket (nuevo `mediaId` en cada llamada) |
 | `GET /rooms/:id/playback` | Host dueño **o** guest token de la sala no revocado | `{ mediaId, url, expiresAt }` o `null`s si no hay vídeo |
 | `GET /rooms/:id/guests` | Host dueño | `{ guests: [{ jti, nick, joinedAt, expiresAt, revoked }] }` (sin `sub`) |
@@ -731,7 +744,7 @@ flowchart TD
 | Aspecto | Medida |
 | :--- | :--- |
 | Autenticación | JWT HS256 de identity-api: algoritmo fijo, `iss`, `aud`, `exp`, `sub`, `room_id`. Se valida **antes** del upgrade. |
-| Revocación | `token:revoked:{jti}` en el handshake (401; 503 si Redis no responde) y `REVOKED` en vivo (cierre `4001`). |
+| Revocación | `token:revoked:{jti}` en el handshake (upgrade y cierre `4001`; 503 si Redis no responde) y `REVOKED` en vivo (cierre `4001`). Token expirado bien firmado: upgrade y cierre `4003`. |
 | Autorización | `host`/`cohost` siempre; un participante solo si es el delegado vigente. El resto recibe `FORBIDDEN`. |
 | Origen | `OriginPatterns` desde `ALLOWED_ORIGINS`. |
 | Tamaño y frecuencia | 4 KB por mensaje (`1009`) y 20 mensajes/s (`RATE_LIMITED`). |
@@ -764,7 +777,7 @@ flowchart TD
 ```bash
 cp .env.example .env                     # JWT_SECRET compartido por identity-api y sync-core
 docker compose up -d                     # postgres, redis, minio (+ bucket), social-core :8082 y sync-core :8083
-cd services/identity-api && npm ci && npx drizzle-kit migrate && npm run dev   # :8081, migraciones 0000–0004
+cd services/identity-api && npm ci && npx drizzle-kit migrate && npm run dev   # :8081, migraciones 0000–0005
 cd apps/web && cp .env.example .env && npm run dev  # :5173
 ```
 
@@ -776,7 +789,7 @@ Para probar el vídeo:
 | Variable | Servicio | Por defecto |
 | :--- | :--- | :--- |
 | `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE` | sync-core, identity-api | `dev-secret-change-in-prod`, `tint-identity`, `tint:room` |
-| `ALLOWED_ORIGINS` (`SYNC_ALLOWED_ORIGINS` en compose) | sync-core | `localhost:5173` |
+| `ALLOWED_ORIGINS` (`SYNC_ALLOWED_ORIGINS` en compose) | sync-core | `localhost:5173,127.0.0.1:5173` |
 | `ROOM_TTL` / `CONTROL_HANDOFF_AFTER` | sync-core | `12h` / `5m` |
 | `SYNC_TICKET_TTL_SECONDS` | identity-api | `600` |
 | `MINIO_ENDPOINT` / `MINIO_PUBLIC_ENDPOINT` | identity-api | `http://localhost:9000` / igual a `MINIO_ENDPOINT` |
@@ -812,7 +825,7 @@ Para probar el vídeo:
 - Subprotocolo MessagePack negociado; `STATE` decodificado por `syncCodec.ts` con `can_control`.
 - `LOAD` y `RATE` cruzan réplicas en **1–4 ms**, con `media_id`.
 - `HEARTBEAT` con `rtt_ms` y `drift_ms`.
-- Revocación: el invitado se cierra con **4001** y la reconexión recibe **401**.
+- Revocación: el invitado se cierra con **4001** y la reconexión recibe **401** (medido antes de que el handshake pasara a upgrade + `4001`).
 - Réplica del Host matada con `SIGKILL`: la otra publica `HOST_STATUS offline` en **~4,7 s** y delega el control. El delegado hace `SEEK` y al volver el Host lo pierde.
 
 **Carga k6:**
@@ -849,7 +862,7 @@ La cola restante sigue sin una causa demostrada, y el umbral **no se relajó**. 
 ## 16. Limitaciones conocidas
 
 - **Latencia k6 con 500 VUs:** pendiente de confirmar con k6 en otra máquina (ver §14).
-- **Invitado retirado mientras estaba desconectado:** el navegador solo ve un cierre 1006 cuando el handshake devuelve 401. La web sigue reintentando con backoff en vez de mostrar "Fuiste retirado".
+- **Token expirado:** sync-core cierra con `4003`, pero la web aún no lo trata como terminal (solo se detiene ante `4001`) y seguirá reintentando hasta adoptarlo.
 - **Cohost:** sync-core lo acepta, pero aún nadie emite tokens `role: cohost` y no hay UI para asignarlo.
 - **Usuario sin token:** `WatchRoom` lo trata como Host y pide un ticket, que falla si no es el dueño.
 - **Cambio de vídeo:** solo desde la UI del Host dueño, porque `PUT /media` exige Firebase. `PUT /media` tampoco comprueba que el objeto exista en MinIO.

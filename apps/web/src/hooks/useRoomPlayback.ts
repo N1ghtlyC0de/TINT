@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
+import { errorStatus } from '../lib/errorStatus';
 
 /** Refresca la URL firmada este tiempo antes de `expiresAt`. */
 export const PLAYBACK_REFRESH_LEAD_MS = 60_000;
@@ -39,6 +40,8 @@ export interface RoomPlayback {
   ambilightUrl: string | null;
   loading: boolean;
   error: string | null;
+  /** El invitado recibió 401/403: su invitación ya no vale (se borra `tint_guest_token`). */
+  revoked: boolean;
 }
 
 interface PlaybackResponse {
@@ -95,6 +98,7 @@ export function useRoomPlayback(
   const [data, setData] = useState<PlaybackData>(EMPTY);
   const [loading, setLoading] = useState(enabled);
   const [error, setError] = useState<string | null>(null);
+  const [revoked, setRevoked] = useState(false);
 
   const requestRef = useRef(0);
   const pollRequestRef = useRef(0);
@@ -116,8 +120,15 @@ export function useRoomPlayback(
         setError(null);
         setLoading(false);
       })
-      .catch(() => {
+      .catch((err: unknown) => {
         if (id !== requestRef.current) return;
+        const status = errorStatus(err);
+        if (role === 'guest' && (status === 401 || status === 403)) {
+          // Invitación revocada o caducada (p. ej. retirado con la pestaña cerrada):
+          // sync-core rechazaría el socket para siempre, así que se deja de intentar.
+          localStorage.removeItem('tint_guest_token');
+          setRevoked(true);
+        }
         setError('No se pudo cargar el vídeo de la sala.');
         setLoading(false);
       });
@@ -188,5 +199,5 @@ export function useRoomPlayback(
     return () => clearTimeout(timer);
   }, [enabled, data.status, data.mediaId, pollTick, poll, processingPollMs, maxProcessingPolls]);
 
-  return { ...data, loading, error };
+  return { ...data, loading, error, revoked };
 }

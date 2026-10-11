@@ -33,7 +33,7 @@ Eres el agente encargado del corazón de reproducción en tiempo real de **TINT*
 ## Modelo de Datos Involucrado
 | Clave / Entidad | Tipo | Descripción |
 | :--- | :--- | :--- |
-| `room:{id}:sync_state` | Redis Hash | Ancla del Reloj Maestro: `status` (playing/paused), `position_ms`, `updated_at_ms` (reloj del servidor), `rate`, `version` (orden total de comandos), `host_id`, `media_id` (vídeo actual). TTL 12 h (`ROOM_TTL`), refrescado en cada comando y desconexión. |
+| `room:{id}:sync_state` | Redis Hash | Ancla del Reloj Maestro: `status` (playing/paused), `position_ms`, `updated_at_ms` (reloj del servidor), `rate`, `version` (orden total de comandos), `host_id`, `media_id` (vídeo actual). TTL 12 h (`ROOM_TTL`), refrescado en cada comando, desconexión y barrido de presencia (mientras haya clientes conectados). |
 | `room:{id}:evt:{event_id}` | Redis String | Idempotencia: un `event_id` ya aplicado se ignora durante 1 min (ACK con `duplicate: true`). |
 | `room:{id}:sync` | Redis Pub/Sub | Difusión de `Event` (comandos y `HOST_STATUS`) entre réplicas. |
 | `room:{id}:hosts_online` | Redis ZSET | Presencia de conexiones host/cohost: miembro = id de conexión, score = último latido (unix ms). Un host sin latir en 5 s se considera fuera. |
@@ -59,13 +59,23 @@ Tokens HS256 firmados por identity-api con `JWT_SECRET`, `iss=tint-identity`, `a
 | Handshake | Resultado |
 | :--- | :--- |
 | Falta `room_id` o `token` | `400` |
-| Token inválido / expirado / algoritmo distinto de HS256 / rol desconocido | `401` |
-| Token de otra sala | `403` |
-| Token revocado (`token:revoked:{jti}`) | `401` |
+| Token inválido (firma, `iss`, `aud`) / algoritmo distinto de HS256 / sin `exp` / rol desconocido | `401` |
+| Token de otra sala (aunque esté expirado) | `403` |
+| `Origin` fuera de `ALLOWED_ORIGINS` | `403` (se comprueba también antes de los cierres terminales) |
+| Token expirado pero bien firmado (`iss`, `aud`, sala y rol correctos) | upgrade y cierre `4003` "token expirado" |
+| Token revocado (`token:revoked:{jti}`) | upgrade y cierre `4001` "token revocado" (sin `STATE`) |
 | Redis no permite comprobar la revocación | `503` (falla cerrado) |
-| `Origin` fuera de `ALLOWED_ORIGINS` | `403` |
 | Redis no disponible al conectar | upgrade y cierre `1011` |
 | OK | `101` y el servidor envía de inmediato un `STATE` |
+
+Los casos terminales hacen upgrade porque el navegador no ve el status HTTP de un handshake rechazado (solo un cierre `1006`), y un cliente que reconecta ante `1006` lo haría para siempre.
+
+**Códigos de cierre terminales** (el cliente **no** debe reconectar con el mismo token):
+
+| Código | Motivo | Qué hace el cliente |
+| :--- | :--- | :--- |
+| `4001` | Token revocado (en el handshake o por `REVOKED` en vivo) | Borra el token y muestra "Fuiste retirado". |
+| `4003` | Token expirado | Pide un token nuevo (sync-ticket del Host o volver a unirse). **Pendiente en la web**: hoy solo se detiene ante `4001`. |
 
 **Subprotocolo opcional:** `Sec-WebSocket-Protocol: tint.sync.msgpack` → todos los frames son binarios MessagePack con las mismas claves que el JSON (timestamps como string ISO-8601). Sin subprotocolo o con `tint.sync.json` → JSON. El bus entre réplicas siempre usa JSON.
 
@@ -83,7 +93,7 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 | `HEARTBEAT` | S → C cada 1 s | `server_time_ms`, `rtt_ms` (RTT suavizado de ese cliente), `drift_ms` (último drift medido; se omite si es 0) |
 | `CONTROL` | S → participantes | `can_control` cuando cambia la delegación (ver abajo) |
 | `SYNC_CHECK` | C → S (respuesta a cada `HEARTBEAT`) | `event_id`, `room_id`, `position_ms` (posición local actual), `echo_server_ts` (= `server_time_ms` del HEARTBEAT), `occurred_at` |
-| `SYNC_CORRECTION` | S → C (solo si \|drift\| > 500 ms) | `target_ms` (= `position_ms`), `strategy` (`rate`/`seek`), `drift_ms` (+ adelantado, − atrasado), `version` |
+| `SYNC_CORRECTION` | S → C (solo si \|drift\| > 500 ms) | `target_ms` (= `position_ms`), `strategy` (`rate`/`seek`), `drift_ms` (+ adelantado, − atrasado), `version` + opcionales `status`, `rate` (velocidad de la sala, no la de corrección) y `media_id` del estado en esa `version`, para que un cliente que perdió un broadcast se reconcilie (la web aún no los usa) |
 | `HOST_STATUS` | S → todos (vía Pub/Sub) | `online`; solo en transiciones, incluida la caída de la réplica del host (detectada por el barrido) |
 | `REVOKED` | identity-api → réplicas (solo bus) | `jti`: cada réplica cierra esas conexiones con `4001`; nunca llega a los clientes |
 | `ERROR` | S → C | `code` (`FORBIDDEN`, `INVALID`, `RATE_LIMITED`, `INTERNAL`), `ref_event_id` |
@@ -112,7 +122,8 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 | Mensajes entrantes | 20 msg/s por conexión (ventana fija) | `ERROR{RATE_LIMITED}` |
 | Cola de salida | 64 mensajes por cliente | cliente lento → cierre `1008` |
 | Latidos sin `SYNC_CHECK` | 3 intervalos | cierre `1008` |
-| Token revocado durante la conexión | — | cierre `4001` (no reconectar) |
+| Token revocado (handshake o durante la conexión) | — | cierre `4001` (no reconectar) |
+| Token expirado en el handshake | — | cierre `4003` (pedir token nuevo) |
 | Comando de un `participant` | — | `ERROR{FORBIDDEN}` |
 
 ## Arquitectura interna
@@ -150,7 +161,7 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 | `JWT_SECRET` | — (**obligatoria**) | Secreto HS256; debe ser el mismo de identity-api. Sin él el servicio no arranca. |
 | `JWT_ISSUER` | `tint-identity` | `iss` esperado. |
 | `JWT_AUDIENCE` | `tint:room` | `aud` esperado. |
-| `ALLOWED_ORIGINS` | `localhost:5173` | Patrones de host permitidos en el handshake, separados por coma. |
+| `ALLOWED_ORIGINS` | `localhost:5173,127.0.0.1:5173` | Patrones de host permitidos en el handshake, separados por coma. |
 | `ROOM_TTL` | `12h` | Periodo de gracia de la sala (duración Go, positiva). |
 | `CONTROL_HANDOFF_AFTER` | `5m` | Tiempo sin host/cohost tras el cual se delega el control (duración Go, positiva). |
 

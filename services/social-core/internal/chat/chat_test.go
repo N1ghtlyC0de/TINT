@@ -44,6 +44,9 @@ func TestKeys(t *testing.T) {
 	if ChannelKey("r1") != "room:r1:social" {
 		t.Errorf("ChannelKey = %q", ChannelKey("r1"))
 	}
+	if SyncChannelKey("r1") != "room:r1:sync" || RevokedKey("j") != "token:revoked:j" {
+		t.Errorf("claves de revocación = %q, %q", SyncChannelKey("r1"), RevokedKey("j"))
+	}
 }
 
 func TestHubIsolatesRooms(t *testing.T) {

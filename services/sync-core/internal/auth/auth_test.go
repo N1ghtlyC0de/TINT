@@ -81,7 +81,7 @@ func TestVerifyRejects(t *testing.T) {
 		}, room, ErrInvalidToken},
 		{"expirado", func(t *testing.T) string {
 			return sign(t, jwt.SigningMethodHS256, []byte(secret), func(c jwt.MapClaims) { c["exp"] = now.Add(-time.Minute).Unix() })
-		}, room, ErrInvalidToken},
+		}, room, ErrTokenExpired},
 		{"sin exp", func(t *testing.T) string {
 			return sign(t, jwt.SigningMethodHS256, []byte(secret), func(c jwt.MapClaims) { delete(c, "exp") })
 		}, room, ErrInvalidToken},
@@ -137,5 +137,43 @@ func TestVerifyExposesJTI(t *testing.T) {
 	got, err := newVerifier().Verify(tok, room)
 	if err != nil || got.JTI != "j-123" {
 		t.Errorf("Verify = %+v (%v), want JTI j-123", got, err)
+	}
+}
+
+// Un token expirado pero bien firmado se distingue para cerrar con 4003;
+// cualquier otro defecto (firma, iss, aud, sala) prevalece sobre la expiración.
+func TestVerifyExpired(t *testing.T) {
+	expired := func(c jwt.MapClaims) { c["exp"] = now.Add(-time.Minute).Unix() }
+	tok := sign(t, jwt.SigningMethodHS256, []byte(secret), expired)
+	if _, err := newVerifier().Verify(tok, room); !errors.Is(err, ErrTokenExpired) || !errors.Is(err, ErrInvalidToken) {
+		t.Errorf("expirado: err = %v, want ErrTokenExpired (y ErrInvalidToken)", err)
+	}
+	tests := []struct {
+		name   string
+		key    []byte
+		mutate func(jwt.MapClaims)
+		room   string
+		want   error
+	}{
+		{"otro secreto", []byte("otro"), nil, room, ErrInvalidToken},
+		{"issuer incorrecto", []byte(secret), func(c jwt.MapClaims) { c["iss"] = "evil" }, room, ErrInvalidToken},
+		{"audience incorrecta", []byte(secret), func(c jwt.MapClaims) { c["aud"] = "otra" }, room, ErrInvalidToken},
+		{"sin sub", []byte(secret), func(c jwt.MapClaims) { delete(c, "sub") }, room, ErrInvalidToken},
+		{"otra sala", []byte(secret), nil, "room-2", ErrRoomMismatch},
+		{"rol desconocido", []byte(secret), func(c jwt.MapClaims) { c["role"] = "admin" }, room, ErrUnknownRole},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tok := sign(t, jwt.SigningMethodHS256, tt.key, func(c jwt.MapClaims) {
+				expired(c)
+				if tt.mutate != nil {
+					tt.mutate(c)
+				}
+			})
+			_, err := newVerifier().Verify(tok, tt.room)
+			if !errors.Is(err, tt.want) || errors.Is(err, ErrTokenExpired) {
+				t.Errorf("err = %v, want %v sin ErrTokenExpired", err, tt.want)
+			}
+		})
 	}
 }

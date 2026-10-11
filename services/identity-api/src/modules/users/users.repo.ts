@@ -20,17 +20,24 @@ export async function create(user: NewUser) {
   return result[0];
 }
 
+/**
+ * Crea o recupera el usuario en un solo `INSERT ... ON CONFLICT (provider, provider_sub)
+ * DO UPDATE`: dos primeros logins concurrentes ya no pueden duplicarlo. En cada login se
+ * refrescan email, nombre y avatar con lo que trae el ID token de Firebase.
+ */
 export async function upsertByProvider(userData: { providerSub: string; email?: string | null; displayName?: string | null; avatarUrl?: string | null; provider?: 'firebase' }) {
-  const provider = userData.provider || 'firebase';
-  const existing = await findByProviderSub(userData.providerSub, provider);
-  if (existing) {
-    return existing;
-  }
-  return create({
-    provider,
-    providerSub: userData.providerSub,
-    email: userData.email,
-    displayName: userData.displayName,
-    avatarUrl: userData.avatarUrl,
-  });
+  const profile = {
+    email: userData.email ?? null,
+    displayName: userData.displayName ?? null,
+    avatarUrl: userData.avatarUrl ?? null,
+  };
+  const result = await db
+    .insert(users)
+    .values({ provider: userData.provider || 'firebase', providerSub: userData.providerSub, ...profile })
+    .onConflictDoUpdate({
+      target: [users.provider, users.providerSub],
+      set: { ...profile, updatedAt: new Date() },
+    })
+    .returning();
+  return result[0];
 }

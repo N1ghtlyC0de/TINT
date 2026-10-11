@@ -17,7 +17,7 @@ import { Card, Field } from '../components/ui/Primitives';
 import { apiFetch } from '../lib/api';
 import { toAbsoluteInviteLink, pickLatestActiveInvitation, parseInviteCode } from '../lib/invite';
 import { formatChatTime, noticeText } from '../lib/socialSocket';
-import { getLocalIdentity } from '../lib/identity';
+import { getLocalIdentity, guestTokenGrantsRoom } from '../lib/identity';
 import { useRoomPlayback, type MediaStatus } from '../hooks/useRoomPlayback';
 
 import { useSocialSocket } from '../hooks/useSocialSocket';
@@ -36,23 +36,57 @@ const MEDIA_STATUS_UI: Record<MediaStatus, { text: string; tone: string; dot: st
   },
 };
 
+/** Pantalla terminal de la sala (sin reintentos): expulsión, invitación inválida, etc. */
+function RoomNotice({
+  title,
+  body,
+  to = '/',
+  linkLabel = 'Volver al inicio',
+}: {
+  title: string;
+  body: string;
+  to?: string;
+  linkLabel?: string;
+}) {
+  return (
+    <div className="grid min-h-[100dvh] place-items-center bg-tint-bg px-4 text-tint-muted">
+      <Card className="max-w-md p-8 text-center">
+        <p role="alert" className="text-lg font-semibold tracking-tight text-white">
+          {title}
+        </p>
+        <p className="mt-2 text-sm leading-relaxed">{body}</p>
+        <Link
+          to={to}
+          className="mt-6 inline-flex rounded-full bg-tint-accent px-5 py-2.5 text-sm font-semibold text-tint-bg transition hover:bg-tint-accentHover"
+        >
+          {linkLabel}
+        </Link>
+      </Card>
+    </div>
+  );
+}
+
 export default function WatchRoom() {
   const { roomId } = useParams();
   const navigate = useNavigate();
-  const guestToken = localStorage.getItem('tint_guest_token');
   const hostToken = localStorage.getItem('tint_token');
-  // Sin ningún token no hay cómo autenticar el socket (401 + reconexión
-  // infinita): se muestra la puerta en vez de la sala.
+  // El guest token solo cuenta si es de esta sala y no caducó: sync-core rechazaría
+  // cualquier otro antes del upgrade (cierre 1006 + reconexión infinita).
+  const guestToken = guestTokenGrantsRoom(localStorage.getItem('tint_guest_token'), roomId)
+    ? localStorage.getItem('tint_guest_token')
+    : null;
+  // Sin ningún token válido no hay cómo autenticar el socket: se muestra la puerta.
   const hasAccess = !!hostToken || !!guestToken;
   // Canal Social (/ws/social): el estado maestro del chat vive en social-core.
   const { messages, reactions, send, sendReaction, status } = useSocialSocket(hasAccess ? roomId : undefined);
   // Si hay sesión de host, manda el host aunque queden restos de invitado
   // (p. ej. guest token de una visita anterior al login). Coherente con
   // apiFetch, que prefiere el header de host.
-  const isGuest = !localStorage.getItem('tint_token') && !!guestToken;
+  const isGuest = !hostToken && !!guestToken;
   // Identidad para display (chip + mensajes propios). Solo UI.
   const identity = getLocalIdentity();
   const role = isGuest ? 'guest' : 'host';
+  const homePath = isGuest ? '/' : '/dashboard';
   // Respaldo solo si la sala no tiene vídeo asignado en identity-api.
   const demoVideoUrl = import.meta.env.VITE_DEMO_VIDEO_URL || undefined;
 
@@ -161,22 +195,50 @@ export default function WatchRoom() {
   // Antes que la puerta: al revocar se borra el guest token y hasAccess cae a false.
   if (sync.revoked) {
     return (
-      <div className="grid min-h-[100dvh] place-items-center bg-tint-bg px-4 text-tint-muted">
-        <Card className="max-w-md p-8 text-center">
-          <p role="alert" className="text-lg font-semibold tracking-tight text-white">
-            Fuiste retirado de la sala por el host
-          </p>
-          <p className="mt-2 text-sm leading-relaxed">
-            Tu invitación ya no es válida. Si crees que es un error, pide al host un nuevo enlace.
-          </p>
-          <Link
-            to="/"
-            className="mt-6 inline-flex rounded-full bg-tint-accent px-5 py-2.5 text-sm font-semibold text-tint-bg transition hover:bg-tint-accentHover"
-          >
-            Volver al inicio
-          </Link>
-        </Card>
-      </div>
+      <RoomNotice
+        title="Fuiste retirado de la sala por el host"
+        body="Tu invitación ya no es válida. Si crees que es un error, pide al host un nuevo enlace."
+      />
+    );
+  }
+  // Cierre 4003: el token caducó (el host ya reintentó una vez con un ticket nuevo).
+  if (sync.expired) {
+    // Al invitado ya se le borró el guest token: sin sesión de host, es un invitado.
+    return !hostToken ? (
+      <RoomNotice
+        title="Tu invitación expiró"
+        body="El enlace con el que entraste ya caducó. Pide al host un nuevo enlace para volver a entrar."
+      />
+    ) : (
+      <RoomNotice
+        title="Tu sesión de sincronía caducó"
+        body="No pudimos renovar tu acceso a la sincronía. Vuelve a entrar a la sala desde el dashboard."
+        to="/dashboard"
+        linkLabel="Ir al dashboard"
+      />
+    );
+  }
+  // GET /playback en 401/403: retirado o caducado mientras la pestaña estaba cerrada.
+  if (playback.revoked) {
+    return (
+      <RoomNotice
+        title="Tu invitación ya no es válida"
+        body="El host te retiró de la sala o el enlace caducó. Pide al host un nuevo enlace para volver a entrar."
+      />
+    );
+  }
+  if (sync.fatalError) {
+    return (
+      <RoomNotice
+        title={sync.fatalError === 'NOT_HOST' ? 'No eres el host de esta sala' : 'La sala ya no existe'}
+        body={
+          sync.fatalError === 'NOT_HOST'
+            ? 'Tu cuenta no es la dueña de esta sala. Si te invitaron, entra con el link de invitación.'
+            : 'El host la eliminó o el enlace es incorrecto.'
+        }
+        to="/dashboard"
+        linkLabel="Ir al dashboard"
+      />
     );
   }
 
@@ -224,8 +286,9 @@ export default function WatchRoom() {
       <header className="sticky top-0 z-30 border-b border-white/10 bg-tint-bg/90 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-[1400px] items-center justify-between gap-4 px-4">
           <div className="flex min-w-0 flex-1 items-center gap-3">
-            <BrandMark />
-            <BackLink />
+            {/* El dashboard exige sesión de host: el invitado vuelve al inicio. */}
+            <BrandMark to={homePath} />
+            <BackLink to={homePath} />
             <h1 className="min-w-0 flex-1 truncate text-[15px] font-semibold tracking-tight text-white" title={heading}>
               {heading}
             </h1>

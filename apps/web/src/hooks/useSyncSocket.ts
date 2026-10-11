@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
+import { errorStatus } from '../lib/errorStatus';
 import type { Correction } from '../lib/drift';
 import {
   decodeFrame,
@@ -13,6 +14,7 @@ import {
   buildCommand,
   buildSyncCheck,
   buildSyncUrl,
+  CLOSE_EXPIRED,
   CLOSE_REVOKED,
   estimateServerNow,
   expectedPosition,
@@ -31,6 +33,14 @@ const MAX_MEDIA_ID = 128;
 const OWN_EVENTS_MEMORY = 50;
 
 export type SyncRole = 'host' | 'guest';
+
+export type SyncFatalError = 'NOT_HOST' | 'ROOM_GONE';
+
+function fatalTicketError(status: number | null): SyncFatalError | null {
+  if (status === 403) return 'NOT_HOST';
+  if (status === 404 || status === 410) return 'ROOM_GONE';
+  return null;
+}
 
 export interface UseSyncSocketOptions {
   roomId: string;
@@ -88,6 +98,16 @@ export interface SyncSocketApi {
   driftMs: number | null;
   /** El token fue revocado por el host (cierre 4001): no se reconecta. */
   revoked: boolean;
+  /**
+   * El token caducó (cierre 4003): el invitado no reconecta y borra `tint_guest_token`;
+   * el host pide un sync-ticket nuevo una vez y, si vuelve a pasar, se rinde.
+   */
+  expired: boolean;
+  /**
+   * El host no puede sincronizar y reintentar no lo arregla: el sync-ticket respondió
+   * 403 (`NOT_HOST`, no es el dueño) o 404/410 (`ROOM_GONE`, sala inexistente o borrada).
+   */
+  fatalError: SyncFatalError | null;
   /** Reintento programado, o null si conectado / sin reintento. */
   reconnect: ReconnectInfo | null;
   lastBroadcast: SyncBroadcast | null;
@@ -138,6 +158,8 @@ export function useSyncSocket({
   const [rttMs, setRttMs] = useState<number | null>(null);
   const [driftMs, setDriftMs] = useState<number | null>(null);
   const [revoked, setRevoked] = useState(false);
+  const [fatalError, setFatalError] = useState<SyncFatalError | null>(null);
+  const [expired, setExpired] = useState(false);
   const [reconnect, setReconnect] = useState<ReconnectInfo | null>(null);
   const [lastBroadcast, setLastBroadcast] = useState<SyncBroadcast | null>(null);
 
@@ -163,6 +185,8 @@ export function useSyncSocket({
   useEffect(() => {
     let disposed = false;
     let attempt = 0;
+    /** El host ya reintentó con un ticket nuevo tras un 4003 (se rearma con el STATE). */
+    let renewedAfterExpiry = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let socket: WebSocket | null = null;
 
@@ -203,6 +227,7 @@ export function useSyncSocket({
         case 'STATE':
           // Snapshot completo: siempre reemplaza (p. ej. tras reconectar).
           acceptState(msg);
+          renewedAfterExpiry = false;
           if (typeof msg.online === 'boolean') setHostOnline(msg.online);
           if (typeof msg.can_control === 'boolean') applyControl(msg.can_control);
           break;
@@ -279,8 +304,15 @@ export function useSyncSocket({
         .then((ticket: SyncTicket) => {
           if (!disposed) openSocket(ticket.token);
         })
-        .catch(() => {
+        .catch((err: unknown) => {
           if (disposed) return;
+          const fatal = fatalTicketError(errorStatus(err));
+          if (fatal) {
+            // No es el dueño o la sala ya no existe: reintentar no lo arregla.
+            setFatalError(fatal);
+            setReconnect(null);
+            return;
+          }
           setLastError('TICKET');
           scheduleReconnect();
         });
@@ -316,6 +348,18 @@ export function useSyncSocket({
           // El host retiró a este participante: no reconectar nunca.
           if (role === 'guest') localStorage.removeItem('tint_guest_token');
           setRevoked(true);
+          setReconnect(null);
+          return;
+        }
+        if (ev.code === CLOSE_EXPIRED) {
+          // Token caducado: el invitado no puede renovarlo; el host pide un ticket nuevo una vez.
+          if (role === 'host' && !renewedAfterExpiry) {
+            renewedAfterExpiry = true;
+            connect();
+            return;
+          }
+          if (role === 'guest') localStorage.removeItem('tint_guest_token');
+          setExpired(true);
           setReconnect(null);
           return;
         }
@@ -362,6 +406,8 @@ export function useSyncSocket({
     rttMs,
     driftMs,
     revoked,
+    expired,
+    fatalError,
     reconnect,
     lastBroadcast,
     sendCommand,

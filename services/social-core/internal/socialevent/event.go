@@ -58,7 +58,6 @@ var (
 	ErrEmptyText        = errors.New("text no puede estar vacío")
 	ErrTextTooLong      = errors.New("text supera los 280 caracteres")
 	ErrMissingTimestamp = errors.New("occurred_at es obligatorio")
-	ErrReceivedBefore   = errors.New("received_at no puede ser anterior a occurred_at")
 )
 
 // ChatSend es el mensaje que envía el cliente.
@@ -92,6 +91,16 @@ func (m ChatSend) Validate() error {
 	return nil
 }
 
+// ClampOccurred recorta un occurred_at del cliente que viene del futuro
+// respecto al reloj del servidor. Los relojes de cliente y servidor difieren
+// (igual que en sync-core): nunca se rechaza por eso.
+func ClampOccurred(occurred, received time.Time) time.Time {
+	if occurred.After(received) {
+		return received
+	}
+	return occurred
+}
+
 // ChatMessage es el broadcast del servidor.
 type ChatMessage struct {
 	EventID    string    `json:"event_id"`
@@ -122,9 +131,6 @@ func (m ChatMessage) Validate() error {
 	}
 	if m.OccurredAt.IsZero() || m.ReceivedAt.IsZero() {
 		return ErrMissingTimestamp
-	}
-	if m.ReceivedAt.Before(m.OccurredAt) {
-		return ErrReceivedBefore
 	}
 	return nil
 }
@@ -244,9 +250,6 @@ func (m Reaction) Validate() error {
 	}
 	if m.OccurredAt.IsZero() || m.ReceivedAt.IsZero() {
 		return ErrMissingTimestamp
-	}
-	if m.ReceivedAt.Before(m.OccurredAt) {
-		return ErrReceivedBefore
 	}
 	return nil
 }

@@ -5,6 +5,7 @@ import { vi, beforeEach } from 'vitest';
 import WatchRoom from './WatchRoom';
 import { MockWebSocket } from '../test/mockWebSocket';
 import { formatChatTime } from '../lib/socialSocket';
+import { testGuestToken } from '../test/guestToken';
 
 vi.mock('../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/api')>();
@@ -77,12 +78,6 @@ function renderWatch() {
   );
 }
 
-function guestJwt(payload: Record<string, unknown>): string {
-  const b64 = (v: unknown) =>
-    btoa(JSON.stringify(v)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-  return `${b64({ alg: 'HS256' })}.${b64(payload)}.firma`;
-}
-
 describe('WatchRoom chat en vivo', () => {
   beforeEach(() => {
   // El Canal Sync (/ws/sync) se prueba en WatchRoom.sync.test.tsx: aquí no abre sockets reales.
@@ -90,7 +85,7 @@ describe('WatchRoom chat en vivo', () => {
     vi.clearAllMocks();
     localStorage.clear();
     // El chat se prueba como invitado con sesión (sin token sale la puerta).
-    localStorage.setItem('tint_guest_token', 'guest-tok');
+    localStorage.setItem('tint_guest_token', testGuestToken());
   });
 
   it('muestra el historial del socket y envía por el canal social', async () => {
@@ -150,7 +145,7 @@ describe('WatchRoom chat en vivo', () => {
   });
 
   it('muestra el nick propio en el header', async () => {
-    localStorage.setItem('tint_guest_token', guestJwt({ sub: 'u1', nick: 'Ana' }));
+    localStorage.setItem('tint_guest_token', testGuestToken({ sub: 'u1', nick: 'Ana' }));
     renderWatch();
     expect(await screen.findByText('Hola grupo')).toBeInTheDocument();
     const chip = screen.getByTitle(/conectado como ana/i);
@@ -158,7 +153,7 @@ describe('WatchRoom chat en vivo', () => {
   });
 
   it('alinea a la derecha los mensajes propios y a la izquierda los ajenos', async () => {
-    localStorage.setItem('tint_guest_token', guestJwt({ sub: 'u1', nick: 'Ana' }));
+    localStorage.setItem('tint_guest_token', testGuestToken({ sub: 'u1', nick: 'Ana' }));
     renderWatch();
     expect(await screen.findByText('Hola grupo')).toBeInTheDocument();
     const own = screen.getByText('Hola grupo').closest('li');

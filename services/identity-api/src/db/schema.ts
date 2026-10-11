@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, uuid, varchar, bigint, integer } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, boolean, uuid, varchar, bigint, integer, uniqueIndex } from 'drizzle-orm/pg-core';
 
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -9,7 +9,10 @@ export const users = pgTable('users', {
   avatarUrl: text('avatar_url'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
-});
+}, (t) => [
+  // Un usuario por cuenta del proveedor: es el target del upsert atómico (migración 0005).
+  uniqueIndex('users_provider_sub_unique').on(t.provider, t.providerSub),
+]);
 
 export const rooms = pgTable('rooms', {
   id: uuid('id').primaryKey().defaultRandom(),

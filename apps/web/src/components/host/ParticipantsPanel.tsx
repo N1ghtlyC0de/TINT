@@ -3,6 +3,9 @@ import { apiFetch, ApiError } from '../../lib/api';
 import { Button } from '../ui/Button';
 import { ErrorAlert, Skeleton } from '../ui/Primitives';
 
+/** Intervalo de refresco automático de la lista de invitados. */
+export const PARTICIPANTS_POLL_MS = 10_000;
+
 export interface Guest {
   jti: string;
   nick: string;
@@ -42,6 +45,12 @@ export function ParticipantsPanel({ roomId }: { roomId: string }) {
   }, [base]);
 
   useEffect(load, [load]);
+
+  // Los invitados entran sin avisar al host: se re-consulta mientras el panel está montado.
+  useEffect(() => {
+    const timer = setInterval(load, PARTICIPANTS_POLL_MS);
+    return () => clearInterval(timer);
+  }, [load]);
 
   useEffect(() => {
     if (confirming) confirmRef.current?.focus();

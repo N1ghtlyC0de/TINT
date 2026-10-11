@@ -134,3 +134,31 @@ func TestPresenceRedisDown(t *testing.T) {
 		t.Error("Beat")
 	}
 }
+
+// REQ-07: una sala con clientes conectados que no envían comandos no debe
+// perder su sync_state; el latido del barrido renueva su TTL.
+func TestBeatRefreshesSyncStateTTL(t *testing.T) {
+	s, mr, _ := setup(t)
+	ctx := context.Background()
+	mr.HSet(syncevent.StateKey(room), "version", "3")
+	mr.SetTTL(syncevent.StateKey(room), ttl)
+	for range 3 {
+		mr.FastForward(ttl - time.Hour)
+		if err := s.Beat(ctx, room, nil, []string{"guest:a"}, t0); err != nil {
+			t.Fatal(err)
+		}
+		if got := mr.TTL(syncevent.StateKey(room)); got != ttl {
+			t.Fatalf("TTL sync_state tras el latido = %v, want %v", got, ttl)
+		}
+	}
+	if !mr.Exists(syncevent.StateKey(room)) {
+		t.Error("sync_state expiró con clientes conectados")
+	}
+	// Una sala sin estado no lo crea por latir.
+	if err := s.Beat(ctx, "vacia", []string{"c1"}, nil, t0); err != nil {
+		t.Fatal(err)
+	}
+	if mr.Exists(syncevent.StateKey("vacia")) {
+		t.Error("el latido no debe crear sync_state")
+	}
+}

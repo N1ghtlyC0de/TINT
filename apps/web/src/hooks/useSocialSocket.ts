@@ -39,9 +39,7 @@ const SEEN_CAP = 200;
 
 function resolveBaseUrl(override?: string): string {
   if (override) return override;
-  const fromEnv = (import.meta as unknown as { env?: Record<string, string> }).env
-    ?.VITE_SOCIAL_WS_URL;
-  return fromEnv || 'ws://localhost:8082/ws/social';
+  return import.meta.env.VITE_SOCIAL_WS_URL || 'ws://localhost:8082/ws/social';
 }
 
 /**

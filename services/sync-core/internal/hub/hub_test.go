@@ -315,6 +315,10 @@ func TestSyncCheckCorrectsDriftAndEmitsTelemetry(t *testing.T) {
 	g := connect(t, h, guest)
 	next(t, g)
 
+	load := cmd("e-load", syncevent.Load, 0)
+	load["media_id"] = "vid-1"
+	send(t, h, hc, load)
+	nextOf(t, g, syncevent.Load)
 	send(t, h, hc, cmd("e-play", syncevent.Play, 0))
 	nextOf(t, g, syncevent.Play)
 
@@ -339,8 +343,13 @@ func TestSyncCheckCorrectsDriftAndEmitsTelemetry(t *testing.T) {
 	send(t, h, g, check)
 
 	corr := nextOf(t, g, syncevent.SyncCorrection)
-	if corr.Strategy != "rate" || corr.DriftMs != -1050 || corr.TargetMs == nil || *corr.TargetMs != 10_150 || corr.Version != 1 {
+	if corr.Strategy != "rate" || corr.DriftMs != -1050 || corr.TargetMs == nil || *corr.TargetMs != 10_150 || corr.Version != 2 {
 		t.Errorf("SYNC_CORRECTION = %+v (target %v)", corr, corr.TargetMs)
+	}
+	// Lleva status, rate y media_id: un cliente que perdió un broadcast
+	// puede reconciliarse sin esperar al siguiente comando.
+	if corr.Status != "playing" || corr.Rate != 1 || corr.MediaID != "vid-1" {
+		t.Errorf("SYNC_CORRECTION sin estado para reconciliar: status=%q rate=%v media_id=%q", corr.Status, corr.Rate, corr.MediaID)
 	}
 	if g.RTT() != 100 {
 		t.Errorf("RTT = %d, want 100", g.RTT())

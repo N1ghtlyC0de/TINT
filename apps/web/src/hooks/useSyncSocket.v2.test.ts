@@ -231,4 +231,54 @@ describe('useSyncSocket — reconexión explícita y revocación (v2)', () => {
     });
     expect(MockWebSocket.instances).toHaveLength(1);
   });
+
+  it('cierre 4003 (token caducado): el invitado no reconecta, borra el token y marca expired', () => {
+    const { result } = setup();
+    act(() => MockWebSocket.last().open());
+    act(() => MockWebSocket.last().close(4003, 'token expirado'));
+    expect(result.current.expired).toBe(true);
+    expect(result.current.revoked).toBe(false);
+    expect(result.current.reconnect).toBeNull();
+    expect(localStorage.getItem('tint_guest_token')).toBeNull();
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(MockWebSocket.instances).toHaveLength(1);
+  });
+
+  it('cierre 4003 del host: pide un ticket nuevo una sola vez y luego se rinde', async () => {
+    mockedApiFetch.mockResolvedValueOnce({ token: 't1', expiresAt: 'x' }).mockResolvedValueOnce({ token: 't2', expiresAt: 'x' });
+    const { result } = setup({ role: 'host' });
+    await flush();
+    act(() => MockWebSocket.last().open());
+    act(() => MockWebSocket.last().close(4003));
+    await flush();
+    expect(mockedApiFetch).toHaveBeenCalledTimes(2);
+    expect(MockWebSocket.last().url).toContain('token=t2');
+    expect(result.current.expired).toBe(false);
+    act(() => MockWebSocket.last().open());
+    act(() => MockWebSocket.last().close(4003));
+    await flush();
+    expect(result.current.expired).toBe(true);
+    expect(result.current.reconnect).toBeNull();
+    expect(localStorage.getItem('tint_guest_token')).toBe('g');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+    expect(mockedApiFetch).toHaveBeenCalledTimes(2);
+    expect(MockWebSocket.instances).toHaveLength(2);
+  });
+
+  it('el reintento del host por 4003 se rearma tras recibir STATE', async () => {
+    mockedApiFetch.mockResolvedValue({ token: 't', expiresAt: 'x' });
+    const { result } = setup({ role: 'host' });
+    await flush();
+    act(() => MockWebSocket.last().open());
+    act(() => MockWebSocket.last().close(4003));
+    await flush();
+    act(() => MockWebSocket.last().open());
+    act(() => MockWebSocket.last().receive({ type: 'STATE', status: 'paused', position_ms: 0, updated_at_ms: 0, rate: 1, version: 1, server_time_ms: 0 }));
+    act(() => MockWebSocket.last().close(4003));
+    await flush();
+    expect(result.current.expired).toBe(false);
+    expect(mockedApiFetch).toHaveBeenCalledTimes(3);
+  });
 });

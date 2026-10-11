@@ -36,18 +36,23 @@ Eres el agente especializado en la capa de presentación de **TINT**. Tu foco es
 ## Canal Sync (implementado, contrato v2)
 | Pieza | Rol |
 | :--- | :--- |
-| `src/lib/syncProtocol.ts` | Tipos del protocolo v2, `toServerMessage`/`parseServerMessage` defensivos, `buildCommand` (con `rate`/`media_id`), `buildSyncCheck`, `expectedPosition`, `estimateServerNow`, `backoffDelay` (500 ms → 10 s), `CLOSE_REVOKED` (4001), `RATE_OPTIONS`/`stepRate`. |
+| `src/lib/syncProtocol.ts` | Tipos del protocolo v2, `toServerMessage`/`parseServerMessage` defensivos, `buildCommand` (con `rate`/`media_id`), `buildSyncCheck`, `expectedPosition`, `estimateServerNow`, `backoffDelay` (500 ms → 10 s), `CLOSE_REVOKED` (4001), `CLOSE_EXPIRED` (4003), `RATE_OPTIONS`/`stepRate`. |
 | `src/lib/syncCodec.ts` | Codificación JSON (default) o MessagePack (`tint.sync.msgpack`, `@msgpack/msgpack`); los frames se decodifican según su tipo real. |
 | `src/lib/drift.ts` | `computeDrift`, `correctionAction`, `applyCorrection` (seek o `playbackRate` 1.05/0.95) y `shouldRestoreRate` (< 100 ms o 5 s). |
 | `src/lib/syncQuality.ts` | Semáforo: verde RTT < 150 y \|drift\| < 200; amarillo RTT < 400 y \|drift\| ≤ 500; rojo el resto. |
-| `src/hooks/useSyncSocket.ts` | Conexión y reconexión (`reconnect: { attempt, nextRetryAt }`); el host pide un sync-ticket en cada intento y el invitado usa `tint_guest_token`. Responde `HEARTBEAT` con `SYNC_CHECK`, descarta mensajes con `version` vieja, expone `canControl` (`STATE.can_control`/`CONTROL`; host → true antes del 1.er STATE), `rttMs`/`driftMs`, `lastBroadcast` (con `own` por `event_id`) y `revoked` (cierre 4001: no reconecta y borra `tint_guest_token`). `sendCommand` admite PLAY/PAUSE/SEEK/RATE/LOAD. |
-| `src/hooks/useRoomPlayback.ts` | `GET /rooms/:id/playback` al montar, cuando cambia el `media_id` del estado sync y ~1 min antes de `expiresAt`. Expone `status`/`ambilightUrl` y, mientras el vídeo está `pending`/`processing`, re-consulta cada 5 s (máx. 120) sin cambiar el `src`. |
+| `src/hooks/useSyncSocket.ts` | Conexión y reconexión (`reconnect: { attempt, nextRetryAt }`); el host pide un sync-ticket en cada intento y el invitado usa `tint_guest_token`. Responde `HEARTBEAT` con `SYNC_CHECK`, descarta mensajes con `version` vieja, expone `canControl` (`STATE.can_control`/`CONTROL`; host → true antes del 1.er STATE), `rttMs`/`driftMs`, `lastBroadcast` (con `own` por `event_id`) y `revoked` (cierre 4001: no reconecta y borra `tint_guest_token`) y `expired` (cierre 4003, token caducado: el invitado no reconecta y borra `tint_guest_token`; el host pide un sync-ticket nuevo una vez —se rearma al recibir `STATE`— y si se repite se rinde). Si el sync-ticket del host responde 403/404/410 deja de reintentar y expone `fatalError` (`NOT_HOST`/`ROOM_GONE`). `sendCommand` admite PLAY/PAUSE/SEEK/RATE/LOAD. |
+| `src/hooks/useRoomPlayback.ts` | `GET /rooms/:id/playback` al montar, cuando cambia el `media_id` del estado sync y ~1 min antes de `expiresAt`. Expone `status`/`ambilightUrl` y, mientras el vídeo está `pending`/`processing`, re-consulta cada 5 s (máx. 120) sin cambiar el `src`. Si el invitado recibe 401/403 borra `tint_guest_token` y expone `revoked` (pantalla "Tu invitación ya no es válida"). |
 | `src/lib/upload.ts` | Subida directa al Blob Storage: `requestUpload` → `uploadToBlob` (XHR `PUT` con progreso, cabeceras exactas, sin `Authorization`, `AbortSignal`) → `completeUpload`; `uploadErrorMessage` (413/409/403/404/410). |
 | `src/hooks/useSyncToasts.ts` · `src/components/sync/*` | Avisos de comandos ajenos (3 s, máx. 3, `aria-live`), semáforo de sincronía y "Reconectando… intento N · S s". |
 | `src/hooks/usePlayerShortcuts.ts` | Atajos para quien controla: Espacio/K, ←/→ y J/L (±10 s), `[`/`]` (velocidad), `?` (ayuda); ignorados en campos de texto. |
 | `src/components/player/SeekBar.tsx` | Barra de cine `role="slider"` (teclado y puntero), búfer, tiempo bajo el cursor y marcadores de saltos del host. |
 | `src/components/SyncedPlayer.tsx` | `<video>` gobernado por el estado maestro; controles habilitados por `canControl`; velocidad; aviso "Host desconectado" y de control temporal delegado; botón de autoplay; fundido al corregir con seek (sin él con `prefers-reduced-motion`); re-aplica el estado al cambiar el `src`. |
-| `src/components/host/*` | Paneles del host: "Cambiar vídeo" (subida desde el navegador con progreso y cancelar → `LOAD{media_id}`; secundaria: clave del bucket con `PUT /rooms/:id/media`) y "Participantes" (listar y retirar invitados con confirmación). |
+| `src/components/host/*` | Paneles del host: "Cambiar vídeo" (subida desde el navegador con progreso y cancelar → `LOAD{media_id}`; secundaria: clave del bucket con `PUT /rooms/:id/media`) y "Participantes" (listar —se refresca cada 10 s y con "Actualizar"— y retirar invitados con confirmación). |
+
+## Sesión y credenciales
+- **Host:** `tint_token` guarda el ID token de Firebase (caduca a la hora). `src/lib/authSession.ts` (`startHostSession`, llamado en `main.tsx`) lo mantiene fresco con `onIdTokenChanged` y registra en `apiFetch` un proveedor que pide `auth.currentUser.getIdToken()`. Ante un 401 con credencial de host, `apiFetch` fuerza un refresco y reintenta una vez; si sigue en 401 borra `tint_token` y lleva a `/login?next=<ruta actual>`.
+- **Invitado:** `tint_guest_token` (+ `tint_room_title`/`tint_invite_link` guardados al canjear) solo da acceso a `/watch/:roomId` si su payload (`guestTokenGrantsRoom`, sin verificar firma) tiene `room_id` igual a la sala y `exp` futuro; si no, se muestra la puerta.
+- **Host en una invitación:** `InviteLanding` no borra `tint_token` en silencio: avisa de la sesión de host, ofrece "Entrar como host" (busca la sala en `GET /rooms` por el código) y solo canjea —y cierra la sesión de host— tras pulsar "Entrar como invitado". Tras crear una sala, `CreateRoom` ofrece "Entrar a la sala" (`/watch/:id`).
 
 El cálculo del drift es **autoritativo en sync-core**: el cliente solo aplica las `SYNC_CORRECTION` que recibe. Flujos y diagramas en [`docs/dominio-reproduccion.md`](../../docs/dominio-reproduccion.md).
 
@@ -84,5 +89,6 @@ npm run test:coverage   # Vitest + umbral 85%
 | :--- | :--- | :--- |
 | `VITE_IDENTITY_API_URL` | `http://localhost:8081/api/v1` | identity-api (salas, invitaciones, sync-tickets). |
 | `VITE_SYNC_WS_URL` | `ws://localhost:8083/ws/sync` | Canal Sync de sync-core. |
+| `VITE_SOCIAL_WS_URL` | `ws://localhost:8082/ws/social` | Canal social de social-core (chat y reacciones). |
 | `VITE_SYNC_ENCODING` | `json` | Codificación del Canal Sync: `json` o `msgpack` (pide el subprotocolo `tint.sync.msgpack`; si sync-core no lo acepta, sigue en JSON). |
 | `VITE_DEMO_VIDEO_URL` | vacío | Vídeo de respaldo, solo si la sala no tiene vídeo asignado en identity-api (`mediaId: null`). |

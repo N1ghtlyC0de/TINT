@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -21,14 +22,29 @@ import (
 
 // Deps son las dependencias del endpoint social (inyectables en tests).
 type Deps struct {
-	Hub       *chat.Hub
-	History   chat.Store
-	Publish   func(ctx context.Context, roomID string, msg socialevent.ChatMessage) error
-	Track     func(ctx context.Context, roomID string, messageLength int, eventID string, occurredAt time.Time)
-	Subscribe func(ctx context.Context, roomID string) (<-chan socialevent.ChatMessage, func())
+	Hub     *chat.Hub
+	History chat.Store
+	Publish func(ctx context.Context, roomID string, msg socialevent.ChatMessage) error
+	// PublishReaction reenvía la reacción a las demás réplicas (nil = una réplica).
+	PublishReaction func(ctx context.Context, roomID string, r socialevent.Reaction) error
+	Track           func(ctx context.Context, roomID string, messageLength int, eventID string, occurredAt time.Time)
+	// Subscribe abre la suscripción Pub/Sub de la sala (eventos de otras
+	// réplicas y REVOKED de identity-api); una sola por sala y réplica.
+	Subscribe func(ctx context.Context, roomID string) (<-chan chat.Inbound, func())
+	// IsRevoked consulta token:revoked:{jti}. Nil = sin Redis (modo memoria).
+	// Un error rechaza el handshake (falla cerrado).
+	IsRevoked func(ctx context.Context, jti string) (bool, error)
 	// Auth
 	JWTSecret         string
+	JWTIssuer         string // vacío = auth.DefaultIssuer
+	JWTAudience       string // vacío = auth.DefaultAudience
 	FirebaseProjectID string
+	// HostKeys resuelve las claves públicas de Firebase por kid. Nil o sin
+	// FirebaseProjectID = los host tokens se rechazan (falla cerrado).
+	HostKeys auth.KeySource
+	// AllowedOrigins son los patrones de host aceptados en el handshake
+	// (ALLOWED_ORIGINS). Vacío = solo mismo origen.
+	AllowedOrigins []string
 	// Utilidades
 	Now       func() time.Time
 	NewID     func() string
@@ -43,9 +59,16 @@ type Deps struct {
 	mu     sync.Mutex
 	relays map[string]*roomRelay
 	seen   *seenIDs
+	// conns son las conexiones locales por sala (para revocarlas por jti).
+	conns map[string]map[string]liveConn
 	// LeaveGrace retrasa el aviso de salida: si el usuario vuelve dentro de
 	// la ventana se considera el mismo de antes (cero = DefaultLeaveGrace).
 	LeaveGrace time.Duration
+	// PingInterval/PingTimeout detectan conexiones muertas (cero = defaults).
+	PingInterval time.Duration
+	PingTimeout  time.Duration
+	// WriteTimeout acota cada escritura al cliente (cero = DefaultWriteTimeout).
+	WriteTimeout time.Duration
 	// presence cuenta conexiones por sala y usuario para no spamear avisos
 	// con multipestaña, StrictMode (doble montaje) o flaps de red.
 	presence map[string]map[string]*presenceEntry
@@ -129,11 +152,33 @@ func (d *Deps) presenceLeave(roomID string, claims auth.Claims) {
 		d.mu.Lock()
 		cur := d.presence[roomID][claims.Subject]
 		fire := cur != nil && cur.conns == 0 && cur.gen == gen
+		if fire {
+			// Pasada la gracia la entrada ya no aporta nada: se borra (y la
+			// sala si quedó vacía) para no acumular memoria sin cota.
+			delete(d.presence[roomID], claims.Subject)
+			if len(d.presence[roomID]) == 0 {
+				delete(d.presence, roomID)
+			}
+		}
 		d.mu.Unlock()
 		if fire {
 			d.emitNotice(roomID, claims, socialevent.NoticeLeft)
 		}
 	})
+}
+
+// presenceCount devuelve las entradas de presencia de una sala (pruebas/métricas).
+func (d *Deps) presenceCount(roomID string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.presence[roomID])
+}
+
+// presenceRooms devuelve cuántas salas tienen presencia (pruebas/métricas).
+func (d *Deps) presenceRooms() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.presence)
 }
 
 func noticeText(nick string, kind socialevent.NoticeKind) string {
@@ -196,7 +241,23 @@ func NewRouterWithDeps(d *Deps) http.Handler {
 
 func writeError(ctx context.Context, c *websocket.Conn, code, ref string) {
 	raw, _ := json.Marshal(socialevent.ErrorEnvelope{Type: socialevent.TypeError, Code: code, EventIDRef: ref})
-	_ = c.Write(ctx, websocket.MessageText, raw)
+	_ = writeMsg(ctx, c, raw, DefaultWriteTimeout)
+}
+
+// authenticate elige el verificador por el alg del header: HS256 = guest
+// token de identity-api; RS256 = Firebase ID token del host. Un token HS256
+// inválido nunca cae al camino de host, y nada se acepta sin firma válida.
+func (d *Deps) authenticate(ctx context.Context, token, roomID string) (auth.Claims, error) {
+	now := d.now()
+	switch auth.TokenAlg(token) {
+	case "HS256":
+		cfg := auth.GuestConfig{Secret: d.JWTSecret, Issuer: d.JWTIssuer, Audience: d.JWTAudience}
+		return auth.VerifyGuest(token, cfg, roomID, now)
+	case "RS256":
+		return auth.VerifyHost(ctx, token, d.FirebaseProjectID, d.HostKeys, now)
+	default:
+		return auth.Claims{}, auth.ErrInvalidToken
+	}
 }
 
 func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
@@ -211,22 +272,27 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	now := d.now()
-	claims, guestErr := auth.VerifyGuest(token, d.JWTSecret, roomID, now)
-	if guestErr != nil {
-		if guestErr == auth.ErrWrongRoom {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
+	claims, err := d.authenticate(ctx, token, roomID)
+	if err != nil {
+		status := http.StatusUnauthorized
+		if errors.Is(err, auth.ErrWrongRoom) {
+			status = http.StatusForbidden
 		}
-		host, hostErr := auth.ParseHostUnverified(token, d.FirebaseProjectID, now)
-		if hostErr != nil {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		claims = host
+		http.Error(w, http.StatusText(status), status)
+		return
+	}
+	// Un token revocado no reconecta; si no se puede comprobar, se rechaza.
+	revoked, err := d.checkRevoked(ctx, claims.JTI)
+	if err != nil {
+		http.Error(w, "no se pudo validar el token", http.StatusServiceUnavailable)
+		return
+	}
+	if revoked {
+		http.Error(w, "token revocado", http.StatusUnauthorized)
+		return
 	}
 
-	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
+	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: d.AllowedOrigins})
 	if err != nil {
 		return
 	}
@@ -234,6 +300,10 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 	c.SetReadLimit(8 * 1024)
 
 	connID := d.newID()
+	untrack := d.trackConn(roomID, connID, claims.JTI, func() {
+		go func() { _ = c.Close(StatusRevoked, "token revocado") }()
+	})
+	defer untrack()
 	send := make(chan []byte, 64)
 	d.Hub.Join(roomID, connID, send)
 	defer d.Hub.Leave(roomID, connID)
@@ -254,7 +324,7 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		recent = []socialevent.ChatMessage{}
 	}
 	histRaw, _ := json.Marshal(socialevent.HistoryEnvelope{Type: socialevent.TypeHistory, RoomID: roomID, Messages: recent})
-	_ = c.Write(ctx, websocket.MessageText, histRaw)
+	_ = writeMsg(ctx, c, histRaw, d.writeTimeout())
 
 	// Aviso de entrada (solo en vivo, tras el historial). Se perdona el
 	// reingreso dentro de la gracia (StrictMode, refresh, flap).
@@ -262,7 +332,9 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		d.emitNotice(roomID, claims, socialevent.NoticeJoined)
 	}
 
-	// Escritor hacia este cliente; termina cuando el handler retorna.
+	// Escritor hacia este cliente; termina cuando el handler retorna. Si una
+	// escritura falla o vence, se corta el socket: así el Read de abajo
+	// termina y se emite el aviso de salida (antes quedaba colgado).
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -271,12 +343,14 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 			case <-done:
 				return
 			case msg := <-send:
-				if err := c.Write(ctx, websocket.MessageText, msg); err != nil {
+				if err := writeMsg(ctx, c, msg, d.writeTimeout()); err != nil {
+					c.CloseNow()
 					return
 				}
 			}
 		}
 	}()
+	go d.keepAlive(c, done)
 
 	limiter := d.ChatLimit
 	if limiter == nil {
@@ -332,7 +406,7 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		out := socialevent.ChatMessage{
 			EventID: d.newID(), Type: socialevent.TypeChatMessage, RoomID: roomID,
 			UserID: claims.Subject, Nick: claims.Nick, Text: text,
-			OccurredAt: in.OccurredAt, ReceivedAt: received,
+			OccurredAt: socialevent.ClampOccurred(in.OccurredAt, received), ReceivedAt: received,
 		}
 		if err := out.Validate(); err != nil {
 			writeError(ctx, c, "INVALID_PAYLOAD", in.EventID)
@@ -388,7 +462,7 @@ func (d *Deps) handleReaction(ctx context.Context, c *websocket.Conn, roomID str
 	out := socialevent.Reaction{
 		EventID: d.newID(), Type: socialevent.TypeReaction, RoomID: roomID,
 		UserID: claims.Subject, Nick: claims.Nick, Emoji: socialevent.TrimmedEmoji(in.Emoji),
-		PositionMS: in.PositionMS, OccurredAt: in.OccurredAt, ReceivedAt: received,
+		PositionMS: in.PositionMS, OccurredAt: socialevent.ClampOccurred(in.OccurredAt, received), ReceivedAt: received,
 	}
 	if err := out.Validate(); err != nil {
 		writeError(ctx, c, "INVALID_PAYLOAD", in.EventID)
@@ -397,6 +471,10 @@ func (d *Deps) handleReaction(ctx context.Context, c *websocket.Conn, roomID str
 	if d.ReactionBuckets != nil {
 		d.ReactionBuckets.Add(roomID, reactions.BucketIndex(bucketPosition(out.PositionMS)), out.Emoji)
 	}
+	if d.PublishReaction != nil {
+		_ = d.PublishReaction(ctx, roomID, out)
+	}
+	// broadcastRawOnce traga el eco de Redis si el relay lo vio primero.
 	d.broadcastRawOnce(roomID, out.EventID, out)
 }
 

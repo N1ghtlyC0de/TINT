@@ -11,6 +11,10 @@ import (
 // ErrMissingSecret indica que no se configuró JWT_SECRET.
 var ErrMissingSecret = errors.New("JWT_SECRET es obligatorio")
 
+// defaultOrigins acepta el servidor de Vite tanto en localhost como en
+// 127.0.0.1: el navegador envía el Origin tal como se escribió la URL.
+const defaultOrigins = "localhost:5173,127.0.0.1:5173"
+
 // Config agrupa la configuración del servicio.
 type Config struct {
 	Addr           string
@@ -31,7 +35,7 @@ func Load(getenv func(string) string) (Config, error) {
 		JWTSecret:      getenv("JWT_SECRET"),
 		JWTIssuer:      or(getenv("JWT_ISSUER"), "tint-identity"),
 		JWTAudience:    or(getenv("JWT_AUDIENCE"), "tint:room"),
-		AllowedOrigins: splitList(or(getenv("ALLOWED_ORIGINS"), "localhost:5173")),
+		AllowedOrigins: splitList(or(getenv("ALLOWED_ORIGINS"), defaultOrigins)),
 		RoomTTL:        12 * time.Hour,
 		HandoffAfter:   5 * time.Minute,
 	}

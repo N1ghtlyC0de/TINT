@@ -36,7 +36,10 @@ return 1
 `)
 
 // Beat registra un latido de las conexiones host/cohost (por id de
-// conexión) y de los participantes (por sub) de esta réplica.
+// conexión) y de los participantes (por sub) de esta réplica. En el mismo
+// pipeline renueva el TTL de sync_state: una sala con clientes conectados
+// pero sin comandos no debe perder su estado (REQ-07). PEXPIRE no crea la
+// clave si no existe.
 func (s *Store) Beat(ctx context.Context, roomID string, hostConns, memberSubs []string, nowMs int64) error {
 	if len(hostConns) == 0 && len(memberSubs) == 0 {
 		return nil
@@ -44,6 +47,7 @@ func (s *Store) Beat(ctx context.Context, roomID string, hostConns, memberSubs [
 	_, err := s.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
 		zadd(ctx, p, syncevent.HostsKey(roomID), hostConns, nowMs, s.ttl)
 		zadd(ctx, p, syncevent.MembersKey(roomID), memberSubs, nowMs, s.ttl)
+		p.PExpire(ctx, syncevent.StateKey(roomID), s.ttl)
 		return nil
 	})
 	return err

@@ -47,6 +47,24 @@ function lastSocket() {
   return FakeSocket.instances[FakeSocket.instances.length - 1];
 }
 
+describe('useSocialSocket — URL del canal', () => {
+  const create = (url: string) => new FakeSocket(url) as unknown as WebSocket;
+
+  it('usa VITE_SOCIAL_WS_URL si está definida', () => {
+    vi.stubEnv('VITE_SOCIAL_WS_URL', 'wss://social.test/ws/social');
+    renderHook(() => useSocialSocket('r1', { createSocket: create }));
+    expect(lastSocket().url.startsWith('wss://social.test/ws/social')).toBe(true);
+    vi.unstubAllEnvs();
+  });
+
+  it('por defecto apunta a social-core en el puerto 8082', () => {
+    vi.stubEnv('VITE_SOCIAL_WS_URL', '');
+    renderHook(() => useSocialSocket('r1', { createSocket: create }));
+    expect(lastSocket().url.startsWith('ws://localhost:8082/ws/social')).toBe(true);
+    vi.unstubAllEnvs();
+  });
+});
+
 describe('useSocialSocket', () => {
   it('conecta con room y token, carga historial y recibe mensajes', () => {
     localStorage.setItem('tint_guest_token', 'g123');

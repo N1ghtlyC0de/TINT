@@ -5,6 +5,7 @@ import { beforeEach, vi } from 'vitest';
 import WatchRoom from './WatchRoom';
 import { MockWebSocket } from '../test/mockWebSocket';
 import { apiFetch } from '../lib/api';
+import { testGuestToken } from '../test/guestToken';
 
 vi.mock('../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/api')>();
@@ -73,7 +74,7 @@ describe('WatchRoom', () => {
   });
 
   it('muestra nick y rol de participante en un solo chip', () => {
-    localStorage.setItem('tint_guest_token', guestJwt({ sub: 'guest:u9', nick: 'Pedro' }));
+    localStorage.setItem('tint_guest_token', testGuestToken({ sub: 'guest:u9', nick: 'Pedro' }));
     renderWatch();
     const chip = screen.getByTitle(/conectado como pedro/i);
     expect(chip.textContent).toMatch(/pedro/i);
@@ -82,7 +83,7 @@ describe('WatchRoom', () => {
 
   it('el host manda aunque haya restos de invitado: pide el título fresco', async () => {
     localStorage.setItem('tint_token', hostJwt({ sub: 'host-1', name: 'Drake' }));
-    localStorage.setItem('tint_guest_token', 'guest-viejo');
+    localStorage.setItem('tint_guest_token', testGuestToken());
     localStorage.setItem('tint_room_title', 'Sala vieja');
     mockedApi.mockImplementation((path: string) => {
       if (path === '/rooms/r1') return Promise.resolve({ room: { id: 'r1', title: 'Testing' } });
@@ -94,12 +95,21 @@ describe('WatchRoom', () => {
     expect(screen.queryByText('Sala vieja')).not.toBeInTheDocument();
   });
 
-  it('tiene un único enlace Volver al dashboard', () => {
-    localStorage.setItem('tint_guest_token', 'guest-tok');
+  it('el host tiene un único enlace Volver al dashboard', () => {
+    localStorage.setItem('tint_token', 'host-tok');
+    mockedApi.mockRejectedValue(new Error('offline'));
     renderWatch();
     const backLinks = screen.getAllByRole('link', { name: 'Volver' });
     expect(backLinks).toHaveLength(1);
     expect(backLinks[0]).toHaveAttribute('href', '/dashboard');
+    expect(screen.getByRole('link', { name: 'TINT inicio' })).toHaveAttribute('href', '/dashboard');
+  });
+
+  it('el invitado vuelve al inicio, no al dashboard (que exige sesión de host)', () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    renderWatch();
+    expect(screen.getByRole('link', { name: 'Volver' })).toHaveAttribute('href', '/');
+    expect(screen.getByRole('link', { name: 'TINT inicio' })).toHaveAttribute('href', '/');
   });
 
   it('el host ve el titulo real de la sala y el link con copiar', async () => {
@@ -139,7 +149,7 @@ describe('WatchRoom', () => {
   });
 
   it('el invitado ve el titulo y el link guardados al canjear', () => {
-    localStorage.setItem('tint_guest_token', 'guest-tok');
+    localStorage.setItem('tint_guest_token', testGuestToken());
     localStorage.setItem('tint_room_title', 'Noche de cine');
     localStorage.setItem('tint_invite_link', '/invite/abc123');
     renderWatch();
@@ -151,10 +161,9 @@ describe('WatchRoom', () => {
   });
 
   it('muestra el logo TINT antes del enlace Volver', () => {
-    localStorage.setItem('tint_guest_token', 'guest-tok');
+    localStorage.setItem('tint_guest_token', testGuestToken());
     renderWatch();
     const logo = screen.getByRole('link', { name: 'TINT inicio' });
-    expect(logo).toHaveAttribute('href', '/dashboard');
     const volver = screen.getByRole('link', { name: 'Volver' });
     expect(logo.compareDocumentPosition(volver)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
@@ -162,7 +171,7 @@ describe('WatchRoom', () => {
   });
 
   it('fusiona nick y rol en un solo chip de persona', () => {
-    localStorage.setItem('tint_guest_token', guestJwt({ sub: 'guest:u9', nick: 'Pedro' }));
+    localStorage.setItem('tint_guest_token', testGuestToken({ sub: 'guest:u9', nick: 'Pedro' }));
     localStorage.setItem('tint_room_title', 'Noche de cine');
     renderWatch();
     const chip = screen.getByTitle(/conectado como pedro/i);
@@ -180,6 +189,28 @@ describe('WatchRoom', () => {
     expect(createSocketSpy).not.toHaveBeenCalled();
     // Ni sync-ticket/playback (identity-api) ni /ws/sync.
     expect(mockedApi).not.toHaveBeenCalled();
+    expect(MockWebSocket.instances).toHaveLength(0);
+  });
+
+  it('con el guest token de otra sala muestra la puerta, sin socket ni título ajeno', () => {
+    MockWebSocket.reset();
+    localStorage.setItem('tint_guest_token', testGuestToken({ room_id: 'otra' }));
+    localStorage.setItem('tint_room_title', 'Sala de otra invitación');
+    renderWatch();
+    expect(screen.getByText(/únete a esta sala/i)).toBeInTheDocument();
+    expect(screen.queryByText('Sala de otra invitación')).not.toBeInTheDocument();
+    expect(createSocketSpy).not.toHaveBeenCalled();
+    expect(MockWebSocket.instances).toHaveLength(0);
+    expect(mockedApi).not.toHaveBeenCalled();
+    // El token sigue sirviendo para su propia sala: no se borra.
+    expect(localStorage.getItem('tint_guest_token')).not.toBeNull();
+  });
+
+  it('con el guest token caducado muestra la puerta en vez de reconectar sin fin', () => {
+    MockWebSocket.reset();
+    localStorage.setItem('tint_guest_token', testGuestToken({ exp: Math.floor(Date.now() / 1000) - 10 }));
+    renderWatch();
+    expect(screen.getByText(/únete a esta sala/i)).toBeInTheDocument();
     expect(MockWebSocket.instances).toHaveLength(0);
   });
 

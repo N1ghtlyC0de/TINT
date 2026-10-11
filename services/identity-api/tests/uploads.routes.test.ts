@@ -21,12 +21,13 @@ vi.mock('../src/modules/rooms/rooms.repo.js', () => ({
 vi.mock('../src/modules/videos/videos.repo.js', () => ({
   create: vi.fn(async (v: any) => v),
   findById: vi.fn(),
+  transitionStatus: vi.fn(),
 }));
 
 import app from '../src/app.js';
 import { env } from '../src/config/env.js';
 import { findById as findRoom, isOwner, setMedia } from '../src/modules/rooms/rooms.repo.js';
-import { create as createVideo, findById as findVideo } from '../src/modules/videos/videos.repo.js';
+import { create as createVideo, findById as findVideo, transitionStatus } from '../src/modules/videos/videos.repo.js';
 import { setMediaSigner } from '../src/modules/media/media.signer.js';
 import { setMediaStore } from '../src/modules/media/media.store.js';
 import { setRedisClient } from '../src/modules/tokens/revocation.js';
@@ -38,7 +39,8 @@ const pending = { id: VID, roomId: 'room-1', uploadedBy: 'host-1', storageKey: `
 
 const presignPut = vi.fn(async (key: string, ct: string, ttl: number) => `http://minio.test/tint-media/${key}?put&ct=${ct}&ttl=${ttl}`);
 const presignGet = vi.fn(async (key: string, ttl: number) => `http://minio.test/tint-media/${key}?ttl=${ttl}`);
-const exists = vi.fn(async () => true);
+const stat = vi.fn(async (): Promise<{ size: number } | null> => ({ size: 10 }));
+const remove = vi.fn(async () => {});
 const xadd = vi.fn(async () => '1-0');
 
 beforeEach(() => {
@@ -46,8 +48,9 @@ beforeEach(() => {
   vi.mocked(findRoom).mockResolvedValue(activeRoom as any);
   vi.mocked(isOwner).mockResolvedValue(true);
   setMediaSigner({ presignGet, presignPut });
-  setMediaStore({ exists });
+  setMediaStore({ stat, remove });
   setRedisClient({ xadd, exists: vi.fn(async () => 0) } as any);
+  vi.mocked(transitionStatus).mockImplementation(async (_id, _from, to) => ({ ...pending, status: to }) as any);
 });
 
 afterEach(() => {
@@ -118,20 +121,53 @@ describe('POST /rooms/:id/media/uploads/:videoId/complete', () => {
     vi.mocked(setMedia).mockResolvedValueOnce({ ...activeRoom, mediaId: VID } as any);
     const res = await complete();
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ mediaId: VID, mediaKey: pending.storageKey, status: 'pending' });
-    expect(exists).toHaveBeenCalledWith(pending.storageKey);
+    expect(res.body).toEqual({ mediaId: VID, mediaKey: pending.storageKey, status: 'processing' });
+    expect(stat).toHaveBeenCalledWith(pending.storageKey);
+    expect(transitionStatus).toHaveBeenCalledWith(VID, 'pending', 'processing');
     expect(xadd).toHaveBeenCalledWith('media:uploads', '*', 'video_id', VID);
     expect(setMedia).toHaveBeenCalledWith('room-1', { mediaId: VID, mediaKey: pending.storageKey });
   });
 
   it('409 si el archivo no llegó al bucket (no encola ni asigna)', async () => {
     vi.mocked(findVideo).mockResolvedValueOnce(pending as any);
-    exists.mockResolvedValueOnce(false);
+    stat.mockResolvedValueOnce(null);
     const res = await complete();
     expect(res.status).toBe(409);
     expect(res.body).toEqual({ error: 'Upload missing' });
     expect(xadd).not.toHaveBeenCalled();
     expect(setMedia).not.toHaveBeenCalled();
+  });
+
+  it('413 si el objeto subido es mayor que el sizeBytes declarado: lo borra y no encola', async () => {
+    vi.mocked(findVideo).mockResolvedValueOnce(pending as any);
+    stat.mockResolvedValueOnce({ size: pending.sizeBytes + 1 });
+    const res = await complete();
+    expect(res.status).toBe(413);
+    expect(res.body).toEqual({ error: 'File too large' });
+    expect(remove).toHaveBeenCalledWith(pending.storageKey);
+    expect(transitionStatus).not.toHaveBeenCalled();
+    expect(xadd).not.toHaveBeenCalled();
+    expect(setMedia).not.toHaveBeenCalled();
+  });
+
+  it('413 si el objeto supera MAX_UPLOAD_BYTES aunque se declarara más grande', async () => {
+    const big = env.MAX_UPLOAD_BYTES + 10;
+    vi.mocked(findVideo).mockResolvedValueOnce({ ...pending, sizeBytes: big } as any);
+    stat.mockResolvedValueOnce({ size: env.MAX_UPLOAD_BYTES + 1 });
+    const res = await complete();
+    expect(res.status).toBe(413);
+    expect(xadd).not.toHaveBeenCalled();
+  });
+
+  it('413 aunque falle el borrado del objeto (se registra y se responde igual)', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(findVideo).mockResolvedValueOnce(pending as any);
+    stat.mockResolvedValueOnce({ size: pending.sizeBytes + 1 });
+    remove.mockRejectedValueOnce(new Error('minio down'));
+    const res = await complete();
+    expect(res.status).toBe(413);
+    expect(log).toHaveBeenCalled();
+    log.mockRestore();
   });
 
   it('404 si el vídeo no existe, es de otra sala o el id no es uuid', async () => {
@@ -147,6 +183,30 @@ describe('POST /rooms/:id/media/uploads/:videoId/complete', () => {
     xadd.mockRejectedValueOnce(new Error('redis down'));
     const res = await complete();
     expect(res.status).toBe(503);
+    expect(setMedia).not.toHaveBeenCalled();
+    // Vuelve a pending para que el reintento pueda encolar.
+    expect(transitionStatus).toHaveBeenLastCalledWith(VID, 'processing', 'pending');
+  });
+
+  it.each(['processing', 'ready', 'failed'])('es idempotente: si el vídeo ya está %s responde 200 sin re-encolar ni reasignar', async (status) => {
+    vi.mocked(findVideo).mockResolvedValueOnce({ ...pending, status } as any);
+    const res = await complete();
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ mediaId: VID, mediaKey: pending.storageKey, status });
+    expect(transitionStatus).not.toHaveBeenCalled();
+    expect(xadd).not.toHaveBeenCalled();
+    expect(setMedia).not.toHaveBeenCalled();
+  });
+
+  it('dos confirmaciones concurrentes: la que pierde la transición no re-encola', async () => {
+    vi.mocked(findVideo)
+      .mockResolvedValueOnce(pending as any)
+      .mockResolvedValueOnce({ ...pending, status: 'processing' } as any);
+    vi.mocked(transitionStatus).mockResolvedValueOnce(null as any);
+    const res = await complete();
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('processing');
+    expect(xadd).not.toHaveBeenCalled();
     expect(setMedia).not.toHaveBeenCalled();
   });
 

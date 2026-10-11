@@ -13,12 +13,14 @@ import { issueGuestToken, generateSyncTicket } from '../modules/auth/auth.servic
 import { getMediaSigner } from '../modules/media/media.signer.js';
 import { getMediaStore } from '../modules/media/media.store.js';
 import { enqueueMediaUpload } from '../modules/media/media.queue.js';
-import { create as createVideo, findById as findVideo } from '../modules/videos/videos.repo.js';
+import { create as createVideo, findById as findVideo, transitionStatus as transitionVideoStatus } from '../modules/videos/videos.repo.js';
 import {
   create as createGuestSession,
   findByJti as findGuestSession,
   listByRoom as listGuestSessions,
   setRevoked as setGuestSessionRevoked,
+  listActiveByRoom as listActiveGuestSessions,
+  setRevokedMany as setGuestSessionsRevoked,
 } from '../modules/guests/guestSessions.repo.js';
 import { markTokenRevoked, publishRevoked } from '../modules/tokens/revocation.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -44,7 +46,7 @@ router.post('/auth/verify', requireAuthHost, validate(verifySchema), async (req,
 });
 
 const createRoomSchema = z.object({
-  title: z.string().trim().min(1),
+  title: z.string().trim().min(1).max(150),
 });
 router.post('/rooms', requireAuthHost, validate(createRoomSchema), async (req, res) => {
   const { title } = req.body;
@@ -122,6 +124,31 @@ router.patch('/rooms/:id', requireAuthHost, requireRoomOwner, validate(updateRoo
   res.json({ room: updated });
 });
 
+/**
+ * Corta a los invitados que siguen conectados: `token:revoked:{jti}` + `REVOKED`
+ * (sync-core cierra con 4001). La BD se marca solo después de Redis: si Redis
+ * falla, las sesiones siguen activas en la BD y un reintento las vuelve a encontrar.
+ * Devuelve false si Redis falló (falla cerrado → 503).
+ */
+async function revokeActiveGuestSessions(roomId: string) {
+  const sessions = await listActiveGuestSessions(roomId);
+  try {
+    await Promise.all(
+      sessions.map(async ({ jti, expiresAt }) => {
+        await markTokenRevoked(jti, Math.floor(expiresAt.getTime() / 1000));
+        await publishRevoked(roomId, jti);
+      }),
+    );
+  } catch (err) {
+    console.error('[rooms] no se pudieron revocar las sesiones de la sala borrada:', (err as Error).message);
+    return false;
+  }
+  await setGuestSessionsRevoked(sessions.map((s) => s.jti));
+  return true;
+}
+
+const REVOKE_RETRY_ERROR = { error: 'Room deleted but guest sessions could not be revoked; retry DELETE' };
+
 router.delete('/rooms/:id', requireAuthHost, requireRoomOwner, async (req, res) => {
   const roomId = getRoomId(req);
   const room = await findById(roomId);
@@ -129,14 +156,22 @@ router.delete('/rooms/:id', requireAuthHost, requireRoomOwner, async (req, res) 
     return res.status(404).json({ error: 'Not found' });
   }
   if (room.status === 'deleted') {
+    // Reintento tras un 503: vuelve a cortar las sesiones que quedaron pendientes.
+    if (!(await revokeActiveGuestSessions(roomId))) {
+      return res.status(503).json(REVOKE_RETRY_ERROR);
+    }
     return res.status(410).json({ error: 'Deleted' });
   }
   const removed = await softRemoveById(roomId);
+  if (!(await revokeActiveGuestSessions(roomId))) {
+    return res.status(503).json(REVOKE_RETRY_ERROR);
+  }
   res.json({ success: true, room: removed });
 });
 
 const createInvitationSchema = z.object({
-  ttlHours: z.number().positive().optional(),
+  // Máximo 30 días: sin cota, un número enorme producía una fecha inválida y un 500.
+  ttlHours: z.number().int().positive().max(720).optional(),
 });
 router.post('/rooms/:id/invitations', requireAuthHost, requireRoomOwner, validate(createInvitationSchema), async (req, res) => {
   const rawId = req.params.id;
@@ -163,6 +198,17 @@ router.post('/rooms/:id/invitations', requireAuthHost, requireRoomOwner, validat
   });
 });
 
+/**
+ * Nick visible del host en el Canal Sync (lo ven todos los invitados): nunca el
+ * email completo. displayName → parte local del email → 'Host'.
+ */
+function hostNick(user: { displayName?: string | null; email?: string | null }) {
+  const displayName = user.displayName?.trim();
+  if (displayName) return displayName;
+  const localPart = user.email?.split('@')[0]?.trim();
+  return localPart || 'Host';
+}
+
 router.post('/rooms/:id/sync-ticket', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
   const rawId = req.params.id;
   const roomId = Array.isArray(rawId) ? rawId[0] : rawId;
@@ -170,7 +216,7 @@ router.post('/rooms/:id/sync-ticket', requireAuthHost, requireRoomOwner, require
   const { token, expiresAt } = generateSyncTicket({
     userId: user.id,
     roomId,
-    nick: user.displayName || user.email,
+    nick: hostNick(user),
   });
   res.json({ token, expiresAt: expiresAt.toISOString() });
 });
@@ -251,7 +297,9 @@ router.post('/rooms/:id/media/uploads', requireAuthHost, requireRoomOwner, valid
 });
 
 // 2) Confirma la subida: comprueba el objeto, encola el procesamiento
-//    (XADD media:uploads) y asigna el vídeo a la sala. Idempotente.
+//    (XADD media:uploads) y asigna el vídeo a la sala. Idempotente: solo el
+//    paso pending → processing encola y asigna; las repeticiones devuelven el
+//    estado actual sin volver a encolar.
 router.post('/rooms/:id/media/uploads/:videoId/complete', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
   const roomId = req.room!.id;
   const videoId = paramId(req.params.videoId);
@@ -259,20 +307,46 @@ router.post('/rooms/:id/media/uploads/:videoId/complete', requireAuthHost, requi
   if (!video || video.roomId !== roomId) {
     return res.status(404).json({ error: 'Not found' });
   }
-  if (!(await getMediaStore().exists(video.storageKey))) {
+  const current = (v: { id: string; storageKey: string; status: string }) =>
+    res.json({ mediaId: v.id, mediaKey: v.storageKey, status: v.status });
+  if (video.status !== 'pending') {
+    return current(video);
+  }
+  const store = getMediaStore();
+  const object = await store.stat(video.storageKey);
+  if (!object) {
     return res.status(409).json({ error: 'Upload missing' });
+  }
+  // La URL PUT firmada no acota el tamaño: se comprueba el objeto real contra lo
+  // declarado y contra MAX_UPLOAD_BYTES. Si se pasa, se borra (no se procesa ni se
+  // guarda) y el vídeo sigue en pending: el host puede volver a subir el archivo correcto.
+  if (object.size > video.sizeBytes || object.size > env.MAX_UPLOAD_BYTES) {
+    try {
+      await store.remove(video.storageKey);
+    } catch (err) {
+      console.error('[uploads] no se pudo borrar un objeto que supera el tamaño:', (err as Error).message);
+    }
+    return res.status(413).json({ error: 'File too large' });
+  }
+  // Transición condicional: de dos confirmaciones concurrentes solo una encola.
+  const queued = await transitionVideoStatus(video.id, 'pending', 'processing');
+  if (!queued) {
+    const latest = await findVideo(video.id);
+    return current(latest ?? video);
   }
   try {
     await enqueueMediaUpload(video.id);
   } catch (err) {
     console.error('[uploads] no se pudo encolar media:uploads:', (err as Error).message);
+    // Vuelve a pending para que el reintento pueda encolar.
+    await transitionVideoStatus(video.id, 'processing', 'pending');
     return res.status(503).json({ error: 'Service unavailable' });
   }
   const room = await setMedia(roomId, { mediaId: video.id, mediaKey: video.storageKey });
   if (!room) {
     return res.status(404).json({ error: 'Not found' });
   }
-  res.json({ mediaId: video.id, mediaKey: video.storageKey, status: video.status });
+  current(queued);
 });
 
 router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, async (req, res) => {
@@ -328,7 +402,10 @@ router.post('/invitations/:code/revoke', requireAuthHost, async (req, res) => {
     return res.status(404).json({ error: 'Not found' });
   }
   const room = await findById(invitation.roomId);
-  if (!room || room.hostId !== req.user!.id) {
+  if (!room) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  if (room.hostId !== req.user!.id) {
     return res.status(403).json({ error: 'Forbidden' });
   }
   await setRevoked(invitation.id, true);
