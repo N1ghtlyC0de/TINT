@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import WatchRoom from './WatchRoom';
 import { MockWebSocket } from '../test/mockWebSocket';
+import { MockXhr } from '../test/mockXhr';
 import { apiFetch } from '../lib/api';
 
 vi.mock('../lib/api', async (orig) => ({
@@ -38,6 +39,18 @@ function routeApi(path: string, init?: RequestInit) {
     return Promise.resolve(next);
   }
   if (path.endsWith('/media') && init?.method === 'PUT') return Promise.resolve({ mediaId: 'm2', mediaKey: 'k' });
+  if (path.endsWith('/media/uploads')) {
+    return Promise.resolve({
+      videoId: 'v9',
+      uploadUrl: 'https://minio/tint/v9/source.mp4?sig=1',
+      storageKey: 'v9/source.mp4',
+      expiresAt: '2099-01-01T00:00:00Z',
+      headers: { 'Content-Type': 'video/mp4' },
+    });
+  }
+  if (path.endsWith('/media/uploads/v9/complete')) {
+    return Promise.resolve({ mediaId: 'v9', mediaKey: 'v9/source.mp4', status: 'pending' });
+  }
   if (path.endsWith('/guests')) {
     return Promise.resolve({
       guests: [{ jti: 'j1', nick: 'Ana', joinedAt: '2026-01-01T10:00:00Z', expiresAt: '2026-01-02T10:00:00Z', revoked: false }],
@@ -125,12 +138,33 @@ describe('WatchRoom v2 — vídeo de la sala (F3)', () => {
 });
 
 describe('WatchRoom v2 — host', () => {
-  it('cambia el vídeo: PUT /media y LOAD por el canal', async () => {
+  it('sube un vídeo a MinIO, lo confirma y envía LOAD por el canal', async () => {
+    MockXhr.reset();
+    vi.stubGlobal('XMLHttpRequest', MockXhr);
     renderWatch();
     await flush();
     const ws = MockWebSocket.last();
     act(() => ws.open());
     await userEvent.click(screen.getByRole('button', { name: 'Cambiar vídeo' }));
+    await userEvent.upload(
+      screen.getByLabelText('Archivo de vídeo'),
+      new File(['abc'], 'peli.mp4', { type: 'video/mp4' }),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Subir' }));
+    await waitFor(() => expect(MockXhr.instances).toHaveLength(1));
+    act(() => MockXhr.last().respond(200));
+    await waitFor(() => expect(ws.sentJson().some((m) => m.type === 'LOAD')).toBe(true));
+    expect(ws.sentJson().find((m) => m.type === 'LOAD')).toMatchObject({ media_id: 'v9', position_ms: 0 });
+    expect(screen.getByText('Vídeo cargado para todos.')).toBeInTheDocument();
+  });
+
+  it('cambia el vídeo por clave: PUT /media y LOAD por el canal', async () => {
+    renderWatch();
+    await flush();
+    const ws = MockWebSocket.last();
+    act(() => ws.open());
+    await userEvent.click(screen.getByRole('button', { name: 'Cambiar vídeo' }));
+    await userEvent.click(screen.getByText('Usar un archivo ya subido (clave del bucket)'));
     await userEvent.type(screen.getByLabelText('Clave del objeto en MinIO'), 'pelis/b.mp4');
     await userEvent.click(screen.getByRole('button', { name: 'Asignar y cargar' }));
     await waitFor(() => expect(ws.sentJson().some((m) => m.type === 'LOAD')).toBe(true));

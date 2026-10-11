@@ -200,7 +200,7 @@ export default function WatchRoom() {
               <Card className="p-5">
                 <h2 className="text-[15px] font-semibold text-white">Vídeo de la sala</h2>
                 <p className="mb-4 mt-1 text-[13px] leading-relaxed">
-                  Asigna un archivo del bucket; todos lo cargarán en pausa al inicio.
+                  Sube un vídeo desde tu equipo; todos lo cargarán en pausa al inicio.
                 </p>
                 <ChangeVideoPanel roomId={roomId ?? ''} onMediaAssigned={loadMedia} />
               </Card>
