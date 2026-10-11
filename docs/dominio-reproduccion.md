@@ -628,7 +628,7 @@ erDiagram
 
 | Clave | Escrita por | Vida |
 | :--- | :--- | :--- |
-| `room:{id}:sync_state` | `store.Init`/`Apply`/`Touch` | 12 h desde la última actividad |
+| `room:{id}:sync_state` | `store.Init`/`Apply`/`Touch`; `Beat` renueva el TTL en el barrido | 12 h desde la última actividad o desde que no quedan clientes conectados |
 | `room:{id}:evt:{event_id}` | `store.Apply` | 1 min |
 | `room:{id}:hosts_online`, `room:{id}:members` | `Beat` en el barrido; `HostSeen`/`HostGone`/`MemberGone` | 12 h; cuentan 5 s desde el último latido |
 | `room:{id}:host_online`, `room:{id}:hostless_since` | `SetHostStatus` (Lua) | 12 h |
