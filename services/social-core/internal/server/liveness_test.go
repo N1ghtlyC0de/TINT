@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"nhooyr.io/websocket"
+
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/auth"
 )
 
 // Sin ping ni timeouts, una conexión muerta (cliente que deja de leer o red
@@ -62,6 +64,31 @@ func TestSocialWriteTimeoutDropsClient(t *testing.T) {
 			t.Fatal("el cliente que no lee sigue en la sala")
 		}
 		deps.Hub.Broadcast("r1", big)
+		runtime.Gosched()
+	}
+}
+
+// Las entradas de presencia nunca se borraban (memoria sin cota). Tras la
+// gracia sin reingreso, la entrada y la sala vacía desaparecen.
+func TestPresenceEntriesAreDeleted(t *testing.T) {
+	d := testDeps("s")
+	d.LeaveGrace = 5 * time.Millisecond
+	claims := auth.Claims{Subject: "u1", Nick: "Ana"}
+	d.presenceJoin("r1", "u1", d.now())
+	d.presenceJoin("r1", "u2", d.now())
+	d.presenceLeave("r1", claims)
+	deadline := time.Now().Add(5 * time.Second)
+	for d.presenceCount("r1") != 1 {
+		if time.Now().After(deadline) {
+			t.Fatalf("presencia r1 = %d, want 1 (solo u2)", d.presenceCount("r1"))
+		}
+		runtime.Gosched()
+	}
+	d.presenceLeave("r1", auth.Claims{Subject: "u2", Nick: "Beto"})
+	for d.presenceRooms() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("salas con presencia = %d, want 0", d.presenceRooms())
+		}
 		runtime.Gosched()
 	}
 }

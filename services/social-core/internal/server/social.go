@@ -150,11 +150,33 @@ func (d *Deps) presenceLeave(roomID string, claims auth.Claims) {
 		d.mu.Lock()
 		cur := d.presence[roomID][claims.Subject]
 		fire := cur != nil && cur.conns == 0 && cur.gen == gen
+		if fire {
+			// Pasada la gracia la entrada ya no aporta nada: se borra (y la
+			// sala si quedó vacía) para no acumular memoria sin cota.
+			delete(d.presence[roomID], claims.Subject)
+			if len(d.presence[roomID]) == 0 {
+				delete(d.presence, roomID)
+			}
+		}
 		d.mu.Unlock()
 		if fire {
 			d.emitNotice(roomID, claims, socialevent.NoticeLeft)
 		}
 	})
+}
+
+// presenceCount devuelve las entradas de presencia de una sala (pruebas/métricas).
+func (d *Deps) presenceCount(roomID string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.presence[roomID])
+}
+
+// presenceRooms devuelve cuántas salas tienen presencia (pruebas/métricas).
+func (d *Deps) presenceRooms() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.presence)
 }
 
 func noticeText(nick string, kind socialevent.NoticeKind) string {
