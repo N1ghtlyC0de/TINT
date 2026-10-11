@@ -9,7 +9,7 @@ import tempfile
 from pathlib import Path
 
 from media_worker.ambilight import AmbilightError, extract_ambilight
-from media_worker.normalize import NormalizeError, normalize_video
+from media_worker.normalize import NormalizeError, is_normalized, normalize_video
 from media_worker.probe import VideoStatus, inspect_status
 from media_worker.storage import ambilight_key, source_key
 
@@ -44,6 +44,8 @@ def process_video(
 ) -> VideoStatus:
     """Normaliza a MP4 y extrae el Ambilight de `source`; solo entonces publica en el bucket.
 
+    Si `source` ya es MP4 H.264 + AAC no se re-codifica: se publica tal cual.
+
     El vídeo recibido nunca se sube sin preprocesar: si es inválido o falla la normalización
     o la extracción Ambilight queda en `failed` y no se publica nada. `source` pertenece a quien
     llama (la API), que lo borra cuando quiera.
@@ -64,7 +66,11 @@ def process_video(
     with tempfile.TemporaryDirectory(prefix="media-worker-") as workdir:
         normalized = Path(workdir) / "source.mp4"
         try:
-            normalize_video(source, normalized, runner)
+            if is_normalized(source, runner):
+                logger.info("vídeo %s ya está normalizado: se omite la re-codificación", video_id)
+                normalized = source
+            else:
+                normalize_video(source, normalized, runner)
             palette = extract_ambilight(str(normalized), duration_ms, popen)
         except NormalizeError as exc:
             return _fail(repo, video_id, f"normalización: {exc}")

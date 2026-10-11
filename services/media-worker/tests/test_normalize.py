@@ -1,5 +1,7 @@
+import json
 import subprocess
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 from fakes import fake_run
@@ -8,6 +10,7 @@ from media_worker.normalize import (
     DEFAULT_TIMEOUT_S,
     NormalizeError,
     ffmpeg_normalize_cmd,
+    is_normalized,
     normalize_video,
 )
 
@@ -49,3 +52,51 @@ def test_normalize_raises_if_ffmpeg_cannot_start():
     runner.side_effect = FileNotFoundError("ffmpeg")
     with pytest.raises(NormalizeError, match="no se pudo ejecutar"):
         normalize_video(Path("in.mp4"), Path("out.mp4"), runner)
+
+
+def probe_json(container="mov,mp4,m4a,3gp,3g2,mj2", video="h264", audio="aac", pix_fmt="yuv420p"):
+    streams = []
+    if video:
+        streams.append({"codec_type": "video", "codec_name": video, "pix_fmt": pix_fmt})
+    if audio:
+        streams.append({"codec_type": "audio", "codec_name": audio})
+    return json.dumps({"streams": streams, "format": {"format_name": container}})
+
+
+def test_is_normalized_for_mp4_h264_aac():
+    runner = fake_run(stdout=probe_json())
+    assert is_normalized(Path("in.mp4"), runner) is True
+    assert runner.call_args.args[0][0] == "ffprobe"
+    assert runner.call_args.args[0][-1] == "in.mp4"
+
+
+def test_is_normalized_accepts_video_without_audio():
+    assert is_normalized(Path("in.mp4"), fake_run(stdout=probe_json(audio=None))) is True
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        probe_json(container="matroska,webm"),
+        probe_json(video="hevc"),
+        probe_json(audio="ac3"),
+        probe_json(pix_fmt="yuv444p"),
+        probe_json(video=None),
+        "no es json",
+        "{}",
+    ],
+)
+def test_is_normalized_false_when_something_differs(output):
+    assert is_normalized(Path("in.mp4"), fake_run(stdout=output)) is False
+
+
+@pytest.mark.parametrize(
+    "runner",
+    [
+        fake_run(returncode=1, stderr="corrupto"),
+        Mock(side_effect=subprocess.TimeoutExpired("ffprobe", 1)),
+        Mock(side_effect=FileNotFoundError("ffprobe")),
+    ],
+)
+def test_is_normalized_false_when_probe_fails(runner):
+    assert is_normalized(Path("in.mp4"), runner) is False

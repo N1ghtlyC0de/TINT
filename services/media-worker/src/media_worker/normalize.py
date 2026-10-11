@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -9,8 +10,46 @@ from pathlib import Path
 DEFAULT_TIMEOUT_S = 4 * 3600
 
 
+PROBE_TIMEOUT_S = 30
+
+
 class NormalizeError(Exception):
     """No se pudo normalizar el vídeo."""
+
+
+def is_normalized(src: Path, runner=subprocess.run, timeout: float = PROBE_TIMEOUT_S) -> bool:
+    """True si `src` ya es MP4 con primer vídeo H.264 `yuv420p` y primer audio AAC (si hay).
+
+    Cualquier duda (ffprobe falla, salida ilegible) devuelve False: se normaliza como siempre.
+    """
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-show_entries",
+        "stream=codec_type,codec_name,pix_fmt:format=format_name",
+        "-of",
+        "json",
+        str(src),
+    ]
+    try:
+        result = runner(cmd, capture_output=True, text=True, check=False, timeout=timeout)
+        if result.returncode != 0:
+            return False
+        info = json.loads(result.stdout)
+        containers = info["format"]["format_name"].split(",")
+        streams = info["streams"]
+    except (subprocess.TimeoutExpired, OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+    video = next((s for s in streams if s.get("codec_type") == "video"), None)
+    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
+    return (
+        "mp4" in containers
+        and video is not None
+        and video.get("codec_name") == "h264"
+        and video.get("pix_fmt") == "yuv420p"
+        and (audio is None or audio.get("codec_name") == "aac")
+    )
 
 
 def ffmpeg_normalize_cmd(src: str, dest: str) -> list[str]:

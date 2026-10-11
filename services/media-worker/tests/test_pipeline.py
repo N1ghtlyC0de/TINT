@@ -32,12 +32,26 @@ def upload(tmp_path):
     return path
 
 
-def pipeline_runner(ffmpeg_returncode=0, ffmpeg_error=None):
-    """Runner que atiende ffprobe (duración) y ffmpeg (escribe el MP4 normalizado)."""
+PROBE_STREAMS_NORMALIZED = json.dumps(
+    {
+        "streams": [
+            {"codec_type": "video", "codec_name": "h264", "pix_fmt": "yuv420p"},
+            {"codec_type": "audio", "codec_name": "aac"},
+        ],
+        "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2", "duration": "2.0"},
+    }
+)
+
+
+def pipeline_runner(ffmpeg_returncode=0, ffmpeg_error=None, already_normalized=False):
+    """Runner que atiende ffprobe (duración y códecs) y ffmpeg (escribe el MP4 normalizado)."""
     seen = []
 
     def run(cmd, **kwargs):
         if cmd[0] == "ffprobe":
+            if any(arg.startswith("stream=") for arg in cmd):
+                out = PROBE_STREAMS_NORMALIZED if already_normalized else "{}"
+                return SimpleNamespace(returncode=0, stdout=out, stderr="")
             return SimpleNamespace(returncode=0, stdout=PROBE_2S, stderr="")
         if ffmpeg_error:
             raise ffmpeg_error
@@ -76,7 +90,7 @@ def test_process_video_validates_then_normalizes_then_extracts_ambilight_from_th
     runner = pipeline_runner()
     popen = two_red_frames()
     process_video("v1", upload, repo, blobs, runner, popen)
-    assert [call.args[0][0] for call in runner.call_args_list] == ["ffprobe", "ffmpeg"]
+    assert [call.args[0][0] for call in runner.call_args_list] == ["ffprobe", "ffprobe", "ffmpeg"]
     assert runner.call_args_list[0].args[0][-1] == str(upload)
     ((src, normalized),) = runner.seen
     assert src == upload
@@ -212,3 +226,18 @@ def test_failed_video_is_reprocessed_when_requested_again(upload):
     process_video("v1", upload, repo, blobs, fake_run(returncode=1), FakePopen())
     process_video("v1", upload, repo, blobs, pipeline_runner(), two_red_frames())
     assert [status for _, status in repo.history] == ["processing", "failed", "processing", "ready"]
+
+
+def test_already_normalized_video_is_published_without_running_ffmpeg(upload):
+    repo, blobs = setup()
+    runner = pipeline_runner(already_normalized=True)
+    popen = two_red_frames()
+    status = process_video("v1", upload, repo, blobs, runner, popen)
+    assert status is VideoStatus.READY
+    assert runner.seen == []
+    assert "ffmpeg" not in [call.args[0][0] for call in runner.call_args_list]
+    assert blobs.objects["v1/source.mp4"] == b"video-bytes"
+    assert repo.storage_keys["v1"] == "v1/source.mp4"
+    cmd = popen.calls[0][0]
+    assert cmd[cmd.index("-i") + 1] == str(upload)
+    assert upload.read_bytes() == b"video-bytes"

@@ -30,7 +30,7 @@ El vídeo **nunca se guarda en el bucket sin preprocesar**:
 1. Valida `video_id` (solo ids planos: `[A-Za-z0-9][A-Za-z0-9_-]{0,127}`); si no, lanza `InvalidVideoIdError` sin tocar SQL ni el bucket.
 2. Marca `processing` (si la fila no existe, lanza `VideoNotFoundError`).
 3. Inspecciona el archivo con ffprobe y obtiene la duración en ms.
-4. Normaliza con FFmpeg a MP4 (H.264 yuv420p + AAC, `-movflags +faststart`) en un archivo temporal que se borra siempre al terminar. Re-codifica siempre (`libx264 -preset veryfast -crf 23`, `aac 128k`), con timeout de 4 h (`normalize.DEFAULT_TIMEOUT_S`) tras el cual mata FFmpeg. Solo se acepta entrada mp4 por ahora.
+4. Si el original ya es MP4 con vídeo H.264 `yuv420p` y audio AAC (o sin audio), según ffprobe (`normalize.is_normalized`), **no se re-codifica**: se publica tal cual. Si no, normaliza con FFmpeg a MP4 (H.264 yuv420p + AAC, `-movflags +faststart`) en un archivo temporal que se borra siempre al terminar. Al re-codificar usa `libx264 -preset veryfast -crf 23` y `aac 128k`, con timeout de 4 h (`normalize.DEFAULT_TIMEOUT_S`) tras el cual mata FFmpeg. Solo se acepta entrada mp4 por ahora.
 5. Sobre el vídeo **normalizado**, extrae un fotograma por segundo con FFmpeg y calcula el color de la franja del 10 % de cada borde.
 6. Sube el normalizado como `source.mp4` y `ambilight.json` (siempre las mismas claves) y marca `ready` con `duration_ms` y `storage_key`.
 
