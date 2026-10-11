@@ -154,6 +154,20 @@ describe('rutas v1', () => {
     expect(res.body.link).toBe('/invite/abc123def456');
   });
 
+  it.each([[721], [1e308], [1.5], [0]])('POST /rooms/:id/invitations 400 si ttlHours=%s (entero de 1 a 720)', async (ttlHours) => {
+    vi.mocked(isOwner).mockResolvedValueOnce(true);
+    const res = await request(app).post('/api/v1/rooms/room-1/invitations').send({ ttlHours });
+    expect(res.status).toBe(400);
+    expect(createInvitation).not.toHaveBeenCalled();
+  });
+
+  it('POST /rooms/:id/invitations acepta ttlHours=720 (30 días)', async () => {
+    vi.mocked(isOwner).mockResolvedValueOnce(true);
+    vi.mocked(createInvitation).mockResolvedValueOnce(invitation as any);
+    const res = await request(app).post('/api/v1/rooms/room-1/invitations').send({ ttlHours: 720 });
+    expect(res.status).toBe(200);
+  });
+
   it('POST /rooms/:id/sync-ticket 403 si no es dueño', async () => {
     vi.mocked(isOwner).mockResolvedValueOnce(false);
     const res = await request(app).post('/api/v1/rooms/room-1/sync-ticket').send({});

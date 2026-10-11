@@ -170,7 +170,8 @@ router.delete('/rooms/:id', requireAuthHost, requireRoomOwner, async (req, res) 
 });
 
 const createInvitationSchema = z.object({
-  ttlHours: z.number().positive().optional(),
+  // Máximo 30 días: sin cota, un número enorme producía una fecha inválida y un 500.
+  ttlHours: z.number().int().positive().max(720).optional(),
 });
 router.post('/rooms/:id/invitations', requireAuthHost, requireRoomOwner, validate(createInvitationSchema), async (req, res) => {
   const rawId = req.params.id;
