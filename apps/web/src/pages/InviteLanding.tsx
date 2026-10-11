@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { apiFetch } from '../lib/api';
 import { inviteClaimErrorMessage } from '../lib/invite';
@@ -11,6 +11,28 @@ export default function InviteLanding() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const navigate = useNavigate();
+  // Con sesión de host, canjear la invitación la sustituye por una de invitado: se
+  // avisa y solo se hace con confirmación explícita ("Entrar como invitado").
+  const [hasHostSession] = useState(() => !!localStorage.getItem('tint_token'));
+  /** Sala del host con esta invitación: undefined = buscando, null = no es suya. */
+  const [hostRoomId, setHostRoomId] = useState<string | null | undefined>(undefined);
+
+  useEffect(() => {
+    if (!hasHostSession) return;
+    let cancelled = false;
+    apiFetch('/rooms', { method: 'GET' }, 'host')
+      .then((res: { rooms?: { id: string; invitation?: { code: string } | null }[] }) => {
+        const own = (res.rooms ?? []).find((room) => room.invitation?.code === code);
+        if (!cancelled) setHostRoomId(own?.id ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setHostRoomId(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [hasHostSession, code]);
+
   const handleJoin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -63,6 +85,28 @@ export default function InviteLanding() {
             Código <span className="rounded-md bg-white/10 px-2 py-0.5 font-mono text-[13px] text-white">{code}</span>
           </p>
 
+          {hasHostSession && (
+            <div role="note" className="mt-6 rounded-xl border border-tint-accent/30 bg-tint-accent/10 p-4 text-[13px] leading-relaxed">
+              <p className="font-semibold text-white">Tienes una sesión de host abierta</p>
+              <p className="mt-1">
+                Si entras como invitado se cerrará tu sesión de host en este navegador.
+              </p>
+              {hostRoomId && (
+                <Link
+                  to={`/watch/${hostRoomId}`}
+                  className="mt-3 inline-flex rounded-full bg-tint-accent px-4 py-2 text-sm font-semibold text-tint-bg transition hover:bg-tint-accentHover"
+                >
+                  Entrar como host
+                </Link>
+              )}
+              {hostRoomId === null && (
+                <Link to="/dashboard" className="mt-3 inline-flex text-tint-accent underline-offset-4 hover:underline">
+                  Ir a mis salas
+                </Link>
+              )}
+            </div>
+          )}
+
           <form onSubmit={handleJoin} className="mt-6 space-y-5">
             <Field label="Nick" htmlFor="nick" helper="Así te verán en el chat y las reacciones.">
               <input
@@ -77,8 +121,13 @@ export default function InviteLanding() {
                 maxLength={24}
               />
             </Field>
-            <Button className="w-full" type="submit" disabled={loading || nick.trim().length < 2}>
-              {loading ? 'Uniendo…' : 'Unirse'}
+            <Button
+              className="w-full"
+              type="submit"
+              variant={hasHostSession ? 'ghost' : undefined}
+              disabled={loading || nick.trim().length < 2}
+            >
+              {loading ? 'Uniendo…' : hasHostSession ? 'Entrar como invitado' : 'Unirse'}
             </Button>
             {error && <ErrorAlert message={error} />}
           </form>
