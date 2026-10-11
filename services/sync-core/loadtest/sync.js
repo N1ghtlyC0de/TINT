@@ -21,7 +21,7 @@ import encoding from 'k6/encoding';
 import { check } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
 
-const BASE_URL = __ENV.BASE_URL || 'ws://localhost:8082';
+const BASE_URL = __ENV.BASE_URL || 'ws://localhost:8083';
 const ROOM_ID = __ENV.ROOM_ID || `loadtest-${Date.now()}`;
 const VUS = parseInt(__ENV.VUS || '500', 10);
 const DURATION = __ENV.DURATION || '60s';

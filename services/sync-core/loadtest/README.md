@@ -13,9 +13,9 @@ Los tokens HS256 se firman en `setup()` con `k6/crypto` usando el mismo formato 
 # 1. Redis local
 docker compose up -d redis
 
-# 2. sync-core en :8082 (otra terminal)
+# 2. sync-core en :8083 (otra terminal)
 cd services/sync-core
-JWT_SECRET=dev-secret-change-in-prod SYNC_CORE_ADDR=:8082 REDIS_URL=redis://localhost:6379 go run .
+JWT_SECRET=dev-secret-change-in-prod SYNC_CORE_ADDR=:8083 REDIS_URL=redis://localhost:6379 go run .
 
 # 3. Prueba (desde la raíz del monorepo)
 k6 run -e ROOM_ID=sala-carga services/sync-core/loadtest/sync.js
@@ -29,7 +29,7 @@ k6 run -e ROOM_ID=sala-humo -e VUS=5 -e DURATION=10s services/sync-core/loadtest
 ### Variables (`-e NOMBRE=valor`)
 | Variable | Por defecto | Descripción |
 | :--- | :--- | :--- |
-| `BASE_URL` | `ws://localhost:8082` | Origen del servicio (sin ruta). |
+| `BASE_URL` | `ws://localhost:8083` | Origen del servicio (sin ruta). |
 | `ROOM_ID` | `loadtest-<timestamp>` | Sala; usa una nueva por corrida para empezar desde `version` 0. |
 | `VUS` | `500` | Conexiones simultáneas (VU 1 es el Host). |
 | `DURATION` | `60s` | Tiempo que cada VU mantiene su conexión (`ms`, `s`, `m`, `h`). |

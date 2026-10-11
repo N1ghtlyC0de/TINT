@@ -128,20 +128,20 @@ jobs:
         working-directory: services/sync-core
         run: |
           go build -o /tmp/sync-core .
-          SYNC_CORE_ADDR=:8082 REDIS_URL=redis://localhost:6379 /tmp/sync-core > /tmp/sync-core.log 2>&1 &
-          for i in $(seq 1 50); do curl -fs localhost:8082/healthz && exit 0; sleep 0.2; done
+          SYNC_CORE_ADDR=:8083 REDIS_URL=redis://localhost:6379 /tmp/sync-core > /tmp/sync-core.log 2>&1 &
+          for i in $(seq 1 50); do curl -fs localhost:8083/healthz && exit 0; sleep 0.2; done
           cat /tmp/sync-core.log; exit 1
       - uses: grafana/setup-k6-action@v1
         with:
           k6-version: "0.54.0"
       - name: k6 (umbrales de latencia, drift y autorización)
         run: >-
-          k6 run -e VUS=50 -e DURATION=20s -e ROOM_ID=ci-${{ github.run_id }}-${{ github.run_attempt }}
+          k6 run -e BASE_URL=ws://localhost:8083 -e VUS=50 -e DURATION=20s -e ROOM_ID=ci-${{ github.run_id }}-${{ github.run_attempt }}
           services/sync-core/loadtest/sync.js
       - name: Métricas y logs de sync-core
         if: always()
         run: |
-          curl -fs localhost:8082/metrics | grep '^sync_' || true
+          curl -fs localhost:8083/metrics | grep '^sync_' || true
           tail -n 50 /tmp/sync-core.log
 
   ci-gate:
