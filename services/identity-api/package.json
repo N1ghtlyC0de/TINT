@@ -10,7 +10,8 @@
     "lint": "echo 'skip lint for now'",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:integration": "INTEGRATION=1 vitest run tests/integration"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.1138.0",
