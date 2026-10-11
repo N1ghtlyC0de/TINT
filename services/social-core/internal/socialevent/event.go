@@ -20,9 +20,9 @@ const (
 	TypeError        Type = "error"
 )
 
-// ReactionEmojis es el set cerrado de reacciones (REQ-20 del Dominio Social:
-// risa, susto, sorpresa, aplauso, corazón).
-var ReactionEmojis = []string{"👏", "😂", "😮", "😱", "❤️"}
+// ReactionEmojis es el set de reacciones: REQ-20 del Dominio Social
+// (risa, susto, sorpresa, aplauso, corazón) más 😢 (tristeza) por producto.
+var ReactionEmojis = []string{"👏", "😂", "😮", "😱", "❤️", "😢"}
 
 // ValidEmoji indica si el emoji pertenece al set del documento.
 func ValidEmoji(e string) bool {

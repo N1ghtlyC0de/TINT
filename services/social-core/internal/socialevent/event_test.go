@@ -132,14 +132,15 @@ func TestReactionSendRejects(t *testing.T) {
 	}
 }
 
-func TestReactionSetTieneLosCincoDelDocumento(t *testing.T) {
-	want := map[string]bool{"👏": true, "😂": true, "😮": true, "😱": true, "❤️": true}
+func TestReactionSetIncluyeTristezaExtraAlDocumento(t *testing.T) {
+	// REQ-20 fija 5; se suma 😢 (tristeza) por decisión de producto.
+	want := map[string]bool{"👏": true, "😂": true, "😮": true, "😱": true, "❤️": true, "😢": true}
 	if len(ReactionEmojis) != len(want) {
 		t.Fatalf("len(ReactionEmojis) = %d, want %d", len(ReactionEmojis), len(want))
 	}
 	for _, e := range ReactionEmojis {
 		if !want[e] {
-			t.Errorf("emoji %q no está en el set del documento", e)
+			t.Errorf("emoji %q no está en el set esperado", e)
 		}
 	}
 }
