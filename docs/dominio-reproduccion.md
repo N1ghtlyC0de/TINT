@@ -841,6 +841,8 @@ Para probar el vídeo:
 | Barrido por sala, 1 host + 49 invitados (`sweep.lua`) | 3 rt/op · 6,4 ms · 182 allocs | **1 rt/op** · 2,5 ms · 81 allocs |
 | Alta + baja de un invitado (`Connect`/`Disconnect`) | 8 rt/op | **5 rt/op** |
 
+**Efecto de punta a punta (A/B con k6, 500 VUs, 30 s, misma máquina, corridas alternadas antes/después):** la latencia de retransmisión **no cambia de forma medible**. El p99 fue 30–40 ms antes y 42–85 ms después, dentro del ruido de k6 y del servidor en la misma máquina. La ronda reduce trabajo por réplica (CPU de latidos ~5×, idas y vueltas a Redis por comando y por barrido, asignaciones); es capacidad, no latencia para un usuario aislado. Al repetir la medición con la máquina descargada, **ambas versiones cumplen p99 < 100 ms con 500 VUs**: el fallo anterior (abajo) se debía a la carga de la máquina, no a sync-core.
+
 Descartado por no mejorar: buffer prereservado para MessagePack (mismo tiempo, más asignaciones) y tocar el fan-out de `Deliver` (el costo es el envío por canal a cada cliente, inherente). El HEARTBEAT MessagePack sigue por el códec.
 
 **MessagePack frente a JSON** (mensaje PLAY completo): 402 → 364 B (**−9,5 %**), ~5,6 → ~5,0 µs para codificar. La ganancia es pequeña porque el contrato exige claves y fechas de texto; por eso es opcional.
@@ -857,13 +859,14 @@ Descartado por no mejorar: buffer prereservado para MessagePack (mismo tiempo, m
 | Escenario | Resultado |
 | :--- | :--- |
 | Humo de CI (50 VUs, 20 s) | ✅ todos los umbrales; p95 de retransmisión **11 ms** |
-| 500 VUs, k6 y servidor en la misma máquina de 4 núcleos | ✅ handshakes, drift, `FORBIDDEN` · ❌ latencia p99 < 100 ms (p95 entre 128 y 315 ms) |
+| 500 VUs, k6 y servidor en la misma máquina de 4 núcleos, máquina cargada | ✅ handshakes, drift, `FORBIDDEN` · ❌ latencia p99 < 100 ms (p95 entre 128 y 315 ms) |
+| 500 VUs, misma máquina descargada (2026-10-11, antes y después de la ronda de optimización) | ✅ todos los umbrales; p99 30–85 ms |
 
 Con las métricas nuevas, durante la corrida de 500 VUs:
 - En el servidor, la escritura del comando y la entrega por Pub/Sub promediaron ~12 ms cada una, sin conflictos.
 - En la corrida anterior con 500 clientes en Go, el p99 de punta a punta fue de 25 ms.
 
-La cola restante sigue sin una causa demostrada, y el umbral **no se relajó**. La prueba completa debe correrse con k6 en otra máquina.
+La cola larga aparece cuando la máquina está cargada (k6 y el servidor compiten por los mismos 4 núcleos); con la máquina descargada no aparece. El umbral **no se relajó**. La prueba representativa sigue siendo con k6 en otra máquina.
 
 ---
 
@@ -885,7 +888,7 @@ La cola restante sigue sin una causa demostrada, y el umbral **no se relajó**. 
 
 ## 16. Limitaciones conocidas
 
-- **Latencia k6 con 500 VUs:** pendiente de confirmar con k6 en otra máquina (ver §14).
+- **Latencia k6 con 500 VUs:** cumple p99 < 100 ms en la misma máquina descargada; falta confirmarlo con k6 en otra máquina (ver §14).
 - **Token expirado:** sync-core cierra con `4003`, pero la web aún no lo trata como terminal (solo se detiene ante `4001`) y seguirá reintentando hasta adoptarlo.
 - **Cohost:** sync-core lo acepta, pero aún nadie emite tokens `role: cohost` y no hay UI para asignarlo.
 - **Usuario sin token:** `WatchRoom` lo trata como Host y pide un ticket, que falla si no es el dueño.
