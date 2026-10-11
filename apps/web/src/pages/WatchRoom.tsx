@@ -9,6 +9,7 @@ import { Card, Field } from '../components/ui/Primitives';
 import { apiFetch } from '../lib/api';
 import { toAbsoluteInviteLink, pickLatestActiveInvitation, parseInviteCode } from '../lib/invite';
 import { formatChatTime, noticeText } from '../lib/socialSocket';
+import { getLocalIdentity } from '../lib/identity';
 import { useSocialSocket } from '../hooks/useSocialSocket';
 
 export default function WatchRoom() {
@@ -25,6 +26,8 @@ export default function WatchRoom() {
   // (p. ej. guest token de una visita anterior al login). Coherente con
   // apiFetch, que prefiere el header de host.
   const isGuest = !localStorage.getItem('tint_token') && !!guestToken;
+  // Identidad para display (chip + mensajes propios). Solo UI.
+  const identity = getLocalIdentity();
   const [chat, setChat] = useState('');
   const [invite, setInvite] = useState('');
   const [inviteHint, setInviteHint] = useState('');
@@ -152,6 +155,14 @@ export default function WatchRoom() {
             <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[12px] text-tint-muted">
               Rol: {isGuest ? 'participante (invitado)' : 'host (registrado)'}
             </span>
+            {identity && (
+              <span
+                className="max-w-[160px] truncate rounded-full border border-tint-accent/30 bg-tint-accent/10 px-3 py-1 text-[12px] font-semibold text-white"
+                title={`Conectado como ${identity.nick}`}
+              >
+                {identity.nick}
+              </span>
+            )}
             {inviteLink && (
               <span className="hidden min-w-0 items-center gap-2 rounded-full border border-white/10 bg-white/5 py-1 pl-3 pr-1 text-[12px] sm:inline-flex">
                 <span className="max-w-[180px] truncate text-tint-muted" title={toAbsoluteInviteLink(inviteLink)}>
@@ -255,17 +266,28 @@ export default function WatchRoom() {
                 className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto"
                 aria-live="polite"
               >
-                {messages.map((m) =>
-                  m.type === 'notice' ? (
+                {messages.map((m) => {
+                  if (m.type === 'notice') {
+                    return (
+                      <li
+                        key={m.event_id}
+                        className="px-3 py-1 text-center text-[12px] italic text-tint-muted/80"
+                      >
+                        {noticeText(m)}
+                      </li>
+                    );
+                  }
+                  const isMine = identity !== null && m.user_id === identity.sub;
+                  return (
                     <li
                       key={m.event_id}
-                      className="px-3 py-1 text-center text-[12px] italic text-tint-muted/80"
+                      className={
+                        isMine
+                          ? 'ml-auto max-w-[85%] rounded-xl bg-tint-accent/20 px-3 py-2 text-right text-[13px]'
+                          : 'mr-auto max-w-[85%] rounded-xl bg-white/5 px-3 py-2 text-[13px]'
+                      }
                     >
-                      {noticeText(m)}
-                    </li>
-                  ) : (
-                    <li key={m.event_id} className="rounded-xl bg-white/5 px-3 py-2 text-[13px]">
-                      <span className="font-semibold text-white">{m.nick}: </span>
+                      {!isMine && <span className="font-semibold text-white">{m.nick}: </span>}
                       <span>{m.text}</span>{' '}
                       {formatChatTime(m.occurred_at) && (
                         <time dateTime={m.occurred_at} className="text-[11px] text-tint-muted/70">
@@ -273,8 +295,8 @@ export default function WatchRoom() {
                         </time>
                       )}
                     </li>
-                  ),
-                )}
+                  );
+                })}
               </ul>
             )}
             <form onSubmit={sendChat} className="mt-4 flex gap-2">
