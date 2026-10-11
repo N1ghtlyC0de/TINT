@@ -271,7 +271,7 @@ export default function WatchRoom() {
                     return (
                       <li
                         key={m.event_id}
-                        className="px-3 py-1 text-center text-[12px] italic text-tint-muted/80"
+                        className="mx-auto w-fit px-3 py-1 text-center text-[12px] italic text-tint-muted/80"
                       >
                         {noticeText(m)}
                       </li>
@@ -283,8 +283,8 @@ export default function WatchRoom() {
                       key={m.event_id}
                       className={
                         isMine
-                          ? 'ml-auto max-w-[85%] rounded-xl bg-tint-accent/20 px-3 py-2 text-right text-[13px]'
-                          : 'mr-auto max-w-[85%] rounded-xl bg-white/5 px-3 py-2 text-[13px]'
+                          ? 'ml-auto w-fit max-w-[85%] rounded-xl bg-tint-accent/20 px-3 py-2 text-right text-[13px] break-words'
+                          : 'mr-auto w-fit max-w-[85%] rounded-xl bg-white/5 px-3 py-2 text-[13px] break-words'
                       }
                     >
                       {!isMine && <span className="font-semibold text-white">{m.nick}: </span>}
@@ -309,6 +309,7 @@ export default function WatchRoom() {
                 onChange={(e) => setChat(e.target.value)}
                 placeholder="Escribe un mensaje"
                 maxLength={280}
+                autoComplete='off'
                 className="min-w-0 flex-1 rounded-xl border border-white/10 bg-tint-bg px-3 py-2 text-sm text-white placeholder:text-tint-muted/50 focus:border-tint-accent focus:outline-none"
               />
               <button

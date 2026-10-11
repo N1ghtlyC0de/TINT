@@ -128,9 +128,11 @@ describe('WatchRoom chat en vivo', () => {
     expect(await screen.findByText('Hola grupo')).toBeInTheDocument();
     const own = screen.getByText('Hola grupo').closest('li');
     expect(own?.className).toContain('ml-auto');
+    expect(own?.className).toContain('w-fit');
     expect(screen.queryByText('Ana:')).not.toBeInTheDocument();
     const other = screen.getByText('Buenas noches').closest('li');
     expect(other?.className).not.toContain('ml-auto');
+    expect(other?.className).toContain('w-fit');
     expect(screen.getByText('Luis:')).toBeInTheDocument();
   });
 });
