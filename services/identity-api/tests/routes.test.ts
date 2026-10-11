@@ -1,9 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
 
+let mockUser = { id: 'host-1', providerSub: 'sub-1', email: 'h@t.c', displayName: 'Host', role: 'public_host' };
+
 vi.mock('../src/middlewares/auth.js', () => ({
   requireAuthHost: (req: any, _res: any, next: any) => {
-    req.user = { id: 'host-1', providerSub: 'sub-1', email: 'h@t.c', displayName: 'Host' };
+    req.user = { ...mockUser };
+    next();
+  },
+  requireRole: (allowedRoles: string[]) => (req: any, res: any, next: any) => {
+    if (!req.user || !allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({ error: 'Forbidden: Insufficient permissions' });
+    }
     next();
   },
 }));
@@ -42,6 +50,7 @@ const invitation = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockUser = { id: 'host-1', providerSub: 'sub-1', email: 'h@t.c', displayName: 'Host', role: 'public_host' };
 });
 
 describe('rutas v1', () => {
@@ -56,6 +65,14 @@ describe('rutas v1', () => {
     expect(res.status).toBe(200);
     expect(res.body.isRegistered).toBe(true);
     expect(res.body.user.id).toBe('host-1');
+    expect(res.body.user.role).toBe('public_host');
+  });
+
+  it('POST /rooms 403 si el rol es participant', async () => {
+    mockUser.role = 'participant';
+    const res = await request(app).post('/api/v1/rooms').send({ title: 'Noche de cine' });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain('Forbidden');
   });
 
   it('POST /rooms 400 si el título está vacío', async () => {

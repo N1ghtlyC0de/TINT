@@ -4,17 +4,32 @@ import { getSigningKey } from '../modules/auth/jwks.js';
 import { env } from '../config/env.js';
 import { upsertByProvider } from '../modules/users/users.repo.js';
 
+export type RoleType = 'public_host' | 'private_host' | 'participant';
+
 export interface AuthUser {
   id: string;
   providerSub: string;
   email?: string | null;
   displayName?: string | null;
+  role: RoleType;
 }
 
 declare module 'express-serve-static-core' {
   interface Request {
     user?: AuthUser;
   }
+}
+
+export function requireRole(allowedRoles: RoleType[]) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    if (!allowedRoles.includes(req.user.role)) {
+      return res.status(403).json({ error: 'Forbidden: Insufficient permissions' });
+    }
+    next();
+  };
 }
 
 export async function requireAuthHost(req: Request, res: Response, next: NextFunction) {
@@ -61,6 +76,7 @@ export async function requireAuthHost(req: Request, res: Response, next: NextFun
       providerSub: user.providerSub,
       email: user.email,
       displayName: user.displayName,
+      role: (user.role as RoleType) || 'public_host',
     };
     next();
   } catch (err) {

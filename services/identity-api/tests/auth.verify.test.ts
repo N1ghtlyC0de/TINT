@@ -66,6 +66,7 @@ beforeEach(() => {
     email: 'test@test.com',
     displayName: 'Test User',
     avatarUrl: 'http://pic/avatar.png',
+    role: 'public_host',
     createdAt: new Date(),
     updatedAt: new Date(),
   } as any);
@@ -138,7 +139,7 @@ describe('requireAuthHost', () => {
       displayName: 'Test User',
       avatarUrl: 'http://pic/avatar.png',
     });
-    expect(req.user).toMatchObject({ id: 'user-1', providerSub: 'firebase-uid-123' });
+    expect(req.user).toMatchObject({ id: 'user-1', providerSub: 'firebase-uid-123', role: 'public_host' });
     expect(next).toHaveBeenCalled();
   });
 

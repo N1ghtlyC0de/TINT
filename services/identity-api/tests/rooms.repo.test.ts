@@ -14,7 +14,7 @@ vi.mock('../src/db/client.js', () => ({
   pool: { end: () => Promise.resolve() },
 }));
 
-import { create, findById, listByHost, isOwner, softRemoveById, updateTitle } from '../src/modules/rooms/rooms.repo.js';
+import { create, findById, listByHost, isOwner, softRemoveById, updateTitle, updateStatus } from '../src/modules/rooms/rooms.repo.js';
 
 const room = { id: 'r1', hostId: 'h1', title: 'Sala', status: 'active' };
 
@@ -68,4 +68,17 @@ describe('rooms.repo', () => {
     returningMock.mockResolvedValueOnce([]);
     await expect(updateTitle('missing', 'X')).resolves.toBeNull();
   });
+
+  it('updateStatus actualiza el estado y gracePeriodUntil', async () => {
+    const graceUntil = new Date(Date.now() + 12 * 60 * 60 * 1000);
+    returningMock.mockResolvedValueOnce([{ ...room, status: 'grace_period', gracePeriodUntil: graceUntil }]);
+    const res = await updateStatus('r1', 'grace_period', graceUntil);
+    expect(res).toMatchObject({ id: 'r1', status: 'grace_period', gracePeriodUntil: graceUntil });
+  });
+
+  it('updateStatus retorna null si no existe', async () => {
+    returningMock.mockResolvedValueOnce([]);
+    await expect(updateStatus('missing', 'closed')).resolves.toBeNull();
+  });
 });
+

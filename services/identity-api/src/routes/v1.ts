@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { env } from '../config/env.js';
 import { validate } from '../middlewares/validate.js';
-import { requireAuthHost } from '../middlewares/auth.js';
+import { requireAuthHost, requireRole } from '../middlewares/auth.js';
 import { requireRoomOwner } from '../middlewares/requireRoomOwner.js';
 import { upsertByProvider } from '../modules/users/users.repo.js';
 import { create as createRoom, listByHost, findById, softRemoveById, updateTitle } from '../modules/rooms/rooms.repo.js';
@@ -10,6 +10,7 @@ import { create as createInvitation, findByCode, setRevoked, listByRoom, listLat
 import { issueGuestToken } from '../modules/auth/auth.service.js';
 
 const router = Router();
+const requireHost = [requireAuthHost, requireRole(['public_host', 'private_host'])];
 
 function getRoomId(req: { params: unknown }) {
   const rawId = (req.params as Record<string, unknown>).id;
@@ -28,7 +29,7 @@ router.post('/auth/verify', requireAuthHost, validate(verifySchema), async (req,
 const createRoomSchema = z.object({
   title: z.string().trim().min(1),
 });
-router.post('/rooms', requireAuthHost, validate(createRoomSchema), async (req, res) => {
+router.post('/rooms', ...requireHost, validate(createRoomSchema), async (req, res) => {
   const { title } = req.body;
   const room = await createRoom({ title, hostId: req.user!.id });
   const ttlHours = parseInt(env.INVITATION_DEFAULT_TTL_HOURS, 10);
@@ -49,7 +50,7 @@ router.post('/rooms', requireAuthHost, validate(createRoomSchema), async (req, r
   });
 });
 
-router.get('/rooms', requireAuthHost, async (req, res) => {
+router.get('/rooms', ...requireHost, async (req, res) => {
   const rooms = await listByHost(req.user!.id);
   const latest = await listLatestActiveByRooms(rooms.map((room) => room.id));
   res.json({
@@ -65,7 +66,7 @@ router.get('/rooms', requireAuthHost, async (req, res) => {
   });
 });
 
-router.get('/rooms/:id', requireAuthHost, requireRoomOwner, async (req, res) => {
+router.get('/rooms/:id', ...requireHost, requireRoomOwner, async (req, res) => {
   const room = await findById(getRoomId(req));
   if (!room) {
     return res.status(404).json({ error: 'Not found' });
@@ -76,7 +77,7 @@ router.get('/rooms/:id', requireAuthHost, requireRoomOwner, async (req, res) => 
   res.json({ room });
 });
 
-router.get('/rooms/:id/invitations', requireAuthHost, requireRoomOwner, async (req, res) => {
+router.get('/rooms/:id/invitations', ...requireHost, requireRoomOwner, async (req, res) => {
   const room = await findById(getRoomId(req));
   if (!room) {
     return res.status(404).json({ error: 'Not found' });
@@ -91,7 +92,7 @@ router.get('/rooms/:id/invitations', requireAuthHost, requireRoomOwner, async (r
 const updateRoomSchema = z.object({
   title: z.string().trim().min(1).max(150),
 });
-router.patch('/rooms/:id', requireAuthHost, requireRoomOwner, validate(updateRoomSchema), async (req, res) => {
+router.patch('/rooms/:id', ...requireHost, requireRoomOwner, validate(updateRoomSchema), async (req, res) => {
   const roomId = getRoomId(req);
   const room = await findById(roomId);
   if (!room) {
@@ -104,7 +105,7 @@ router.patch('/rooms/:id', requireAuthHost, requireRoomOwner, validate(updateRoo
   res.json({ room: updated });
 });
 
-router.delete('/rooms/:id', requireAuthHost, requireRoomOwner, async (req, res) => {
+router.delete('/rooms/:id', ...requireHost, requireRoomOwner, async (req, res) => {
   const roomId = getRoomId(req);
   const room = await findById(roomId);
   if (!room) {
@@ -120,7 +121,7 @@ router.delete('/rooms/:id', requireAuthHost, requireRoomOwner, async (req, res) 
 const createInvitationSchema = z.object({
   ttlHours: z.number().positive().optional(),
 });
-router.post('/rooms/:id/invitations', requireAuthHost, requireRoomOwner, validate(createInvitationSchema), async (req, res) => {
+router.post('/rooms/:id/invitations', ...requireHost, requireRoomOwner, validate(createInvitationSchema), async (req, res) => {
   const rawId = req.params.id;
   const roomId = Array.isArray(rawId) ? rawId[0] : rawId;
   const room = await findById(roomId);
@@ -145,7 +146,7 @@ router.post('/rooms/:id/invitations', requireAuthHost, requireRoomOwner, validat
   });
 });
 
-router.post('/invitations/:code/revoke', requireAuthHost, async (req, res) => {
+router.post('/invitations/:code/revoke', ...requireHost, async (req, res) => {
   const rawCode = req.params.code;
   const code = Array.isArray(rawCode) ? rawCode[0] : rawCode;
   const invitation = await findByCode(code);

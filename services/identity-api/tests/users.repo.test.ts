@@ -19,6 +19,7 @@ import {
   findById,
   create,
   upsertByProvider,
+  updateRole,
 } from '../src/modules/users/users.repo.js';
 
 const row = {
@@ -70,4 +71,17 @@ describe('users.repo', () => {
     expect(result).toEqual(row);
     expect(returningMock).toHaveBeenCalled();
   });
+
+  it('updateRole actualiza el rol del usuario', async () => {
+    const updated = { ...row, role: 'private_host' };
+    returningMock.mockResolvedValueOnce([updated]);
+    const res = await updateRole('u1', 'private_host', 'r-2');
+    expect(res).toEqual(updated);
+  });
+
+  it('updateRole retorna null si no existe', async () => {
+    returningMock.mockResolvedValueOnce([]);
+    await expect(updateRole('missing', 'participant')).resolves.toBeNull();
+  });
 });
+

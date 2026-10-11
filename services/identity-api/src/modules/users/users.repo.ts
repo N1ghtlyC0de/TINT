@@ -6,7 +6,10 @@ export type User = typeof users.$inferSelect;
 export type NewUser = typeof users.$inferInsert;
 
 export async function findByProviderSub(providerSub: string, provider: 'firebase' = 'firebase') {
-  const result = await db.select().from(users).where(and(eq(users.providerSub, providerSub), eq(users.provider, provider)));
+  const result = await db
+    .select()
+    .from(users)
+    .where(and(eq(users.providerSub, providerSub), eq(users.provider, provider)));
   return result[0] || null;
 }
 
@@ -20,7 +23,15 @@ export async function create(user: NewUser) {
   return result[0];
 }
 
-export async function upsertByProvider(userData: { providerSub: string; email?: string | null; displayName?: string | null; avatarUrl?: string | null; provider?: 'firebase' }) {
+export async function upsertByProvider(userData: {
+  providerSub: string;
+  email?: string | null;
+  displayName?: string | null;
+  avatarUrl?: string | null;
+  provider?: 'firebase';
+  role?: 'public_host' | 'private_host' | 'participant';
+  roleId?: string | null;
+}) {
   const provider = userData.provider || 'firebase';
   const existing = await findByProviderSub(userData.providerSub, provider);
   if (existing) {
@@ -32,5 +43,23 @@ export async function upsertByProvider(userData: { providerSub: string; email?: 
     email: userData.email,
     displayName: userData.displayName,
     avatarUrl: userData.avatarUrl,
+    role: userData.role || 'public_host',
+    roleId: userData.roleId || null,
   });
+}
+
+export async function updateRole(id: string, role: string, roleId?: string | null) {
+  const values: Partial<NewUser> = {
+    role,
+    updatedAt: new Date(),
+  };
+  if (roleId !== undefined) {
+    values.roleId = roleId;
+  }
+  const result = await db
+    .update(users)
+    .set(values)
+    .where(eq(users.id, id))
+    .returning();
+  return result[0] || null;
 }
