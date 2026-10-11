@@ -1,0 +1,52 @@
+package server
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/chat"
+)
+
+func TestDefaultDepsMemoryAndRedis(t *testing.T) {
+	mem := DefaultDeps(func(string) string { return "" })
+	if mem.Hub == nil || mem.History == nil {
+		t.Fatal("deps memoria incompletas")
+	}
+	if mem.Publish != nil || mem.Subscribe != nil || mem.Track != nil {
+		t.Fatal("sin REDIS_URL no debe haber publish/subscribe/track")
+	}
+	withRedis := DefaultDeps(func(k string) string {
+		if k == "REDIS_URL" {
+			return "redis://localhost:6379"
+		}
+		return ""
+	})
+	if withRedis.Publish == nil || withRedis.Subscribe == nil || withRedis.Track == nil {
+		t.Fatal("con REDIS_URL debe cablear publish/subscribe/track")
+	}
+	bad := DefaultDeps(func(k string) string {
+		if k == "REDIS_URL" {
+			return "://mal"
+		}
+		return ""
+	})
+	if bad.Publish != nil {
+		t.Fatal("URL mala debe caer a memoria")
+	}
+}
+
+func TestDepsDefaults(t *testing.T) {
+	d := &Deps{Hub: chat.NewHub(), History: chat.NewMemoryStore(0)}
+	if d.now().IsZero() {
+		t.Fatal("now() default no debe ser cero")
+	}
+	a, b := d.newID(), d.newID()
+	if a == "" || a == b || !strings.Contains(a, "-") {
+		t.Fatalf("newID() = %q, %q, want uuid distintos", a, b)
+	}
+	if (&Deps{}).now().IsZero() {
+		t.Fatal("now nil debe usar reloj real")
+	}
+	_ = time.Now
+}

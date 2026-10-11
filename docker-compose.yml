@@ -34,7 +34,8 @@ services:
       retries: 10
 
   minio:
-    image: minio/minio:latest
+    #image: minio/minio:latest
+    image: pgsty/minio:latest # Usamos la imagen pgsty dado que la oficial de minio no está disponible actualmente.
     container_name: tint-minio
     command: ["server", "/data", "--console-address", ":9001"]
     environment:
@@ -53,7 +54,8 @@ services:
 
   # Crea el bucket de media al arrancar y termina.
   minio-init:
-    image: minio/mc:latest
+    #image: minio/mc:latest
+    image: pgsty/mc:latest # Usamos la imagen pgsty dado que la oficial de minio no está disponible actualmente.
     container_name: tint-minio-init
     depends_on:
       minio:
@@ -67,6 +69,21 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-tintadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-tintadmin123}
       MINIO_BUCKET: ${MINIO_BUCKET:-tint-media}
+
+  # Canal Social (/ws/social): chat en vivo con historial corto en Redis.
+  social-core:
+    build: ./services/social-core
+    container_name: tint-social-core
+    ports:
+      - "8082:8082"
+    environment:
+      SOCIAL_CORE_ADDR: ":8082"
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
+      FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-tint-login}
+    depends_on:
+      redis:
+        condition: service_healthy
 
 volumes:
   postgres-data:

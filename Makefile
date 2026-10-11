@@ -22,7 +22,9 @@ test-go:
 test-python:
 	@for svc in $(PY_SERVICES); do \
 		echo "==> $$svc"; \
-		(cd $$svc && python3 -m pytest --cov=src --cov-fail-under=$(COVERAGE_MIN)) || exit 1; \
+		(cd $$svc && \
+		 if [ -f .venv/bin/activate ]; then . .venv/bin/activate; fi && \
+		 python3 -m pytest --cov=src --cov-fail-under=$(COVERAGE_MIN)) || exit 1; \
 	done
 
 test-web:
