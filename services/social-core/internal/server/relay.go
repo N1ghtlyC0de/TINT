@@ -144,10 +144,16 @@ func (d *Deps) relayRefs(roomID string) int {
 // broadcastOnce emite al hub salvo que el event_id ya se haya visto
 // (el relay remoto ganó la carrera con el eco).
 func (d *Deps) broadcastOnce(roomID string, msg socialevent.ChatMessage) {
-	if d.markSeen(msg.EventID) {
+	d.broadcastRawOnce(roomID, msg.EventID, msg)
+}
+
+// broadcastRawOnce emite cualquier evento serializable al hub, tragando
+// duplicados por event_id igual que broadcastOnce.
+func (d *Deps) broadcastRawOnce(roomID, eventID string, v any) {
+	if d.markSeen(eventID) {
 		return
 	}
-	raw, err := json.Marshal(msg)
+	raw, err := json.Marshal(v)
 	if err != nil {
 		return
 	}

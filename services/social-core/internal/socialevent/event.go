@@ -11,12 +11,34 @@ import (
 type Type string
 
 const (
-	TypeChatSend    Type = "chat_send"
-	TypeChatMessage Type = "chat_message"
-	TypeHistory     Type = "history"
-	TypeNotice      Type = "notice"
-	TypeError       Type = "error"
+	TypeChatSend     Type = "chat_send"
+	TypeChatMessage  Type = "chat_message"
+	TypeHistory      Type = "history"
+	TypeNotice       Type = "notice"
+	TypeReactionSend Type = "reaction_send"
+	TypeReaction     Type = "reaction"
+	TypeError        Type = "error"
 )
+
+// ReactionEmojis es el set cerrado de reacciones (REQ-20 del Dominio Social:
+// risa, susto, sorpresa, aplauso, corazón).
+var ReactionEmojis = []string{"👏", "😂", "😮", "😱", "❤️"}
+
+// ValidEmoji indica si el emoji pertenece al set del documento.
+func ValidEmoji(e string) bool {
+	for _, ok := range ReactionEmojis {
+		if e == ok {
+			return true
+		}
+	}
+	return false
+}
+
+// TrimmedEmoji recorta espacios del emoji recibido (sin alterar el resto,
+// incluidos los selectores de variación como el de ❤️).
+func TrimmedEmoji(e string) string {
+	return trim(e)
+}
 
 // MaxTextRunes es el largo máximo de un mensaje de chat (regla de producto).
 const MaxTextRunes = 280
@@ -31,6 +53,8 @@ var (
 	ErrMissingUser      = errors.New("user_id es obligatorio")
 	ErrMissingNick      = errors.New("nick es obligatorio")
 	ErrInvalidKind      = errors.New("kind debe ser joined o left")
+	ErrInvalidEmoji     = errors.New("emoji fuera del set permitido")
+	ErrNegativePosition = errors.New("position_ms no puede ser negativa")
 	ErrEmptyText        = errors.New("text no puede estar vacío")
 	ErrTextTooLong      = errors.New("text supera los 280 caracteres")
 	ErrMissingTimestamp = errors.New("occurred_at es obligatorio")
@@ -148,6 +172,81 @@ func (m Notice) Validate() error {
 	}
 	if m.OccurredAt.IsZero() {
 		return ErrMissingTimestamp
+	}
+	return nil
+}
+
+// ReactionSend es la reacción que envía el cliente.
+type ReactionSend struct {
+	EventID    string    `json:"event_id"`
+	Type       Type      `json:"type"`
+	RoomID     string    `json:"room_id"`
+	Emoji      string    `json:"emoji"`
+	PositionMS int64     `json:"position_ms"`
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+// Validate verifica el contrato de un reaction_send.
+func (m ReactionSend) Validate() error {
+	if m.EventID == "" {
+		return ErrMissingEventID
+	}
+	if m.Type != TypeReactionSend {
+		return ErrUnsupportedType
+	}
+	if m.RoomID == "" {
+		return ErrMissingRoom
+	}
+	if trim(m.Emoji) == "" || !ValidEmoji(trim(m.Emoji)) {
+		return ErrInvalidEmoji
+	}
+	if m.PositionMS < 0 {
+		return ErrNegativePosition
+	}
+	if m.OccurredAt.IsZero() {
+		return ErrMissingTimestamp
+	}
+	return nil
+}
+
+// Reaction es el broadcast del servidor para una reacción.
+type Reaction struct {
+	EventID    string    `json:"event_id"`
+	Type       Type      `json:"type"`
+	RoomID     string    `json:"room_id"`
+	UserID     string    `json:"user_id"`
+	Nick       string    `json:"nick"`
+	Emoji      string    `json:"emoji"`
+	PositionMS int64     `json:"position_ms"`
+	OccurredAt time.Time `json:"occurred_at"`
+	ReceivedAt time.Time `json:"received_at"`
+}
+
+// Validate verifica un reaction broadcast.
+func (m Reaction) Validate() error {
+	if m.EventID == "" {
+		return ErrMissingEventID
+	}
+	if m.Type != TypeReaction {
+		return ErrUnsupportedType
+	}
+	if m.RoomID == "" {
+		return ErrMissingRoom
+	}
+	if m.UserID == "" {
+		return ErrMissingUser
+	}
+	if trim(m.Emoji) == "" || !ValidEmoji(trim(m.Emoji)) {
+		return ErrInvalidEmoji
+	}
+	if m.PositionMS < 0 {
+		return ErrNegativePosition
+	}
+	if m.OccurredAt.IsZero() || m.ReceivedAt.IsZero() {
+		return ErrMissingTimestamp
+	}
+	if m.ReceivedAt.Before(m.OccurredAt) {
+		return ErrReceivedBefore
 	}
 	return nil
 }
