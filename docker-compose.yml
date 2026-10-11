@@ -41,6 +41,8 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-tintadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-tintadmin123}
+      # El navegador sube y reproduce directo desde MinIO con URLs firmadas.
+      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_CORS_ALLOW_ORIGIN:-http://localhost:5173}
     ports:
       - "9000:9000"
       - "9001:9001"
