@@ -3,7 +3,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { env } from '../../config/env.js';
 
 /** Subconjunto de ioredis que usa identity-api (permite inyectar un fake en pruebas). */
-export type RedisLike = Pick<Redis, 'exists' | 'set' | 'publish'>;
+export type RedisLike = Pick<Redis, 'exists' | 'set' | 'publish' | 'xadd'>;
 
 let client: RedisLike | null = null;
 

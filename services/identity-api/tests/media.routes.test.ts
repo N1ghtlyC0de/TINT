@@ -23,6 +23,11 @@ vi.mock('../src/modules/invitations/invitations.repo.js', () => ({
   setRevoked: vi.fn(),
 }));
 
+vi.mock('../src/modules/videos/videos.repo.js', () => ({
+  create: vi.fn(),
+  findById: vi.fn(async () => null),
+}));
+
 vi.mock('../src/modules/guests/guestSessions.repo.js', () => ({
   create: vi.fn(),
   findByJti: vi.fn(async () => null),
@@ -54,7 +59,7 @@ beforeEach(() => {
   // Por defecto la sala existe y está activa (requireActiveRoom).
   vi.mocked(findById).mockResolvedValue({ id: 'room-1', hostId: 'host-1', title: 'Sala', status: 'active', mediaId: null, mediaKey: null } as any);
   revoked.clear();
-  setMediaSigner({ presignGet });
+  setMediaSigner({ presignGet, presignPut: vi.fn() });
   setRedisClient({ exists: vi.fn(async (k: string) => (revoked.has(k) ? 1 : 0)) } as any);
 });
 
@@ -150,7 +155,7 @@ describe('GET /rooms/:id/playback', () => {
     const { token } = issueGuestToken('room-1', 'Ana');
     const res = await request(app).get('/api/v1/rooms/room-1/playback').set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ mediaId: null, url: null, expiresAt: null });
+    expect(res.body).toEqual({ mediaId: null, url: null, expiresAt: null, status: null, ambilightUrl: null });
     expect(presignGet).not.toHaveBeenCalled();
   });
 

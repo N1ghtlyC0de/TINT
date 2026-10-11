@@ -11,6 +11,9 @@ import { create as createRoom, listByHost, findById, softRemoveById, updateTitle
 import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../modules/invitations/invitations.repo.js';
 import { issueGuestToken, generateSyncTicket } from '../modules/auth/auth.service.js';
 import { getMediaSigner } from '../modules/media/media.signer.js';
+import { getMediaStore } from '../modules/media/media.store.js';
+import { enqueueMediaUpload } from '../modules/media/media.queue.js';
+import { create as createVideo, findById as findVideo } from '../modules/videos/videos.repo.js';
 import {
   create as createGuestSession,
   findByJti as findGuestSession,
@@ -192,15 +195,107 @@ router.put('/rooms/:id/media', requireAuthHost, requireRoomOwner, validate(setMe
   res.json({ mediaId, mediaKey });
 });
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Extensiones permitidas en la clave del bucket: el nombre del usuario nunca forma parte de ella.
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.mov', '.mkv', '.m4v', '.ogv']);
+const EXTENSION_BY_TYPE: Record<string, string> = {
+  'video/mp4': '.mp4',
+  'video/webm': '.webm',
+  'video/quicktime': '.mov',
+  'video/x-matroska': '.mkv',
+  'video/x-m4v': '.m4v',
+  'video/ogg': '.ogv',
+};
+
+function videoExtension(filename: string, contentType: string) {
+  const match = /\.[a-z0-9]{1,5}$/i.exec(filename);
+  const fromName = match?.[0].toLowerCase();
+  if (fromName && VIDEO_EXTENSIONS.has(fromName)) return fromName;
+  return EXTENSION_BY_TYPE[contentType.toLowerCase()] ?? '';
+}
+
+const startUploadSchema = z.object({
+  filename: z.string().trim().min(1).max(255),
+  contentType: z.string().trim().toLowerCase().regex(/^video\/[a-z0-9.+-]+$/, 'Debe ser un vídeo'),
+  sizeBytes: z.number().int().positive(),
+});
+
+// 1) Reserva el vídeo y entrega una URL PUT firmada: el archivo va directo del
+//    navegador a MinIO, sin pasar por identity-api.
+router.post('/rooms/:id/media/uploads', requireAuthHost, requireRoomOwner, validate(startUploadSchema), requireActiveRoom, async (req, res) => {
+  const { filename, contentType, sizeBytes } = req.body;
+  if (sizeBytes > env.MAX_UPLOAD_BYTES) {
+    return res.status(413).json({ error: 'File too large' });
+  }
+  const videoId = uuidv4();
+  const storageKey = `${videoId}/source${videoExtension(filename, contentType)}`;
+  await createVideo({
+    id: videoId,
+    roomId: req.room!.id,
+    uploadedBy: req.user!.id,
+    storageKey,
+    contentType,
+    sizeBytes,
+    status: 'pending',
+  });
+  const ttl = env.UPLOAD_URL_TTL_SECONDS;
+  const uploadUrl = await getMediaSigner().presignPut(storageKey, contentType, ttl);
+  res.json({
+    videoId,
+    uploadUrl,
+    storageKey,
+    expiresAt: new Date(Date.now() + ttl * 1000).toISOString(),
+    headers: { 'Content-Type': contentType },
+  });
+});
+
+// 2) Confirma la subida: comprueba el objeto, encola el procesamiento
+//    (XADD media:uploads) y asigna el vídeo a la sala. Idempotente.
+router.post('/rooms/:id/media/uploads/:videoId/complete', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
+  const roomId = req.room!.id;
+  const videoId = paramId(req.params.videoId);
+  const video = UUID_RE.test(videoId) ? await findVideo(videoId) : null;
+  if (!video || video.roomId !== roomId) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  if (!(await getMediaStore().exists(video.storageKey))) {
+    return res.status(409).json({ error: 'Upload missing' });
+  }
+  try {
+    await enqueueMediaUpload(video.id);
+  } catch (err) {
+    console.error('[uploads] no se pudo encolar media:uploads:', (err as Error).message);
+    return res.status(503).json({ error: 'Service unavailable' });
+  }
+  const room = await setMedia(roomId, { mediaId: video.id, mediaKey: video.storageKey });
+  if (!room) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  res.json({ mediaId: video.id, mediaKey: video.storageKey, status: video.status });
+});
+
 router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, async (req, res) => {
   const room = req.room!;
   if (!room.mediaId || !room.mediaKey) {
-    return res.json({ mediaId: null, url: null, expiresAt: null });
+    return res.json({ mediaId: null, url: null, expiresAt: null, status: null, ambilightUrl: null });
   }
   const ttl = env.PLAYBACK_URL_TTL_SECONDS;
   const expiresAt = new Date(Date.now() + ttl * 1000);
-  const url = await getMediaSigner().presignGet(room.mediaKey, ttl);
-  res.json({ mediaId: room.mediaId, url, expiresAt: expiresAt.toISOString() });
+  const signer = getMediaSigner();
+  const url = await signer.presignGet(room.mediaKey, ttl);
+  // Vídeos subidos por la API tienen fila en `videos` (estado del media-worker);
+  // los asignados por clave manual no (status null). El original se reproduce
+  // aunque el procesamiento no haya terminado.
+  const video = await findVideo(room.mediaId);
+  const ambilightUrl = video?.status === 'ready' ? await signer.presignGet(`${video.id}/ambilight.json`, ttl) : null;
+  res.json({
+    mediaId: room.mediaId,
+    url,
+    expiresAt: expiresAt.toISOString(),
+    status: video?.status ?? null,
+    ambilightUrl,
+  });
 });
 
 router.get('/rooms/:id/guests', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
@@ -211,7 +306,6 @@ router.get('/rooms/:id/guests', requireAuthHost, requireRoomOwner, requireActive
   });
 });
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 router.post('/rooms/:id/guests/:jti/revoke', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
   const roomId = paramId(req.params.id);
   const jti = paramId(req.params.jti);

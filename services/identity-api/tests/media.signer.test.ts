@@ -30,7 +30,7 @@ describe('media.signer', () => {
     expect(url.origin).toBe('http://localhost:9000');
     expect(url.pathname).toBe('/tint-media/a.mp4');
 
-    const fake = { presignGet: async () => 'http://fake' };
+    const fake = { presignGet: async () => 'http://fake', presignPut: async () => 'http://fake-put' };
     setMediaSigner(fake);
     expect(getMediaSigner()).toBe(fake);
   });

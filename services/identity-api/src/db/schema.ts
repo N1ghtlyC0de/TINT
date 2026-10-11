@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, uuid, varchar } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, boolean, uuid, varchar, bigint, integer } from 'drizzle-orm/pg-core';
 
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -42,4 +42,20 @@ export const invitations = pgTable('invitations', {
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   revoked: boolean('revoked').default(false).notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+});
+
+// Vídeos subidos al Blob Storage (MinIO). identity-api crea la fila y publica
+// `media:uploads`; media-worker solo la actualiza (processing → ready | failed,
+// duration_ms). Las columnas id, storage_key, duration_ms y status son su contrato.
+export const videos = pgTable('videos', {
+  id: uuid('id').primaryKey(),
+  roomId: uuid('room_id').notNull().references(() => rooms.id, { onDelete: 'cascade' }),
+  uploadedBy: uuid('uploaded_by').references(() => users.id, { onDelete: 'set null' }),
+  storageKey: text('storage_key').notNull(),
+  contentType: varchar('content_type', { length: 100 }).notNull(),
+  sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
+  durationMs: integer('duration_ms'),
+  status: varchar('status', { length: 20 }).notNull().default('pending'),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });

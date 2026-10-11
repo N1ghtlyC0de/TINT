@@ -21,6 +21,9 @@ const envSchema = z.object({
   MINIO_BUCKET: z.string().default('tint-media'),
   MINIO_REGION: z.string().default('us-east-1'),
   PLAYBACK_URL_TTL_SECONDS: z.coerce.number().int().positive().default(3600),
+  // Subida directa navegador → MinIO con URL PUT firmada.
+  UPLOAD_URL_TTL_SECONDS: z.coerce.number().int().positive().default(900),
+  MAX_UPLOAD_BYTES: z.coerce.number().int().positive().default(2 * 1024 * 1024 * 1024),
   FIREBASE_PROJECT_ID: z.string().min(1, 'FIREBASE_PROJECT_ID es obligatorio'),
 });
 

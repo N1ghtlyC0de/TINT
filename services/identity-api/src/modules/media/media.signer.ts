@@ -1,10 +1,12 @@
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { env } from '../../config/env.js';
 
-/** Firma URLs GET temporales de objetos del bucket de medios. */
+/** Firma URLs temporales de objetos del bucket de medios. */
 export interface MediaSigner {
   presignGet(key: string, ttlSeconds: number): Promise<string>;
+  /** PUT directo desde el navegador; el Content-Type queda dentro de la firma. */
+  presignPut(key: string, contentType: string, ttlSeconds: number): Promise<string>;
 }
 
 export interface S3SignerConfig {
@@ -31,6 +33,10 @@ export function createS3Signer(config: S3SignerConfig): MediaSigner {
     presignGet(key, ttlSeconds) {
       const command = new GetObjectCommand({ Bucket: config.bucket, Key: key });
       return getSignedUrl(client, command, { expiresIn: ttlSeconds });
+    },
+    presignPut(key, contentType, ttlSeconds) {
+      const command = new PutObjectCommand({ Bucket: config.bucket, Key: key, ContentType: contentType });
+      return getSignedUrl(client, command, { expiresIn: ttlSeconds, signableHeaders: new Set(['content-type']) });
     },
   };
 }
