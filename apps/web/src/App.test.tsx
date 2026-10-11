@@ -22,4 +22,11 @@ describe('App', () => {
     render(<App />);
     expect(screen.getByText('Iniciar sesión con Google')).toBeInTheDocument();
   });
+
+  it('expone /test-me sin sesión (ruta oculta solo por URL)', async () => {
+    window.history.pushState({}, '', '/test-me');
+    render(<App />);
+    expect(await screen.findByRole('heading', { level: 1, name: /Cuánto sabes de TINT/ })).toBeInTheDocument();
+    window.history.pushState({}, '', '/');
+  });
 });
