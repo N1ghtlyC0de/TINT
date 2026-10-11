@@ -24,6 +24,23 @@ function str(v: unknown): string {
 }
 
 /**
+ * ¿El guest token sirve para entrar a `roomId`? Debe ser de esa sala (`room_id`) y no
+ * haber caducado (`exp`). Sin verificar firma: solo evita abrir la sala con un token que
+ * sync-core rechazaría (bucle de reconexión) o con el título de otra sala; quien autoriza
+ * sigue siendo el backend.
+ */
+export function guestTokenGrantsRoom(
+  token: string | null,
+  roomId: string | undefined,
+  now: number = Date.now(),
+): boolean {
+  if (!token || !roomId) return false;
+  const p = decodePayload(token);
+  if (!p || str(p.room_id) !== roomId) return false;
+  return typeof p.exp === 'number' && p.exp * 1000 > now;
+}
+
+/**
  * Lee nick y sub del token con sesión (host manda sobre invitado).
  * Decodifica el payload sin verificar firma: solo para mostrar,
  * nunca para decidir autorización (eso lo hace el backend).

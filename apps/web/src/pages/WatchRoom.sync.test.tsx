@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import WatchRoom from './WatchRoom';
 import { MockWebSocket } from '../test/mockWebSocket';
 import { apiFetch } from '../lib/api';
+import { testGuestToken } from '../test/guestToken';
 
 vi.mock('../lib/api', () => ({ apiFetch: vi.fn() }));
 const mockedApiFetch = vi.mocked(apiFetch);
@@ -66,7 +67,7 @@ describe('WatchRoom', () => {
 
   it('el token de host tiene prioridad sobre un guest token previo', async () => {
     localStorage.setItem('tint_token', 'firebase');
-    localStorage.setItem('tint_guest_token', 'guest-tok');
+    localStorage.setItem('tint_guest_token', testGuestToken());
     renderWatch();
     await flush();
     expect(mockedApiFetch).toHaveBeenCalledWith('/rooms/r1/sync-ticket', { method: 'POST' });
@@ -74,9 +75,10 @@ describe('WatchRoom', () => {
   });
 
   it('guest se conecta a /ws/sync con su token y no puede controlar', () => {
-    localStorage.setItem('tint_guest_token', 'guest-tok');
+    const token = testGuestToken();
+    localStorage.setItem('tint_guest_token', token);
     renderWatch();
-    expect(MockWebSocket.last().url).toContain('room_id=r1&token=guest-tok');
+    expect(MockWebSocket.last().url).toContain(`room_id=r1&token=${encodeURIComponent(token)}`);
     act(() => MockWebSocket.last().open());
     expect(screen.getByRole('button', { name: 'Reproducir' })).toBeDisabled();
     expect(mockedApiFetch).not.toHaveBeenCalledWith('/rooms/r1/sync-ticket', expect.anything());
@@ -95,7 +97,7 @@ describe('WatchRoom', () => {
 
   it('sin VITE_DEMO_VIDEO_URL muestra el aviso', async () => {
     vi.stubEnv('VITE_DEMO_VIDEO_URL', '');
-    localStorage.setItem('tint_guest_token', 'g');
+    localStorage.setItem('tint_guest_token', testGuestToken());
     renderWatch();
     await flush();
     expect(screen.getByText('Sin video configurado')).toBeInTheDocument();
@@ -103,7 +105,7 @@ describe('WatchRoom', () => {
 
   it('con VITE_DEMO_VIDEO_URL (sala sin vídeo) reproduce el respaldo y responde heartbeats', async () => {
     vi.stubEnv('VITE_DEMO_VIDEO_URL', 'https://cdn.test/demo.mp4');
-    localStorage.setItem('tint_guest_token', 'g');
+    localStorage.setItem('tint_guest_token', testGuestToken());
     renderWatch();
     await flush();
     const video = screen.getByLabelText('Vídeo de la sala') as HTMLVideoElement;
@@ -118,7 +120,7 @@ describe('WatchRoom', () => {
 
   it('la reacción viaja anclada a la posición actual del vídeo (REQ-21)', async () => {
     vi.stubEnv('VITE_DEMO_VIDEO_URL', 'https://cdn.test/demo.mp4');
-    localStorage.setItem('tint_guest_token', 'g');
+    localStorage.setItem('tint_guest_token', testGuestToken());
     renderWatch();
     await flush();
     const video = screen.getByLabelText('Vídeo de la sala') as HTMLVideoElement;

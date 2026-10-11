@@ -17,7 +17,7 @@ import { Card, Field } from '../components/ui/Primitives';
 import { apiFetch } from '../lib/api';
 import { toAbsoluteInviteLink, pickLatestActiveInvitation, parseInviteCode } from '../lib/invite';
 import { formatChatTime, noticeText } from '../lib/socialSocket';
-import { getLocalIdentity } from '../lib/identity';
+import { getLocalIdentity, guestTokenGrantsRoom } from '../lib/identity';
 import { useRoomPlayback, type MediaStatus } from '../hooks/useRoomPlayback';
 
 import { useSocialSocket } from '../hooks/useSocialSocket';
@@ -39,17 +39,20 @@ const MEDIA_STATUS_UI: Record<MediaStatus, { text: string; tone: string; dot: st
 export default function WatchRoom() {
   const { roomId } = useParams();
   const navigate = useNavigate();
-  const guestToken = localStorage.getItem('tint_guest_token');
   const hostToken = localStorage.getItem('tint_token');
-  // Sin ningún token no hay cómo autenticar el socket (401 + reconexión
-  // infinita): se muestra la puerta en vez de la sala.
+  // El guest token solo cuenta si es de esta sala y no caducó: sync-core rechazaría
+  // cualquier otro antes del upgrade (cierre 1006 + reconexión infinita).
+  const guestToken = guestTokenGrantsRoom(localStorage.getItem('tint_guest_token'), roomId)
+    ? localStorage.getItem('tint_guest_token')
+    : null;
+  // Sin ningún token válido no hay cómo autenticar el socket: se muestra la puerta.
   const hasAccess = !!hostToken || !!guestToken;
   // Canal Social (/ws/social): el estado maestro del chat vive en social-core.
   const { messages, reactions, send, sendReaction, status } = useSocialSocket(hasAccess ? roomId : undefined);
   // Si hay sesión de host, manda el host aunque queden restos de invitado
   // (p. ej. guest token de una visita anterior al login). Coherente con
   // apiFetch, que prefiere el header de host.
-  const isGuest = !localStorage.getItem('tint_token') && !!guestToken;
+  const isGuest = !hostToken && !!guestToken;
   // Identidad para display (chip + mensajes propios). Solo UI.
   const identity = getLocalIdentity();
   const role = isGuest ? 'guest' : 'host';

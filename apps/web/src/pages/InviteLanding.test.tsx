@@ -64,6 +64,16 @@ describe('InviteLanding', () => {
     expect(localStorage.getItem('tint_invite_link')).toBe('/invite/ABC123');
   });
 
+  it('sin título de sala borra el título guardado de otra invitación', async () => {
+    localStorage.setItem('tint_room_title', 'Sala vieja');
+    mockedApi.mockResolvedValueOnce({ token: 'guest-tok', roomId: 'r1', nick: 'Ana', roomTitle: null });
+    renderInvite();
+    await userEvent.type(screen.getByPlaceholderText('Nick'), 'Ana');
+    await userEvent.click(screen.getByText('Unirse'));
+    await waitFor(() => expect(screen.getByText('Sala lista')).toBeInTheDocument());
+    expect(localStorage.getItem('tint_room_title')).toBeNull();
+  });
+
   it('muestra el error si el código expiró o es inválido', async () => {
     mockedApi.mockRejectedValueOnce(new Error('Expired'));
     renderInvite();

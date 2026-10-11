@@ -6,6 +6,7 @@ import WatchRoom from './WatchRoom';
 import { MockWebSocket } from '../test/mockWebSocket';
 import { MockXhr } from '../test/mockXhr';
 import { apiFetch } from '../lib/api';
+import { testGuestToken } from '../test/guestToken';
 
 vi.mock('../lib/api', async (orig) => ({
   ...(await orig<typeof import('../lib/api')>()),
@@ -111,7 +112,7 @@ afterEach(() => {
 
 describe('WatchRoom v2 — vídeo de la sala (F3)', () => {
   it('el invitado pide el playback con su guest token y reproduce la URL firmada', async () => {
-    localStorage.setItem('tint_guest_token', 'g');
+    localStorage.setItem('tint_guest_token', testGuestToken());
     renderWatch();
     expect(screen.getByText('Cargando vídeo…')).toBeInTheDocument();
     await flush();
@@ -120,7 +121,7 @@ describe('WatchRoom v2 — vídeo de la sala (F3)', () => {
   });
 
   it('un LOAD con otro media_id vuelve a pedir el playback y cambia el src', async () => {
-    localStorage.setItem('tint_guest_token', 'g');
+    localStorage.setItem('tint_guest_token', testGuestToken());
     playbackByCall = [
       { mediaId: 'm1', url: 'https://minio/m1', expiresAt: null },
       { mediaId: 'm2', url: 'https://minio/m2', expiresAt: null },
@@ -140,7 +141,7 @@ describe('WatchRoom v2 — vídeo de la sala (F3)', () => {
   });
 
   it('si falla el playback muestra el error en el reproductor', async () => {
-    localStorage.setItem('tint_guest_token', 'g');
+    localStorage.setItem('tint_guest_token', testGuestToken());
     mockedApiFetch.mockImplementation(((path: string) =>
       path.endsWith('/playback') ? Promise.reject(new Error('401')) : routeApi(path)) as typeof apiFetch);
     renderWatch();
@@ -158,7 +159,7 @@ describe('WatchRoom v2 — estado del procesamiento (Ambilight)', () => {
     ['ready', 'Ambilight listo'],
     ['failed', 'No se pudo procesar el vídeo; la reproducción sigue disponible'],
   ])('status %s → "%s"', async (status, text) => {
-    localStorage.setItem('tint_guest_token', 'g');
+    localStorage.setItem('tint_guest_token', testGuestToken());
     playbackByCall = [{ ...base, status, ambilightUrl: status === 'ready' ? 'https://a' : null }];
     renderWatch();
     await flush();
@@ -167,7 +168,7 @@ describe('WatchRoom v2 — estado del procesamiento (Ambilight)', () => {
   });
 
   it('sin fila de vídeo (status null) no muestra estado de procesamiento', async () => {
-    localStorage.setItem('tint_guest_token', 'g');
+    localStorage.setItem('tint_guest_token', testGuestToken());
     playbackByCall = [{ ...base, status: null }];
     renderWatch();
     await flush();
@@ -234,7 +235,7 @@ describe('WatchRoom v2 — host', () => {
 
 describe('WatchRoom v2 — invitado', () => {
   it('con control delegado ve el aviso y puede controlar', async () => {
-    localStorage.setItem('tint_guest_token', 'g');
+    localStorage.setItem('tint_guest_token', testGuestToken());
     renderWatch();
     await flush();
     const ws = MockWebSocket.last();
@@ -247,7 +248,7 @@ describe('WatchRoom v2 — invitado', () => {
   });
 
   it('cierre 4001: muestra la expulsión y no reconecta', async () => {
-    localStorage.setItem('tint_guest_token', 'g');
+    localStorage.setItem('tint_guest_token', testGuestToken());
     renderWatch();
     await flush();
     const ws = MockWebSocket.last();
@@ -260,7 +261,7 @@ describe('WatchRoom v2 — invitado', () => {
   });
 
   it('avisa de los comandos del host en una región aria-live', async () => {
-    localStorage.setItem('tint_guest_token', 'g');
+    localStorage.setItem('tint_guest_token', testGuestToken());
     renderWatch();
     await flush();
     const ws = MockWebSocket.last();
@@ -274,7 +275,7 @@ describe('WatchRoom v2 — invitado', () => {
 
 describe('WatchRoom v2 — estado de conexión', () => {
   it('muestra la calidad de sincronía con RTT', async () => {
-    localStorage.setItem('tint_guest_token', 'g');
+    localStorage.setItem('tint_guest_token', testGuestToken());
     renderWatch();
     await flush();
     const ws = MockWebSocket.last();
@@ -284,7 +285,7 @@ describe('WatchRoom v2 — estado de conexión', () => {
   });
 
   it('muestra el intento de reconexión con cuenta regresiva', async () => {
-    localStorage.setItem('tint_guest_token', 'g');
+    localStorage.setItem('tint_guest_token', testGuestToken());
     renderWatch();
     await flush();
     act(() => MockWebSocket.last().close(1006));

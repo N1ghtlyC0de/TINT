@@ -24,7 +24,9 @@ export default function InviteLanding() {
       localStorage.setItem('tint_guest_token', res.token);
       // El invitado no tiene auth de host: se guarda el título y el link
       // para mostrarlos en la sala sin pedirlos al backend.
+      // Sin título se borra el guardado: si no, se vería el de otra invitación.
       if (res.roomTitle) localStorage.setItem('tint_room_title', res.roomTitle);
+      else localStorage.removeItem('tint_room_title');
       if (code) localStorage.setItem('tint_invite_link', `/invite/${code}`);
       navigate(`/watch/${res.roomId}`);
     } catch (err) {
