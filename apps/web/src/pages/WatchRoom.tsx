@@ -1,5 +1,9 @@
+
+import { useParams, Link, useNavigate } from 'react-router-dom';
+
 import { useParams, Link } from 'react-router-dom';
 import { useCallback, useEffect, useRef, useState } from 'react';
+
 import { ReactionBar } from '../components/ReactionBar';
 import { CopyButton } from '../components/CopyButton';
 import { SyncedPlayer } from '../components/SyncedPlayer';
@@ -8,11 +12,15 @@ import { ParticipantsPanel } from '../components/host/ParticipantsPanel';
 import { ReconnectStatus, SyncQualityIndicator } from '../components/sync/SyncStatus';
 import { ToastStack } from '../components/sync/SyncToasts';
 import { BackLink } from '../components/ui/BackLink';
-import { Card } from '../components/ui/Primitives';
+import { BrandMark } from '../components/layout/AppShell';
+import { Button } from '../components/ui/Button';
+import { Card, Field } from '../components/ui/Primitives';
 import { apiFetch } from '../lib/api';
-import { toAbsoluteInviteLink, pickLatestActiveInvitation } from '../lib/invite';
+import { toAbsoluteInviteLink, pickLatestActiveInvitation, parseInviteCode } from '../lib/invite';
 import { formatChatTime, noticeText } from '../lib/socialSocket';
+import { getLocalIdentity } from '../lib/identity';
 import { useRoomPlayback, type MediaStatus } from '../hooks/useRoomPlayback';
+
 import { useSocialSocket } from '../hooks/useSocialSocket';
 import { useSyncSocket } from '../hooks/useSyncSocket';
 import { useSyncToasts } from '../hooks/useSyncToasts';
@@ -31,13 +39,20 @@ const MEDIA_STATUS_UI: Record<MediaStatus, { text: string; tone: string; dot: st
 
 export default function WatchRoom() {
   const { roomId } = useParams();
-  // Canal Social (/ws/social): el estado maestro del chat vive en social-core.
-  const { messages, send, status } = useSocialSocket(roomId);
+  const navigate = useNavigate();
   const guestToken = localStorage.getItem('tint_guest_token');
+  const hostToken = localStorage.getItem('tint_token');
+  // Sin ningún token no hay cómo autenticar el socket (401 + reconexión
+  // infinita): se muestra la puerta en vez de la sala.
+  const hasAccess = !!hostToken || !!guestToken;
+  // Canal Social (/ws/social): el estado maestro del chat vive en social-core.
+  const { messages, send, status } = useSocialSocket(hasAccess ? roomId : undefined);
   // Si hay sesión de host, manda el host aunque queden restos de invitado
   // (p. ej. guest token de una visita anterior al login). Coherente con
   // apiFetch, que prefiere el header de host.
   const isGuest = !localStorage.getItem('tint_token') && !!guestToken;
+  // Identidad para display (chip + mensajes propios). Solo UI.
+  const identity = getLocalIdentity();
   const role = isGuest ? 'guest' : 'host';
   // Respaldo solo si la sala no tiene vídeo asignado en identity-api.
   const demoVideoUrl = import.meta.env.VITE_DEMO_VIDEO_URL || undefined;
@@ -70,6 +85,8 @@ export default function WatchRoom() {
     [sendCommand],
   );
   const [chat, setChat] = useState('');
+  const [invite, setInvite] = useState('');
+  const [inviteHint, setInviteHint] = useState('');
   const [roomTitle, setRoomTitle] = useState<string | null>(null);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
 
@@ -83,7 +100,7 @@ export default function WatchRoom() {
   // Título y link de invitación: el host los pide al backend; el invitado
   // usa los guardados al canjear (su token no tiene auth de host).
   useEffect(() => {
-    if (!roomId) return;
+    if (!roomId || !hasAccess) return;
     if (isGuest) {
       setRoomTitle(localStorage.getItem('tint_room_title'));
       setInviteLink(localStorage.getItem('tint_invite_link'));
@@ -109,7 +126,7 @@ export default function WatchRoom() {
     return () => {
       cancelled = true;
     };
-  }, [roomId, isGuest]);
+  }, [roomId, isGuest, hasAccess]);
 
   const heading = roomTitle?.trim() ? roomTitle : `Sala ${roomId}`;
 
@@ -131,6 +148,51 @@ export default function WatchRoom() {
     if (el && stickRef.current) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
+  const handleGateJoin = (e: React.FormEvent) => {
+    e.preventDefault();
+    const code = parseInviteCode(invite);
+    if (!code) {
+      setInviteHint('Ese link no parece válido. Revisa que incluya /invite/ o el código.');
+      return;
+    }
+    setInviteHint('');
+    navigate(`/invite/${code}`);
+  };
+
+  if (!hasAccess) {
+    return (
+      <div className="grid min-h-[100dvh] place-items-center bg-tint-bg px-4 text-tint-muted">
+        <Card className="w-full max-w-md p-8">
+          <p className="text-[11px] uppercase tracking-[0.18em] text-tint-accent">Sala privada</p>
+          <h1 className="mt-2 text-2xl font-bold tracking-tight text-white">Únete a esta sala</h1>
+          <p className="mt-2 text-sm leading-relaxed">
+            Necesitas un link de invitación o ser el host para ver el contenido y chatear.
+          </p>
+          <form onSubmit={handleGateJoin} className="mt-6 space-y-4">
+            <Field label="Link de invitación" htmlFor="gate-invite" error={undefined}>
+              <input
+                id="gate-invite"
+                className="w-full rounded-xl border border-white/10 bg-tint-bg px-4 py-2.5 text-white placeholder:text-tint-muted/50 focus:border-tint-accent focus:outline-none"
+                value={invite}
+                onChange={(e) => setInvite(e.target.value)}
+                placeholder="Pega el link o el código"
+                autoComplete="off"
+              />
+            </Field>
+            {inviteHint && <p className="text-[13px] text-red-300">{inviteHint}</p>}
+            <Button type="submit" disabled={invite.trim().length === 0} className="w-full">
+              Continuar
+            </Button>
+          </form>
+          <p className="mt-6 border-t border-white/10 pt-4 text-[13px]">
+            ¿Eres el host?{' '}
+            <Link
+              to={`/login?next=${encodeURIComponent(`/watch/${roomId ?? ''}`)}`}
+              className="text-tint-accent underline-offset-4 hover:underline"
+            >
+              Inicia sesión
+            </Link>
+          </p>
   if (sync.revoked) {
     return (
       <div className="grid min-h-[100dvh] place-items-center bg-tint-bg px-4 text-tint-muted">
@@ -156,14 +218,36 @@ export default function WatchRoom() {
     <div className="min-h-[100dvh] bg-tint-bg text-tint-muted">
       <header className="sticky top-0 z-30 border-b border-white/10 bg-tint-bg/90 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-[1400px] items-center justify-between gap-4 px-4">
-          <div className="flex min-w-0 items-center gap-3">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <BrandMark />
             <BackLink />
-            <h1 className="truncate text-[15px] font-semibold tracking-tight text-white" title={heading}>
+            <h1 className="min-w-0 flex-1 truncate text-[15px] font-semibold tracking-tight text-white" title={heading}>
               {heading}
             </h1>
-            <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[12px] text-tint-muted">
-              Rol: {isGuest ? 'participante (invitado)' : 'host (registrado)'}
-            </span>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {identity && (
+              <span
+                className="hidden max-w-[180px] truncate rounded-full border border-tint-accent/30 bg-tint-accent/10 px-3 py-1 text-[12px] font-semibold text-white sm:inline-flex sm:items-center sm:gap-1.5"
+                title={`Conectado como ${identity.nick}`}
+              >
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 16 16"
+                  className="h-3.5 w-3.5 shrink-0"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                >
+                  <circle cx="8" cy="5" r="2.6" />
+                  <path d="M2.5 13.5c.8-2.8 2.9-4.2 5.5-4.2s4.7 1.4 5.5 4.2" />
+                </svg>
+                <span className="truncate">
+                  {identity.nick} · {isGuest ? 'participante' : 'host'}
+                </span>
+              </span>
+            )}
             {inviteLink && (
               <span className="hidden min-w-0 items-center gap-2 rounded-full border border-white/10 bg-white/5 py-1 pl-3 pr-1 text-[12px] sm:inline-flex">
                 <span className="max-w-[180px] truncate text-tint-muted" title={toAbsoluteInviteLink(inviteLink)}>
@@ -173,15 +257,17 @@ export default function WatchRoom() {
               </span>
             )}
           </div>
-          <div className="flex shrink-0 items-center gap-3">
-            {sync.connected && <SyncQualityIndicator rttMs={sync.rttMs} driftMs={sync.driftMs} />}
-            <div role="status" aria-label="Estado de sincronía" aria-live="polite">
-              <ReconnectStatus connected={sync.connected} reconnect={sync.reconnect} />
-            </div>
-            <p className="text-[12px]" role="status" aria-live="polite">
-              {chatStatus}
-            </p>
+          <div
+            className="flex shrink-0 items-center gap-2 text-[13px] text-white"
+            aria-label="Estado de sincronía"
+            title="Sincronizado"
+          >
+            <span aria-hidden="true" className="h-2 w-2 rounded-full bg-tint-success" />
+            <span className="hidden md:inline">Sincronizado</span>
           </div>
+          <p className="shrink-0 text-[12px]" role="status" aria-live="polite">
+            {chatStatus}
+          </p>
         </div>
       </header>
 
@@ -272,17 +358,28 @@ export default function WatchRoom() {
                 className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto"
                 aria-live="polite"
               >
-                {messages.map((m) =>
-                  m.type === 'notice' ? (
+                {messages.map((m) => {
+                  if (m.type === 'notice') {
+                    return (
+                      <li
+                        key={m.event_id}
+                        className="mx-auto w-fit px-3 py-1 text-center text-[12px] italic text-tint-muted/80"
+                      >
+                        {noticeText(m)}
+                      </li>
+                    );
+                  }
+                  const isMine = identity !== null && m.user_id === identity.sub;
+                  return (
                     <li
                       key={m.event_id}
-                      className="px-3 py-1 text-center text-[12px] italic text-tint-muted/80"
+                      className={
+                        isMine
+                          ? 'ml-auto w-fit max-w-[85%] rounded-xl bg-tint-accent/20 px-3 py-2 text-right text-[13px] break-words'
+                          : 'mr-auto w-fit max-w-[85%] rounded-xl bg-white/5 px-3 py-2 text-[13px] break-words'
+                      }
                     >
-                      {noticeText(m)}
-                    </li>
-                  ) : (
-                    <li key={m.event_id} className="rounded-xl bg-white/5 px-3 py-2 text-[13px]">
-                      <span className="font-semibold text-white">{m.nick}: </span>
+                      {!isMine && <span className="font-semibold text-white">{m.nick}: </span>}
                       <span>{m.text}</span>{' '}
                       {formatChatTime(m.occurred_at) && (
                         <time dateTime={m.occurred_at} className="text-[11px] text-tint-muted/70">
@@ -290,8 +387,8 @@ export default function WatchRoom() {
                         </time>
                       )}
                     </li>
-                  ),
-                )}
+                  );
+                })}
               </ul>
             )}
             <form onSubmit={sendChat} className="mt-4 flex gap-2">
@@ -304,6 +401,7 @@ export default function WatchRoom() {
                 onChange={(e) => setChat(e.target.value)}
                 placeholder="Escribe un mensaje"
                 maxLength={280}
+                autoComplete='off'
                 className="min-w-0 flex-1 rounded-xl border border-white/10 bg-tint-bg px-3 py-2 text-sm text-white placeholder:text-tint-muted/50 focus:border-tint-accent focus:outline-none"
               />
               <button

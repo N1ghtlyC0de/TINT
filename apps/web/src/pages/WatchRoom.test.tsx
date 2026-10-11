@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { beforeEach, vi } from 'vitest';
 import WatchRoom from './WatchRoom';
@@ -12,18 +13,47 @@ vi.mock('../lib/api', async (importOriginal) => {
 
 const mockedApi = vi.mocked(apiFetch);
 
-vi.mock('../hooks/useSocialSocket', () => ({
-  useSocialSocket: () => ({ status: 'reconnecting' as const, messages: [], send: vi.fn(() => true) }),
-}));
+const createSocketSpy = vi.fn();
+
+vi.mock('../hooks/useSocialSocket', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../hooks/useSocialSocket')>();
+  return {
+    ...actual,
+    useSocialSocket: (roomId: string | undefined, opts: Record<string, unknown> = {}) =>
+      (
+        actual as unknown as {
+          useSocialSocket: (r: string | undefined, o: Record<string, unknown>) => unknown;
+        }
+      ).useSocialSocket(roomId, {
+        ...opts,
+        createSocket: (url: string) => {
+          createSocketSpy(url);
+          return { readyState: 0, close() {}, send() {} } as unknown as WebSocket;
+        },
+      }),
+  };
+});
 
 function renderWatch() {
   return render(
     <MemoryRouter initialEntries={['/watch/r1']}>
       <Routes>
         <Route path="/watch/:roomId" element={<WatchRoom />} />
+        <Route path="/invite/:code" element={<p>Invitación OK</p>} />
+        <Route path="/login" element={<p>Login OK</p>} />
       </Routes>
     </MemoryRouter>,
   );
+}
+
+function guestJwt(payload: Record<string, unknown>): string {
+  const b64 = (v: unknown) =>
+    btoa(JSON.stringify(v)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return `${b64({ alg: 'HS256' })}.${b64(payload)}.firma`;
+}
+
+function hostJwt(payload: Record<string, unknown>): string {
+  return guestJwt(payload);
 }
 
 beforeEach(() => {
@@ -34,21 +64,24 @@ beforeEach(() => {
 });
 
 describe('WatchRoom', () => {
-  it('muestra la sala y el rol host si no hay guest token', async () => {
+  it('muestra la sala y el rol host con sesión de host', async () => {
+    localStorage.setItem('tint_token', hostJwt({ sub: 'host-1', name: 'Drake' }));
     mockedApi.mockRejectedValue(new Error('offline'));
     renderWatch();
     expect(await screen.findByText(/Sala r1/)).toBeInTheDocument();
-    expect(screen.getByText(/host \(registrado\)/)).toBeInTheDocument();
+    expect(screen.getByTitle(/conectado como drake/i).textContent).toMatch(/host/);
   });
 
-  it('muestra el rol participante si hay guest token', () => {
-    localStorage.setItem('tint_guest_token', 'guest-tok');
+  it('muestra nick y rol de participante en un solo chip', () => {
+    localStorage.setItem('tint_guest_token', guestJwt({ sub: 'guest:u9', nick: 'Pedro' }));
     renderWatch();
-    expect(screen.getByText(/participante \(invitado\)/)).toBeInTheDocument();
+    const chip = screen.getByTitle(/conectado como pedro/i);
+    expect(chip.textContent).toMatch(/pedro/i);
+    expect(chip.textContent).toMatch(/participante/i);
   });
 
   it('el host manda aunque haya restos de invitado: pide el título fresco', async () => {
-    localStorage.setItem('tint_token', 'host-tok');
+    localStorage.setItem('tint_token', hostJwt({ sub: 'host-1', name: 'Drake' }));
     localStorage.setItem('tint_guest_token', 'guest-viejo');
     localStorage.setItem('tint_room_title', 'Sala vieja');
     mockedApi.mockImplementation((path: string) => {
@@ -57,7 +90,7 @@ describe('WatchRoom', () => {
     });
     renderWatch();
     expect(await screen.findByText('Testing')).toBeInTheDocument();
-    expect(screen.getByText(/host \(registrado\)/)).toBeInTheDocument();
+    expect(screen.getByTitle(/conectado como drake/i).textContent).toMatch(/host/);
     expect(screen.queryByText('Sala vieja')).not.toBeInTheDocument();
   });
 
@@ -70,6 +103,7 @@ describe('WatchRoom', () => {
   });
 
   it('el host ve el titulo real de la sala y el link con copiar', async () => {
+    localStorage.setItem('tint_token', 'host-tok');
     mockedApi.mockImplementation((path: string) => {
       if (path === '/rooms/r1') return Promise.resolve({ room: { id: 'r1', title: 'Noche de cine' } });
       return Promise.resolve({
@@ -86,6 +120,7 @@ describe('WatchRoom', () => {
   });
 
   it('el host ve el link vigente más reciente aunque haya varios', async () => {
+    localStorage.setItem('tint_token', 'host-tok');
     const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     mockedApi.mockImplementation((path: string) => {
       if (path === '/rooms/r1') return Promise.resolve({ room: { id: 'r1', title: 'Noche de cine' } });
@@ -113,5 +148,58 @@ describe('WatchRoom', () => {
     // Solo pide la URL de reproducción (permitida con guest token), nunca datos de host.
     expect(mockedApi).not.toHaveBeenCalledWith('/rooms/r1');
     expect(mockedApi).not.toHaveBeenCalledWith('/rooms/r1/invitations');
+  });
+
+  it('muestra el logo TINT antes del enlace Volver', () => {
+    localStorage.setItem('tint_guest_token', 'guest-tok');
+    renderWatch();
+    const logo = screen.getByRole('link', { name: 'TINT inicio' });
+    expect(logo).toHaveAttribute('href', '/dashboard');
+    const volver = screen.getByRole('link', { name: 'Volver' });
+    expect(logo.compareDocumentPosition(volver)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+  });
+
+  it('fusiona nick y rol en un solo chip de persona', () => {
+    localStorage.setItem('tint_guest_token', guestJwt({ sub: 'guest:u9', nick: 'Pedro' }));
+    localStorage.setItem('tint_room_title', 'Noche de cine');
+    renderWatch();
+    const chip = screen.getByTitle(/conectado como pedro/i);
+    expect(chip.textContent).toMatch(/pedro/i);
+    expect(chip.textContent).toMatch(/participante/i);
+    expect(screen.queryByText(/rol:/i)).not.toBeInTheDocument();
+    expect(chip.querySelector('svg')).not.toBeNull();
+  });
+
+  it('sin ningún token muestra la puerta y no intenta nada (ni socket ni api)', () => {
+    renderWatch();
+    expect(screen.getByText(/únete a esta sala/i)).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('Escribe un mensaje')).not.toBeInTheDocument();
+    expect(createSocketSpy).not.toHaveBeenCalled();
+    expect(mockedApi).not.toHaveBeenCalled();
+  });
+
+  it('la puerta lleva a la invitación con un link válido', async () => {
+    renderWatch();
+    await userEvent.type(screen.getByPlaceholderText(/link o el código/i), 'http://localhost:5173/invite/abc123XYZ');
+    await userEvent.click(screen.getByText('Continuar'));
+    expect(await screen.findByText('Invitación OK')).toBeInTheDocument();
+  });
+
+  it('la puerta avisa si el link no es válido', async () => {
+    renderWatch();
+    await userEvent.type(screen.getByPlaceholderText(/link o el código/i), 'hola');
+    await userEvent.click(screen.getByText('Continuar'));
+    expect(await screen.findByText(/no parece válido/i)).toBeInTheDocument();
+    expect(screen.queryByText('Invitación OK')).not.toBeInTheDocument();
+  });
+
+  it('la puerta enlaza al login con retorno a la sala', () => {
+    renderWatch();
+    expect(screen.getByRole('link', { name: /Inicia sesión/i })).toHaveAttribute(
+      'href',
+      '/login?next=%2Fwatch%2Fr1',
+    );
   });
 });
