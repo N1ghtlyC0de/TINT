@@ -43,34 +43,6 @@ func TestVerifyGuestOKAndWrongRoom(t *testing.T) {
 	}
 }
 
-func TestParseHostUnverified(t *testing.T) {
-	now := time.Now()
-	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"uid-1","email":"a@b.c","name":"Ana","aud":"tint-login","iss":"https://securetoken.google.com/tint-login","exp":` + itoa(now.Add(time.Hour).Unix()) + `}`))
-	token := "h." + payload + ".s"
-	got, err := ParseHostUnverified(token, "tint-login", now)
-	if err != nil {
-		t.Fatalf("ParseHost = %v", err)
-	}
-	if got.Subject != "uid-1" || got.Nick != "Ana" || got.IsGuest {
-		t.Fatalf("claims = %+v", got)
-	}
-	if _, err := ParseHostUnverified(token, "otro-proyecto", now); err != ErrInvalidToken {
-		t.Fatalf("aud distinto debe fallar, got %v", err)
-	}
-	if _, err := ParseHostUnverified("mal", "tint-login", now); err != ErrInvalidToken {
-		t.Fatalf("formato malo debe fallar, got %v", err)
-	}
-}
-
-func itoa(n int64) string {
-	return time.Unix(n, 0).UTC().Format("20060102150405")[0:0] + jsonNumber(n)
-}
-
-func jsonNumber(n int64) string {
-	raw, _ := json.Marshal(n)
-	return string(raw)
-}
-
 func TestBearerToken(t *testing.T) {
 	got, err := BearerToken("Bearer abc", "")
 	if err != nil || got != "abc" {

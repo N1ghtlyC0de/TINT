@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"net/http/httptest"
 	"strings"
@@ -11,21 +10,11 @@ import (
 
 	"nhooyr.io/websocket"
 
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/auth"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/chat"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/reactions"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/socialevent"
 )
-
-func hostToken(project string, exp time.Time) string {
-	payload := base64.RawURLEncoding.EncodeToString([]byte(
-		`{"sub":"host-1","name":"Host","aud":"` + project + `","iss":"https://securetoken.google.com/` + project + `","exp":` + expUnix(exp) + `}`))
-	return "h." + payload + ".s"
-}
-
-func expUnix(t time.Time) string {
-	raw, _ := json.Marshal(t.Unix())
-	return string(raw)
-}
 
 func sendRaw(t *testing.T, c *websocket.Conn, v any) {
 	t.Helper()
@@ -39,10 +28,11 @@ func sendRaw(t *testing.T, c *websocket.Conn, v any) {
 
 func TestSocialHostCanJoin(t *testing.T) {
 	deps := testDeps("s")
+	deps.HostKeys = auth.StaticKeys{"k1": &testHostKey(t).PublicKey}
 	srv := httptest.NewServer(NewRouterWithDeps(deps))
 	defer srv.Close()
 	wsBase := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/ws/social?room_id=cualquiera"
-	c := dial(t, wsBase, hostToken("tint-login", time.Now().Add(time.Hour)))
+	c := dial(t, wsBase, hostToken(t, testHostKey(t), "host-1", "Host"))
 	defer c.Close(websocket.StatusNormalClosure, "")
 	if m := readJSON(t, c); m["type"] != "history" {
 		t.Fatalf("host join = %v, want history", m)

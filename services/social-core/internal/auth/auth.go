@@ -1,8 +1,8 @@
 // Package auth valida tokens de host (Firebase) e invitado para /ws/social.
 //
-// Fase 1: verifica firma HS256 de guest tokens (mismo JWT_SECRET de identity-api)
-// y acepta host tokens Firebase por estructura (iss/aud/exp) con verificación
-// completa de firma marcada como TODO (requiere JWKS RS256).
+// Guest tokens: HS256 con el JWT_SECRET compartido con identity-api.
+// Host tokens: Firebase ID tokens RS256 verificados contra los certificados
+// públicos de Google (ver firebase.go). Ante cualquier duda, se rechaza.
 package auth
 
 import (
@@ -69,53 +69,6 @@ func VerifyGuest(token, secret, wantRoom string, now time.Time) (Claims, error) 
 		return Claims{}, ErrWrongRoom
 	}
 	return Claims{Subject: p.Sub, RoomID: p.RoomID, Role: p.Role, Nick: p.Nick, IsGuest: true}, nil
-}
-
-// firebasePayload es el subset que nos interesa de un Firebase ID token.
-type firebasePayload struct {
-	Sub   string `json:"sub"`
-	Email string `json:"email"`
-	Name  string `json:"name"`
-	Exp   int64  `json:"exp"`
-	Iss   string `json:"iss"`
-	Aud   string `json:"aud"`
-}
-
-// ParseHostUnverified extrae claims de un Firebase ID token sin verificar firma.
-//
-// TODO(auth): verificar firma RS256 contra JWKS de Google antes de producción.
-func ParseHostUnverified(token, projectID string, now time.Time) (Claims, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return Claims{}, ErrInvalidToken
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return Claims{}, ErrInvalidToken
-	}
-	var p firebasePayload
-	if err := json.Unmarshal(raw, &p); err != nil {
-		return Claims{}, ErrInvalidToken
-	}
-	if p.Sub == "" {
-		return Claims{}, ErrInvalidToken
-	}
-	if projectID != "" {
-		if p.Aud != projectID || p.Iss != "https://securetoken.google.com/"+projectID {
-			return Claims{}, ErrInvalidToken
-		}
-	}
-	if p.Exp > 0 && now.Unix() > p.Exp {
-		return Claims{}, ErrExpired
-	}
-	nick := p.Name
-	if nick == "" {
-		nick = p.Email
-	}
-	if nick == "" {
-		nick = "Host"
-	}
-	return Claims{Subject: p.Sub, Nick: nick, Role: "host"}, nil
 }
 
 // BearerToken extrae el token de un header Authorization o query ?token=.

@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -29,6 +30,9 @@ type Deps struct {
 	// Auth
 	JWTSecret         string
 	FirebaseProjectID string
+	// HostKeys resuelve las claves públicas de Firebase por kid. Nil o sin
+	// FirebaseProjectID = los host tokens se rechazan (falla cerrado).
+	HostKeys auth.KeySource
 	// Utilidades
 	Now       func() time.Time
 	NewID     func() string
@@ -199,6 +203,21 @@ func writeError(ctx context.Context, c *websocket.Conn, code, ref string) {
 	_ = c.Write(ctx, websocket.MessageText, raw)
 }
 
+// authenticate elige el verificador por el alg del header: HS256 = guest
+// token de identity-api; RS256 = Firebase ID token del host. Un token HS256
+// inválido nunca cae al camino de host, y nada se acepta sin firma válida.
+func (d *Deps) authenticate(ctx context.Context, token, roomID string) (auth.Claims, error) {
+	now := d.now()
+	switch auth.TokenAlg(token) {
+	case "HS256":
+		return auth.VerifyGuest(token, d.JWTSecret, roomID, now)
+	case "RS256":
+		return auth.VerifyHost(ctx, token, d.FirebaseProjectID, d.HostKeys, now)
+	default:
+		return auth.Claims{}, auth.ErrInvalidToken
+	}
+}
+
 func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 	ctx := r.Context()
 	roomID := r.URL.Query().Get("room_id")
@@ -211,19 +230,14 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	now := d.now()
-	claims, guestErr := auth.VerifyGuest(token, d.JWTSecret, roomID, now)
-	if guestErr != nil {
-		if guestErr == auth.ErrWrongRoom {
-			http.Error(w, "forbidden", http.StatusForbidden)
-			return
+	claims, err := d.authenticate(ctx, token, roomID)
+	if err != nil {
+		status := http.StatusUnauthorized
+		if errors.Is(err, auth.ErrWrongRoom) {
+			status = http.StatusForbidden
 		}
-		host, hostErr := auth.ParseHostUnverified(token, d.FirebaseProjectID, now)
-		if hostErr != nil {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		claims = host
+		http.Error(w, http.StatusText(status), status)
+		return
 	}
 
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
