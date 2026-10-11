@@ -12,3 +12,5 @@ COPY src/ ./src/
 ENV PYTHONPATH=/app/src PYTHONUNBUFFERED=1
 RUN useradd --create-home worker
 USER worker
+# Consume media:uploads y procesa cada subida (ver src/media_worker/__main__.py).
+CMD ["python", "-m", "media_worker"]
