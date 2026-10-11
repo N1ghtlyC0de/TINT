@@ -19,6 +19,8 @@ import {
   findByJti as findGuestSession,
   listByRoom as listGuestSessions,
   setRevoked as setGuestSessionRevoked,
+  listActiveByRoom as listActiveGuestSessions,
+  setRevokedMany as setGuestSessionsRevoked,
 } from '../modules/guests/guestSessions.repo.js';
 import { markTokenRevoked, publishRevoked } from '../modules/tokens/revocation.js';
 import { v4 as uuidv4 } from 'uuid';
@@ -122,6 +124,31 @@ router.patch('/rooms/:id', requireAuthHost, requireRoomOwner, validate(updateRoo
   res.json({ room: updated });
 });
 
+/**
+ * Corta a los invitados que siguen conectados: `token:revoked:{jti}` + `REVOKED`
+ * (sync-core cierra con 4001). La BD se marca solo después de Redis: si Redis
+ * falla, las sesiones siguen activas en la BD y un reintento las vuelve a encontrar.
+ * Devuelve false si Redis falló (falla cerrado → 503).
+ */
+async function revokeActiveGuestSessions(roomId: string) {
+  const sessions = await listActiveGuestSessions(roomId);
+  try {
+    await Promise.all(
+      sessions.map(async ({ jti, expiresAt }) => {
+        await markTokenRevoked(jti, Math.floor(expiresAt.getTime() / 1000));
+        await publishRevoked(roomId, jti);
+      }),
+    );
+  } catch (err) {
+    console.error('[rooms] no se pudieron revocar las sesiones de la sala borrada:', (err as Error).message);
+    return false;
+  }
+  await setGuestSessionsRevoked(sessions.map((s) => s.jti));
+  return true;
+}
+
+const REVOKE_RETRY_ERROR = { error: 'Room deleted but guest sessions could not be revoked; retry DELETE' };
+
 router.delete('/rooms/:id', requireAuthHost, requireRoomOwner, async (req, res) => {
   const roomId = getRoomId(req);
   const room = await findById(roomId);
@@ -129,9 +156,16 @@ router.delete('/rooms/:id', requireAuthHost, requireRoomOwner, async (req, res) 
     return res.status(404).json({ error: 'Not found' });
   }
   if (room.status === 'deleted') {
+    // Reintento tras un 503: vuelve a cortar las sesiones que quedaron pendientes.
+    if (!(await revokeActiveGuestSessions(roomId))) {
+      return res.status(503).json(REVOKE_RETRY_ERROR);
+    }
     return res.status(410).json({ error: 'Deleted' });
   }
   const removed = await softRemoveById(roomId);
+  if (!(await revokeActiveGuestSessions(roomId))) {
+    return res.status(503).json(REVOKE_RETRY_ERROR);
+  }
   res.json({ success: true, room: removed });
 });
 

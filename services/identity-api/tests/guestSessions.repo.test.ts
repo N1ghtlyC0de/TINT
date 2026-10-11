@@ -24,7 +24,7 @@ vi.mock('../src/db/client.js', () => ({
   pool: { end: () => Promise.resolve() },
 }));
 
-import { create, findByJti, listByRoom, setRevoked } from '../src/modules/guests/guestSessions.repo.js';
+import { create, findByJti, listByRoom, setRevoked, listActiveByRoom, setRevokedMany } from '../src/modules/guests/guestSessions.repo.js';
 
 const session = {
   jti: '22222222-2222-4222-8222-222222222222',
@@ -66,5 +66,20 @@ describe('guestSessions.repo', () => {
     expect(setMock).toHaveBeenCalledWith({ revoked: true });
     returningMock.mockResolvedValueOnce([]);
     await expect(setRevoked('nope')).resolves.toBeNull();
+  });
+
+  it('listActiveByRoom devuelve las sesiones no revocadas y no vencidas de la sala', async () => {
+    whereMock.mockReturnValueOnce([session]);
+    await expect(listActiveByRoom('r1')).resolves.toEqual([session]);
+    expect(whereMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('setRevokedMany marca varias sesiones y no consulta la BD con la lista vacía', async () => {
+    returningMock.mockResolvedValueOnce([{ ...session, revoked: true }]);
+    await expect(setRevokedMany([session.jti])).resolves.toHaveLength(1);
+    expect(setMock).toHaveBeenCalledWith({ revoked: true });
+    setMock.mockClear();
+    await expect(setRevokedMany([])).resolves.toEqual([]);
+    expect(setMock).not.toHaveBeenCalled();
   });
 });

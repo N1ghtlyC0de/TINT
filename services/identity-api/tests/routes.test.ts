@@ -35,11 +35,14 @@ vi.mock('../src/modules/guests/guestSessions.repo.js', () => ({
   findByJti: vi.fn(),
   listByRoom: vi.fn(),
   setRevoked: vi.fn(),
+  listActiveByRoom: vi.fn(async () => []),
+  setRevokedMany: vi.fn(async () => []),
 }));
 
 import app from '../src/app.js';
 import { env } from '../src/config/env.js';
-import { create as createGuestSession } from '../src/modules/guests/guestSessions.repo.js';
+import { create as createGuestSession, listActiveByRoom, setRevokedMany } from '../src/modules/guests/guestSessions.repo.js';
+import { setRedisClient } from '../src/modules/tokens/revocation.js';
 import { create as createRoom, listByHost, findById, isOwner, softRemoveById, updateTitle } from '../src/modules/rooms/rooms.repo.js';
 import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../src/modules/invitations/invitations.repo.js';
 
@@ -59,7 +62,14 @@ beforeEach(() => {
   // Por defecto la sala existe y está activa (requireActiveRoom).
   vi.mocked(findById).mockResolvedValue({ id: 'room-1', hostId: 'host-1', title: 'Sala', status: 'active', mediaId: null, mediaKey: null } as any);
   authUser.override = null;
+  setRedisClient(redis as any);
 });
+
+const redis = {
+  set: vi.fn(async () => 'OK'),
+  publish: vi.fn(async () => 1),
+  exists: vi.fn(async () => 0),
+};
 
 describe('rutas v1', () => {
   it('GET /healthz responde ok', async () => {
@@ -339,6 +349,65 @@ describe('rutas v1', () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(softRemoveById).toHaveBeenCalledWith('room-1');
+  });
+
+  describe('DELETE /rooms/:id corta las sesiones de invitado en vivo', () => {
+    const exp = new Date(Date.now() + 60 * 60 * 1000);
+    const sessions = [
+      { jti: '77777777-7777-4777-8777-777777777777', roomId: 'room-1', expiresAt: exp, revoked: false },
+      { jti: '88888888-8888-4888-8888-888888888888', roomId: 'room-1', expiresAt: exp, revoked: false },
+    ];
+
+    it('marca cada jti en Redis, publica REVOKED y lo registra en la BD', async () => {
+      vi.mocked(isOwner).mockResolvedValueOnce(true);
+      vi.mocked(findById).mockResolvedValueOnce(room as any);
+      vi.mocked(softRemoveById).mockResolvedValueOnce(deletedRoom as any);
+      vi.mocked(listActiveByRoom).mockResolvedValueOnce(sessions as any);
+      const res = await request(app).delete('/api/v1/rooms/room-1');
+      expect(res.status).toBe(200);
+      expect(listActiveByRoom).toHaveBeenCalledWith('room-1');
+      const expSec = Math.floor(exp.getTime() / 1000);
+      for (const { jti } of sessions) {
+        expect(redis.set).toHaveBeenCalledWith(`token:revoked:${jti}`, '1', 'EXAT', expSec);
+        expect(redis.publish).toHaveBeenCalledWith('room:room-1:sync', expect.stringContaining(`"jti":"${jti}"`));
+      }
+      expect(setRevokedMany).toHaveBeenCalledWith(sessions.map((s) => s.jti));
+    });
+
+    it('503 si Redis falla: la sala queda borrada y las sesiones siguen pendientes de revocar', async () => {
+      vi.mocked(isOwner).mockResolvedValueOnce(true);
+      vi.mocked(findById).mockResolvedValueOnce(room as any);
+      vi.mocked(softRemoveById).mockResolvedValueOnce(deletedRoom as any);
+      vi.mocked(listActiveByRoom).mockResolvedValueOnce(sessions as any);
+      redis.publish.mockRejectedValueOnce(new Error('redis down'));
+      const res = await request(app).delete('/api/v1/rooms/room-1');
+      expect(res.status).toBe(503);
+      expect(res.body.error).toMatch(/retry/i);
+      expect(softRemoveById).toHaveBeenCalledWith('room-1');
+      // Sin marcar en la BD: el reintento las vuelve a encontrar y re-publica.
+      expect(setRevokedMany).not.toHaveBeenCalled();
+    });
+
+    it('un reintento sobre la sala ya borrada vuelve a revocar las sesiones pendientes y responde 410', async () => {
+      vi.mocked(isOwner).mockResolvedValueOnce(true);
+      vi.mocked(findById).mockResolvedValueOnce(deletedRoom as any);
+      vi.mocked(listActiveByRoom).mockResolvedValueOnce(sessions as any);
+      const res = await request(app).delete('/api/v1/rooms/room-1');
+      expect(res.status).toBe(410);
+      expect(softRemoveById).not.toHaveBeenCalled();
+      expect(redis.publish).toHaveBeenCalledTimes(2);
+      expect(setRevokedMany).toHaveBeenCalledWith(sessions.map((s) => s.jti));
+    });
+
+    it('el reintento sigue respondiendo 503 mientras Redis no responda', async () => {
+      vi.mocked(isOwner).mockResolvedValueOnce(true);
+      vi.mocked(findById).mockResolvedValueOnce(deletedRoom as any);
+      vi.mocked(listActiveByRoom).mockResolvedValueOnce(sessions as any);
+      redis.set.mockRejectedValueOnce(new Error('redis down'));
+      const res = await request(app).delete('/api/v1/rooms/room-1');
+      expect(res.status).toBe(503);
+      expect(setRevokedMany).not.toHaveBeenCalled();
+    });
   });
 
   it('POST /rooms/:id/invitations 410 si la sala está eliminada', async () => {
