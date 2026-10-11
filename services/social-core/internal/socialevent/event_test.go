@@ -51,15 +51,27 @@ func TestChatSendAllows280RunesWithEmoji(t *testing.T) {
 	}
 }
 
-func TestChatMessageReceivedBeforeOccurred(t *testing.T) {
+func TestChatMessageAcceptsClockSkew(t *testing.T) {
 	now := time.Now().UTC()
 	m := ChatMessage{
 		EventID: "e", Type: TypeChatMessage, RoomID: "r1",
 		UserID: "u1", Nick: "Ana", Text: "hola",
 		OccurredAt: now, ReceivedAt: now.Add(-time.Second),
 	}
-	if err := m.Validate(); err != ErrReceivedBefore {
-		t.Fatalf("Validate() = %v, want ErrReceivedBefore", err)
+	// Relojes distintos (cliente adelantado) no invalidan el mensaje.
+	if err := m.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+}
+
+func TestClampOccurred(t *testing.T) {
+	now := time.Now().UTC()
+	if got := ClampOccurred(now.Add(2*time.Second), now); !got.Equal(now) {
+		t.Fatalf("futuro = %v, want %v", got, now)
+	}
+	past := now.Add(-time.Second)
+	if got := ClampOccurred(past, now); !got.Equal(past) {
+		t.Fatalf("pasado = %v, want %v", got, past)
 	}
 }
 

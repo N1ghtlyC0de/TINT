@@ -346,7 +346,7 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		out := socialevent.ChatMessage{
 			EventID: d.newID(), Type: socialevent.TypeChatMessage, RoomID: roomID,
 			UserID: claims.Subject, Nick: claims.Nick, Text: text,
-			OccurredAt: in.OccurredAt, ReceivedAt: received,
+			OccurredAt: socialevent.ClampOccurred(in.OccurredAt, received), ReceivedAt: received,
 		}
 		if err := out.Validate(); err != nil {
 			writeError(ctx, c, "INVALID_PAYLOAD", in.EventID)
@@ -402,7 +402,7 @@ func (d *Deps) handleReaction(ctx context.Context, c *websocket.Conn, roomID str
 	out := socialevent.Reaction{
 		EventID: d.newID(), Type: socialevent.TypeReaction, RoomID: roomID,
 		UserID: claims.Subject, Nick: claims.Nick, Emoji: socialevent.TrimmedEmoji(in.Emoji),
-		PositionMS: in.PositionMS, OccurredAt: in.OccurredAt, ReceivedAt: received,
+		PositionMS: in.PositionMS, OccurredAt: socialevent.ClampOccurred(in.OccurredAt, received), ReceivedAt: received,
 	}
 	if err := out.Validate(); err != nil {
 		writeError(ctx, c, "INVALID_PAYLOAD", in.EventID)
