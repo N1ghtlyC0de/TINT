@@ -120,6 +120,22 @@ func TestForSubprotocol(t *testing.T) {
 	}
 }
 
+func BenchmarkDecode(b *testing.B) {
+	ev := sample()
+	for _, c := range []Codec{JSON, MsgPack} {
+		b.Run(c.Name(), func(b *testing.B) {
+			raw, _ := c.Encode(ev)
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				var out syncevent.Event
+				if err := c.Decode(raw, &out); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 func BenchmarkEncode(b *testing.B) {
 	ev := sample()
 	for _, c := range []Codec{JSON, MsgPack} {
