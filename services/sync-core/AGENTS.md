@@ -59,13 +59,23 @@ Tokens HS256 firmados por identity-api con `JWT_SECRET`, `iss=tint-identity`, `a
 | Handshake | Resultado |
 | :--- | :--- |
 | Falta `room_id` o `token` | `400` |
-| Token inválido / expirado / algoritmo distinto de HS256 / rol desconocido | `401` |
-| Token de otra sala | `403` |
-| Token revocado (`token:revoked:{jti}`) | `401` |
+| Token inválido (firma, `iss`, `aud`) / algoritmo distinto de HS256 / sin `exp` / rol desconocido | `401` |
+| Token de otra sala (aunque esté expirado) | `403` |
+| `Origin` fuera de `ALLOWED_ORIGINS` | `403` (se comprueba también antes de los cierres terminales) |
+| Token expirado pero bien firmado (`iss`, `aud`, sala y rol correctos) | upgrade y cierre `4003` "token expirado" |
+| Token revocado (`token:revoked:{jti}`) | upgrade y cierre `4001` "token revocado" (sin `STATE`) |
 | Redis no permite comprobar la revocación | `503` (falla cerrado) |
-| `Origin` fuera de `ALLOWED_ORIGINS` | `403` |
 | Redis no disponible al conectar | upgrade y cierre `1011` |
 | OK | `101` y el servidor envía de inmediato un `STATE` |
+
+Los casos terminales hacen upgrade porque el navegador no ve el status HTTP de un handshake rechazado (solo un cierre `1006`), y un cliente que reconecta ante `1006` lo haría para siempre.
+
+**Códigos de cierre terminales** (el cliente **no** debe reconectar con el mismo token):
+
+| Código | Motivo | Qué hace el cliente |
+| :--- | :--- | :--- |
+| `4001` | Token revocado (en el handshake o por `REVOKED` en vivo) | Borra el token y muestra "Fuiste retirado". |
+| `4003` | Token expirado | Pide un token nuevo (sync-ticket del Host o volver a unirse). **Pendiente en la web**: hoy solo se detiene ante `4001`. |
 
 **Subprotocolo opcional:** `Sec-WebSocket-Protocol: tint.sync.msgpack` → todos los frames son binarios MessagePack con las mismas claves que el JSON (timestamps como string ISO-8601). Sin subprotocolo o con `tint.sync.json` → JSON. El bus entre réplicas siempre usa JSON.
 
@@ -112,7 +122,8 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 | Mensajes entrantes | 20 msg/s por conexión (ventana fija) | `ERROR{RATE_LIMITED}` |
 | Cola de salida | 64 mensajes por cliente | cliente lento → cierre `1008` |
 | Latidos sin `SYNC_CHECK` | 3 intervalos | cierre `1008` |
-| Token revocado durante la conexión | — | cierre `4001` (no reconectar) |
+| Token revocado (handshake o durante la conexión) | — | cierre `4001` (no reconectar) |
+| Token expirado en el handshake | — | cierre `4003` (pedir token nuevo) |
 | Comando de un `participant` | — | `ERROR{FORBIDDEN}` |
 
 ## Arquitectura interna

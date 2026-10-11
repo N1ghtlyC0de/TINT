@@ -123,7 +123,7 @@ gitGraph
 | `49904f8` | sync-core | Contrato v2: tipos `RATE`, `LOAD`, `CONTROL`, `REVOKED`; campos `media_id`, `rtt_ms`, `can_control`, `holder`, `jti`. |
 | `3096e5d` | sync-core | **perf**: compare-and-set con Lua y candado por sala (reemplaza `WATCH/MULTI`). |
 | `3a395b3` | sync-core | Barrido de presencia, `HOST_STATUS` ante caída de réplica, delegación de control, latido único por réplica, RTT/drift en `HEARTBEAT`. |
-| `b0b1631` | sync-core | Revocación: 401 en el handshake y cierre `4001` en vivo. |
+| `b0b1631` | sync-core | Revocación: 401 en el handshake y cierre `4001` en vivo (luego el handshake pasó a upgrade + `4001`, ver §6.8). |
 | `e2d2683` | sync-core | `GET /metrics` (paquete propio, sin dependencias). |
 | `9970dfc` | identity-api | `vitest` y `@vitest/coverage-v8` alineados: `npm ci` sin flags. |
 | `ae88d2d` | identity-api | `PUT /rooms/:id/media` y `GET /rooms/:id/playback` con URL firmada de MinIO. |
@@ -150,7 +150,7 @@ gitGraph
 | :--- | :--- |
 | F3 Vídeo de la sala con URL firmada | identity-api (`media`, `playback`) + web (`useRoomPlayback`, panel "Cambiar vídeo") |
 | F4 `HOST_STATUS` ante caída de réplica | sync-core (barrido + script Lua de transiciones) |
-| F5 Revocación de invitados | identity-api (`guest_sessions`, `revoke`) + sync-core (401 / `4001`) + web (panel "Participantes", pantalla de retiro) |
+| F5 Revocación de invitados | identity-api (`guest_sessions`, `revoke`) + sync-core (`4001` en el handshake y en vivo) + web (panel "Participantes", pantalla de retiro) |
 | F6 Comandos `RATE` y `LOAD` | sync-core (`master`) + web (selector de velocidad, cambio de vídeo) |
 | F7 Delegación de control | sync-core (`CONTROL`) + web (`canControl`, aviso de control temporal) |
 | UX 1–6 | web (`SyncStatus`, `SyncToasts`, `SeekBar`, `usePlayerShortcuts`, reconexión, fundido) + `rtt_ms`/`drift_ms` en `HEARTBEAT` |
@@ -340,10 +340,14 @@ sequenceDiagram
     C->>WS: GET /ws/sync?room_id&token<br/>Sec-WebSocket-Protocol opcional: tint.sync.msgpack
     WS->>WS: Verify: alg, iss, aud, exp, room_id, rol
     WS->>R: EXISTS token:revoked:{jti}
-    alt inválido o revocado
+    alt inválido (firma, iss, aud, rol)
         WS-->>C: 401
     else otra sala u origen no permitido
         WS-->>C: 403
+    else expirado pero bien firmado
+        WS-->>C: 101 y cierre 4003 "token expirado"
+    else revocado
+        WS-->>C: 101 y cierre 4001 "token revocado"
     else Redis no responde
         WS-->>C: 503 (falla cerrado)
     else válido
@@ -499,10 +503,12 @@ sequenceDiagram
     SC-->>Inv: cierre 4001 "token revocado"
     Note over Inv: la web no reconecta, borra el token<br/>y muestra "Fuiste retirado de la sala"
     Inv->>SC: reintento con el mismo token
-    SC-->>Inv: 401
+    SC-->>Inv: 101 y cierre 4001 (no 401: el navegador vería 1006)
     Inv->>ID: GET /rooms/:id/playback
     ID-->>Inv: 401 Token revoked
 ```
+
+Un token revocado o expirado pero bien firmado **hace upgrade y se cierra** con `4001`/`4003` (tras la comprobación de origen): si el handshake respondiera 401, el navegador solo vería un cierre `1006` y la web reintentaría para siempre. Un token de otra sala o con firma inválida se sigue rechazando antes del upgrade (no se filtra información). `4003` es nuevo: la web debe tratarlo como terminal y pedir otro token (pendiente en `useSyncSocket.ts`).
 
 ### 6.7 Subida y cambio de vídeo
 
@@ -556,6 +562,7 @@ Sigue existiendo `PUT /rooms/:id/media { mediaKey }`, para asignar un objeto que
 stateDiagram-v2
     [*] --> Validando: GET /ws/sync
     Validando --> Rechazada: 400 / 401 / 403 / 503
+    Validando --> CerradaTerminal: 101 y cierre 4001 (revocado) / 4003 (expirado), sin hub.Connect
     Validando --> Conectada: 101 + hub.Connect
     Validando --> Cerrada1011: Redis no disponible al conectar
     Conectada --> Cerrada1008: cola llena (64) o 3 latidos sin respuesta
@@ -565,6 +572,7 @@ stateDiagram-v2
     Cerrada1008 --> Desconectada
     Cerrada1009 --> Desconectada
     Cerrada4001 --> Desconectada
+    CerradaTerminal --> [*]
     Cerrada1000 --> Desconectada
     Desconectada --> [*]: hub.Disconnect (presencia, barrido si era host o delegado, TTL)
 ```
@@ -731,7 +739,7 @@ flowchart TD
 | Aspecto | Medida |
 | :--- | :--- |
 | Autenticación | JWT HS256 de identity-api: algoritmo fijo, `iss`, `aud`, `exp`, `sub`, `room_id`. Se valida **antes** del upgrade. |
-| Revocación | `token:revoked:{jti}` en el handshake (401; 503 si Redis no responde) y `REVOKED` en vivo (cierre `4001`). |
+| Revocación | `token:revoked:{jti}` en el handshake (upgrade y cierre `4001`; 503 si Redis no responde) y `REVOKED` en vivo (cierre `4001`). Token expirado bien firmado: upgrade y cierre `4003`. |
 | Autorización | `host`/`cohost` siempre; un participante solo si es el delegado vigente. El resto recibe `FORBIDDEN`. |
 | Origen | `OriginPatterns` desde `ALLOWED_ORIGINS`. |
 | Tamaño y frecuencia | 4 KB por mensaje (`1009`) y 20 mensajes/s (`RATE_LIMITED`). |
@@ -812,7 +820,7 @@ Para probar el vídeo:
 - Subprotocolo MessagePack negociado; `STATE` decodificado por `syncCodec.ts` con `can_control`.
 - `LOAD` y `RATE` cruzan réplicas en **1–4 ms**, con `media_id`.
 - `HEARTBEAT` con `rtt_ms` y `drift_ms`.
-- Revocación: el invitado se cierra con **4001** y la reconexión recibe **401**.
+- Revocación: el invitado se cierra con **4001** y la reconexión recibe **401** (medido antes de que el handshake pasara a upgrade + `4001`).
 - Réplica del Host matada con `SIGKILL`: la otra publica `HOST_STATUS offline` en **~4,7 s** y delega el control. El delegado hace `SEEK` y al volver el Host lo pierde.
 
 **Carga k6:**
@@ -849,7 +857,7 @@ La cola restante sigue sin una causa demostrada, y el umbral **no se relajó**. 
 ## 16. Limitaciones conocidas
 
 - **Latencia k6 con 500 VUs:** pendiente de confirmar con k6 en otra máquina (ver §14).
-- **Invitado retirado mientras estaba desconectado:** el navegador solo ve un cierre 1006 cuando el handshake devuelve 401. La web sigue reintentando con backoff en vez de mostrar "Fuiste retirado".
+- **Token expirado:** sync-core cierra con `4003`, pero la web aún no lo trata como terminal (solo se detiene ante `4001`) y seguirá reintentando hasta adoptarlo.
 - **Cohost:** sync-core lo acepta, pero aún nadie emite tokens `role: cohost` y no hay UI para asignarlo.
 - **Usuario sin token:** `WatchRoom` lo trata como Host y pide un ticket, que falla si no es el dueño.
 - **Cambio de vídeo:** solo desde la UI del Host dueño, porque `PUT /media` exige Firebase. `PUT /media` tampoco comprueba que el objeto exista en MinIO.

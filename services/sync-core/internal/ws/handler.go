@@ -31,8 +31,11 @@ const (
 	// StatusRevoked cierra una conexión cuyo token fue revocado: el cliente
 	// no debe reconectar con ese token.
 	StatusRevoked websocket.StatusCode = 4001
-	writeTimeout                       = 5 * time.Second
-	checkTimeout                       = 2 * time.Second
+	// StatusTokenExpired cierra una conexión cuyo token (bien firmado) ya
+	// expiró: el cliente debe pedir un token nuevo, no reconectar con ese.
+	StatusTokenExpired websocket.StatusCode = 4003
+	writeTimeout                            = 5 * time.Second
+	checkTimeout                            = 2 * time.Second
 )
 
 // Verifier valida el token del handshake.
@@ -65,9 +68,13 @@ func NewHandler(h Hub, v Verifier, r Revocations, origins []string) *Handler {
 	return &Handler{hub: h, verifier: v, revoked: r, origins: origins}
 }
 
-// ServeHTTP valida el token antes del upgrade: un token inválido nunca abre
-// el socket. El token viaja en la query (los navegadores no permiten headers
-// en WebSocket), por lo que nunca se registra la URL completa.
+// ServeHTTP valida el token antes del upgrade: un token inválido, ajeno o
+// de otra sala nunca abre el socket. Los casos terminales (token revocado o
+// expirado pero bien firmado) sí hacen upgrade —tras la comprobación de
+// origen— y cierran de inmediato con 4001/4003: un rechazo HTTP llega al
+// navegador como 1006 y el cliente reconectaría para siempre. El token viaja
+// en la query (los navegadores no permiten headers en WebSocket), por lo que
+// nunca se registra la URL completa.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	roomID, token := q.Get("room_id"), q.Get("token")
@@ -77,6 +84,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	claims, err := h.verifier.Verify(token, roomID)
 	switch {
+	case errors.Is(err, auth.ErrTokenExpired):
+		h.rejectAfterUpgrade(w, r, StatusTokenExpired, "token expirado")
+		return
 	case errors.Is(err, auth.ErrRoomMismatch):
 		http.Error(w, "token de otra sala", http.StatusForbidden)
 		return
@@ -94,13 +104,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no se pudo validar el token", http.StatusServiceUnavailable)
 		return
 	case revoked:
-		http.Error(w, "token revocado", http.StatusUnauthorized)
+		h.rejectAfterUpgrade(w, r, StatusRevoked, "token revocado")
 		return
 	}
 
-	// Subprotocolo opcional: "tint.sync.msgpack" activa frames MessagePack;
-	// sin subprotocolo (o "tint.sync.json") se usa JSON.
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: h.origins, Subprotocols: codec.Subprotocols})
+	conn, err := h.accept(w, r)
 	if err != nil {
 		return // Accept ya respondió (p. ej. 403 por origen)
 	}
@@ -122,6 +130,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.readLoop(conn, client)
 	h.hub.Disconnect(client)
 	<-writerDone
+}
+
+// accept hace el upgrade comprobando el origen. Subprotocolo opcional:
+// "tint.sync.msgpack" activa frames MessagePack; sin subprotocolo (o
+// "tint.sync.json") se usa JSON.
+func (h *Handler) accept(w http.ResponseWriter, r *http.Request) (*websocket.Conn, error) {
+	return websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: h.origins, Subprotocols: codec.Subprotocols})
+}
+
+// rejectAfterUpgrade abre el socket (si el origen está permitido) solo para
+// cerrarlo con un código terminal que el navegador sí puede leer.
+func (h *Handler) rejectAfterUpgrade(w http.ResponseWriter, r *http.Request, code websocket.StatusCode, reason string) {
+	conn, err := h.accept(w, r)
+	if err != nil {
+		return
+	}
+	_ = conn.Close(code, reason)
 }
 
 // readLoop lee con un contexto que no se cancela: si se cancelara, la

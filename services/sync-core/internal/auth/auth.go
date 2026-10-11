@@ -25,6 +25,9 @@ var (
 	ErrInvalidToken = errors.New("token inválido")
 	ErrRoomMismatch = errors.New("el token no pertenece a esta sala")
 	ErrUnknownRole  = errors.New("rol desconocido")
+	// ErrTokenExpired: firma, iss y aud válidos pero exp vencido. Envuelve
+	// ErrInvalidToken para que quien no lo distinga lo siga rechazando.
+	ErrTokenExpired = fmt.Errorf("%w: expirado", ErrInvalidToken)
 )
 
 // Claims es la identidad verificada de una conexión.
@@ -62,16 +65,20 @@ func NewVerifier(secret, issuer, audience string) *Verifier {
 }
 
 // Verify valida firma, algoritmo, iss, aud, exp y que el token sea de roomID.
+//
+// Un token bien firmado (iss y aud correctos) cuyo único defecto es el exp
+// vencido devuelve ErrTokenExpired, pero solo si además pasa las comprobaciones
+// de sub, sala y rol: así un token ajeno nunca se distingue de uno inválido.
 func (v *Verifier) Verify(token, roomID string) (Claims, error) {
-	var tc tokenClaims
-	_, err := jwt.ParseWithClaims(token, &tc,
-		func(*jwt.Token) (any, error) { return v.secret, nil },
-		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
-		jwt.WithIssuer(v.issuer),
-		jwt.WithAudience(v.audience),
-		jwt.WithExpirationRequired(),
-		jwt.WithTimeFunc(v.now),
-	)
+	tc, err := v.parse(token, v.now)
+	expired := false
+	if errors.Is(err, jwt.ErrTokenExpired) && tc.ExpiresAt != nil {
+		// Revalida todo lo demás en el último instante de vigencia.
+		exp := tc.ExpiresAt.Time
+		if tc, err = v.parse(token, func() time.Time { return exp.Add(-time.Second) }); err == nil {
+			expired = true
+		}
+	}
 	if err != nil {
 		return Claims{}, fmt.Errorf("%w: %v", ErrInvalidToken, err)
 	}
@@ -86,5 +93,21 @@ func (v *Verifier) Verify(token, roomID string) (Claims, error) {
 	default:
 		return Claims{}, fmt.Errorf("%w: %q", ErrUnknownRole, tc.Role)
 	}
+	if expired {
+		return Claims{}, ErrTokenExpired
+	}
 	return Claims{Sub: tc.Subject, RoomID: tc.RoomID, Role: tc.Role, Nick: tc.Nick, JTI: tc.ID}, nil
+}
+
+func (v *Verifier) parse(token string, now func() time.Time) (tokenClaims, error) {
+	var tc tokenClaims
+	_, err := jwt.ParseWithClaims(token, &tc,
+		func(*jwt.Token) (any, error) { return v.secret, nil },
+		jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}),
+		jwt.WithIssuer(v.issuer),
+		jwt.WithAudience(v.audience),
+		jwt.WithExpirationRequired(),
+		jwt.WithTimeFunc(now),
+	)
+	return tc, err
 }
