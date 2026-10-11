@@ -98,6 +98,7 @@ func BenchmarkPing(b *testing.B) {
 
 // BenchmarkSweepRoom: lo que el barrido hace por sala y segundo (latido en
 // lote de 1 host + 49 participantes, foto de presencia y HOST_STATUS).
+// Antes eran Beat + Presence + SetHostStatus (3 idas y vueltas).
 func BenchmarkSweepRoom(b *testing.B) {
 	s, rdb, roomID := benchStore(b)
 	ctx := context.Background()
@@ -109,14 +110,7 @@ func BenchmarkSweepRoom(b *testing.B) {
 	defer countRT(b, rdb)()
 	for i := 0; i < b.N; i++ {
 		nowMs := time.Now().UnixMilli()
-		if err := s.Beat(ctx, roomID, hosts, members, nowMs); err != nil {
-			b.Fatal(err)
-		}
-		p, err := s.Presence(ctx, roomID, nowMs)
-		if err != nil {
-			b.Fatal(err)
-		}
-		if _, err := s.SetHostStatus(ctx, roomID, p.Online > 0, nowMs); err != nil {
+		if _, _, err := s.Sweep(ctx, roomID, hosts, members, nowMs); err != nil {
 			b.Fatal(err)
 		}
 	}

@@ -73,7 +73,7 @@ type StateStore interface {
 	Beat(ctx context.Context, roomID string, hostConns, memberSubs []string, nowMs int64) error
 	MemberGone(ctx context.Context, roomID, sub string) error
 	Presence(ctx context.Context, roomID string, nowMs int64) (store.Presence, error)
-	SetHostStatus(ctx context.Context, roomID string, online bool, nowMs int64) (bool, error)
+	Sweep(ctx context.Context, roomID string, hostConns, memberSubs []string, nowMs int64) (store.Presence, bool, error)
 	LiveMembers(ctx context.Context, roomID string, nowMs int64) ([]string, error)
 	SwapDelegate(ctx context.Context, roomID, sub string) (string, error)
 }
@@ -281,10 +281,7 @@ func (h *Hub) sweepAll(ctx context.Context) {
 
 	for room, b := range beats {
 		rctx, cancel := context.WithTimeout(ctx, ioTimeout)
-		nowMs := h.now().UnixMilli()
-		if err := h.store.Beat(rctx, room, b.hosts, b.members, nowMs); err != nil {
-			log.Printf("hub: latido de presencia sala %s: %v", room, err)
-		} else if _, err := h.sweep(rctx, room, nowMs); err != nil {
+		if _, err := h.sweep(rctx, room, h.now().UnixMilli(), b.hosts, b.members); err != nil {
 			log.Printf("hub: barrido sala %s: %v", room, err)
 		}
 		cancel()
@@ -300,16 +297,14 @@ type presence struct {
 // sweep reconcilia el estado del host y la delegación de una sala. Varias
 // réplicas pueden ejecutarlo a la vez: el store solo informa transiciones
 // y el delegado elegido es determinista, así que no hay avisos duplicados.
-func (h *Hub) sweep(ctx context.Context, room string, nowMs int64) (presence, error) {
-	p, err := h.store.Presence(ctx, room, nowMs)
+// hosts y members son los latidos locales a registrar en la misma ida y
+// vuelta (nil fuera del barrido periódico).
+func (h *Hub) sweep(ctx context.Context, room string, nowMs int64, hosts, members []string) (presence, error) {
+	p, changed, err := h.store.Sweep(ctx, room, hosts, members, nowMs)
 	if err != nil {
 		return presence{}, err
 	}
 	online := p.Online > 0
-	changed, err := h.store.SetHostStatus(ctx, room, online, nowMs)
-	if err != nil {
-		return presence{}, err
-	}
 	if changed {
 		h.publishHostStatus(ctx, room, online)
 	}
@@ -457,7 +452,7 @@ func (h *Hub) Connect(parent context.Context, claims auth.Claims, opts ...ConnOp
 	ev.CanControl = syncevent.Bool(claims.CanControl() || (p.Delegate != "" && p.Delegate == claims.Sub))
 	c.enqueueEvent(ev)
 	h.release(c)
-	if _, err := h.sweep(ctx, room, nowMs); err != nil {
+	if _, err := h.sweep(ctx, room, nowMs, nil, nil); err != nil {
 		log.Printf("hub: barrido sala %s: %v", room, err)
 	}
 	return c, nil
@@ -489,7 +484,7 @@ func (h *Hub) Disconnect(c *Client) {
 		}
 	}
 	if reevaluate {
-		if _, err := h.sweep(ctx, room, nowMs); err != nil {
+		if _, err := h.sweep(ctx, room, nowMs, nil, nil); err != nil {
 			log.Printf("hub: barrido sala %s: %v", room, err)
 		}
 	}

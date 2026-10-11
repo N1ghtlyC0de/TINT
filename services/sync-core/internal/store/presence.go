@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"time"
@@ -34,6 +35,80 @@ end
 if prev == ARGV[1] or (not prev and ARGV[1] == '0') then return 0 end
 return 1
 `)
+
+// sweepScript hace en una ida y vuelta lo que Beat + Presence +
+// SetHostStatus: latido en lote, foto de presencia (hostless_since leído
+// antes de actualizarlo, igual que antes) y transición de HOST_STATUS.
+// KEYS: hosts_online, members, sync_state, host_online, hostless_since,
+// delegate. ARGV: ahora ms, ttl ms, umbral de presencia, nº de hosts,
+// conexiones de host…, subs de participantes….
+var sweepScript = redis.NewScript(`
+local now, ttl, nh = ARGV[1], ARGV[2], tonumber(ARGV[4])
+local function beat(key, from, to)
+  if to < from then return end
+  local args = {}
+  for i = from, to do
+    args[#args + 1] = now
+    args[#args + 1] = ARGV[i]
+    if #args >= 200 then
+      redis.call('ZADD', key, unpack(args))
+      args = {}
+    end
+  end
+  if #args > 0 then redis.call('ZADD', key, unpack(args)) end
+  redis.call('PEXPIRE', key, ttl)
+end
+beat(KEYS[1], 5, 4 + nh)
+beat(KEYS[2], 5 + nh, #ARGV)
+if #ARGV >= 5 then redis.call('PEXPIRE', KEYS[3], ttl) end
+local online = redis.call('ZCOUNT', KEYS[1], ARGV[3], '+inf')
+local delegate = redis.call('GET', KEYS[6]) or ''
+local since = redis.call('GET', KEYS[5]) or ''
+local flag = '0'
+if online > 0 then flag = '1' end
+local prev = redis.call('GET', KEYS[4])
+redis.call('SET', KEYS[4], flag, 'PX', ttl)
+if flag == '1' then
+  redis.call('DEL', KEYS[5])
+elseif prev == '1' then
+  redis.call('SET', KEYS[5], now, 'PX', ttl)
+end
+local changed = 1
+if prev == flag or (not prev and flag == '0') then changed = 0 end
+return {online, delegate, since, changed}
+`)
+
+// Sweep registra el latido de las conexiones locales (como Beat; listas
+// vacías = sin latido), lee la presencia y guarda HOST_STATUS en una sola
+// ida y vuelta. Devuelve la presencia (con hostless_since previo a esta
+// evaluación) y si el estado del host cambió.
+func (s *Store) Sweep(ctx context.Context, roomID string, hostConns, memberSubs []string, nowMs int64) (Presence, bool, error) {
+	keys := []string{
+		syncevent.HostsKey(roomID), syncevent.MembersKey(roomID), syncevent.StateKey(roomID),
+		syncevent.HostStatusKey(roomID), syncevent.HostlessSinceKey(roomID), syncevent.DelegateKey(roomID),
+	}
+	args := make([]any, 0, 4+len(hostConns)+len(memberSubs))
+	args = append(args, nowMs, s.ttl.Milliseconds(), sinceArg(nowMs), len(hostConns))
+	for _, c := range hostConns {
+		args = append(args, c)
+	}
+	for _, m := range memberSubs {
+		args = append(args, m)
+	}
+	res, err := sweepScript.Run(ctx, s.rdb, keys, args...).Slice()
+	if err != nil {
+		return Presence{}, false, err
+	}
+	if len(res) != 4 {
+		return Presence{}, false, fmt.Errorf("sweep sala %s: respuesta inesperada %v", roomID, res)
+	}
+	online, _ := res[0].(int64)
+	delegate, _ := res[1].(string)
+	since, _ := res[2].(string)
+	changed, _ := res[3].(int64)
+	sinceMs, _ := strconv.ParseInt(since, 10, 64)
+	return Presence{Online: online, Delegate: delegate, HostlessSinceMs: sinceMs}, changed == 1, nil
+}
 
 // Beat registra un latido de las conexiones host/cohost (por id de
 // conexión) y de los participantes (por sub) de esta réplica. En el mismo
