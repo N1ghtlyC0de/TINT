@@ -512,6 +512,8 @@ sequenceDiagram
 
 Un token revocado o expirado pero bien firmado **hace upgrade y se cierra** con `4001`/`4003` (tras la comprobación de origen): si el handshake respondiera 401, el navegador solo vería un cierre `1006` y la web reintentaría para siempre. Un token de otra sala o con firma inválida se sigue rechazando antes del upgrade (no se filtra información). `4003` es nuevo: la web debe tratarlo como terminal y pedir otro token (pendiente en `useSyncSocket.ts`).
 
+`DELETE /rooms/:id` aplica esta misma secuencia a **todas** las sesiones de invitado activas de la sala (no revocadas y no vencidas), así que borrar una sala corta a los invitados conectados. `guest_sessions.revoked` se marca después de Redis: si Redis falla, la respuesta es 503 (la sala ya quedó borrada) y repetir el `DELETE` vuelve a publicar los `REVOKED` pendientes (responde 410 cuando termina).
+
 ### 6.7 Subida y cambio de vídeo
 
 El archivo **nunca pasa por identity-api**: el navegador lo sube directo a MinIO con una URL PUT firmada, y lo reproduce con una URL GET firmada.
@@ -533,7 +535,8 @@ sequenceDiagram
     ID-->>Host: { videoId, uploadUrl, headers }
     Host->>MI: PUT {videoId}/source.mp4 (progreso en la UI)
     Host->>ID: POST /rooms/:id/media/uploads/:videoId/complete
-    ID->>MI: HEAD (409 si no llegó)
+    ID->>MI: HEAD (409 si no llegó; 413 y DELETE si supera sizeBytes o MAX_UPLOAD_BYTES)
+    ID->>PG: UPDATE videos SET status = processing WHERE status = pending
     ID->>R: XADD media:uploads video_id
     ID->>PG: rooms.media_id = videoId
     ID-->>Host: { mediaId }
@@ -552,7 +555,7 @@ sequenceDiagram
 | :--- | :--- | :--- |
 | Reservar | `POST /rooms/:id/media/uploads` | 400 (no es `video/*`), 413 (> `MAX_UPLOAD_BYTES`, 2 GiB), 403, 410 |
 | Subir | `PUT uploadUrl` a MinIO (Content-Type firmado, 15 min) | CORS según `MINIO_CORS_ALLOW_ORIGIN` |
-| Confirmar | `POST /rooms/:id/media/uploads/:videoId/complete` | 409 `Upload missing`, 503 si Redis falla (se puede reintentar), 404 |
+| Confirmar | `POST /rooms/:id/media/uploads/:videoId/complete` | 409 `Upload missing`, 413 si el objeto real supera el `sizeBytes` declarado o `MAX_UPLOAD_BYTES` (se borra del bucket y el vídeo sigue en `pending`), 503 si Redis falla (el vídeo vuelve a `pending` y se puede reintentar), 404. **Idempotente:** solo la transición `pending → processing` encola y asigna; si el vídeo ya no está en `pending` responde 200 con el estado actual sin re-encolar. |
 | Procesar | `media:uploads` → media-worker | El vídeo queda en `failed` si ffprobe no lo acepta; la reproducción del original sigue |
 | Reproducir | `GET /rooms/:id/playback` | 401 si el token fue revocado, 410 si la sala se borró |
 
@@ -690,7 +693,7 @@ flowchart LR
 | :--- | :--- | :--- |
 | `POST /rooms/:id/sync-ticket` | Host dueño (Firebase) | `{ token, expiresAt }` (HS256, `role: host`, 10 min) |
 | `POST /rooms/:id/media/uploads` | Host dueño | `{ videoId, uploadUrl, storageKey, expiresAt, headers }`: reserva el vídeo y firma el PUT a MinIO |
-| `POST /rooms/:id/media/uploads/:videoId/complete` | Host dueño | `{ mediaId, mediaKey, status }`: HEAD del objeto, `XADD media:uploads` y asignación a la sala |
+| `POST /rooms/:id/media/uploads/:videoId/complete` | Host dueño | `{ mediaId, mediaKey, status }`: HEAD del objeto (tamaño real), `pending → processing`, `XADD media:uploads` y asignación a la sala. Idempotente |
 | `PUT /rooms/:id/media` | Host dueño | `{ mediaId, mediaKey }`: asigna un objeto que ya está en el bucket (nuevo `mediaId` en cada llamada) |
 | `GET /rooms/:id/playback` | Host dueño **o** guest token de la sala no revocado | `{ mediaId, url, expiresAt }` o `null`s si no hay vídeo |
 | `GET /rooms/:id/guests` | Host dueño | `{ guests: [{ jti, nick, joinedAt, expiresAt, revoked }] }` (sin `sub`) |
@@ -774,7 +777,7 @@ flowchart TD
 ```bash
 cp .env.example .env                     # JWT_SECRET compartido por identity-api y sync-core
 docker compose up -d                     # postgres, redis, minio (+ bucket), social-core :8082 y sync-core :8083
-cd services/identity-api && npm ci && npx drizzle-kit migrate && npm run dev   # :8081, migraciones 0000–0004
+cd services/identity-api && npm ci && npx drizzle-kit migrate && npm run dev   # :8081, migraciones 0000–0005
 cd apps/web && cp .env.example .env && npm run dev  # :5173
 ```
 
