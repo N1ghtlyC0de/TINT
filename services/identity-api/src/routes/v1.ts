@@ -6,6 +6,7 @@ import { requireAuthHost } from '../middlewares/auth.js';
 import { requireRoomOwner } from '../middlewares/requireRoomOwner.js';
 import { upsertByProvider } from '../modules/users/users.repo.js';
 import { requireRoomHostOrGuest } from '../middlewares/guestAuth.js';
+import { requireActiveRoom } from '../middlewares/activeRoom.js';
 import { create as createRoom, listByHost, findById, softRemoveById, updateTitle, setMedia } from '../modules/rooms/rooms.repo.js';
 import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../modules/invitations/invitations.repo.js';
 import { issueGuestToken, generateSyncTicket } from '../modules/auth/auth.service.js';
@@ -159,7 +160,7 @@ router.post('/rooms/:id/invitations', requireAuthHost, requireRoomOwner, validat
   });
 });
 
-router.post('/rooms/:id/sync-ticket', requireAuthHost, requireRoomOwner, async (req, res) => {
+router.post('/rooms/:id/sync-ticket', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
   const rawId = req.params.id;
   const roomId = Array.isArray(rawId) ? rawId[0] : rawId;
   const user = req.user!;
@@ -180,7 +181,7 @@ const setMediaSchema = z.object({
     .refine((key) => !key.includes('..'), { message: 'mediaKey no puede contener ".."' })
     .refine((key) => !key.startsWith('/'), { message: 'mediaKey no puede empezar con "/"' }),
 });
-router.put('/rooms/:id/media', requireAuthHost, requireRoomOwner, validate(setMediaSchema), async (req, res) => {
+router.put('/rooms/:id/media', requireAuthHost, requireRoomOwner, validate(setMediaSchema), requireActiveRoom, async (req, res) => {
   const roomId = paramId(req.params.id);
   const { mediaKey } = req.body;
   const mediaId = uuidv4();
@@ -191,11 +192,8 @@ router.put('/rooms/:id/media', requireAuthHost, requireRoomOwner, validate(setMe
   res.json({ mediaId, mediaKey });
 });
 
-router.get('/rooms/:id/playback', requireRoomHostOrGuest, async (req, res) => {
-  const room = await findById(paramId(req.params.id));
-  if (!room) {
-    return res.status(404).json({ error: 'Not found' });
-  }
+router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, async (req, res) => {
+  const room = req.room!;
   if (!room.mediaId || !room.mediaKey) {
     return res.json({ mediaId: null, url: null, expiresAt: null });
   }
@@ -205,7 +203,7 @@ router.get('/rooms/:id/playback', requireRoomHostOrGuest, async (req, res) => {
   res.json({ mediaId: room.mediaId, url, expiresAt: expiresAt.toISOString() });
 });
 
-router.get('/rooms/:id/guests', requireAuthHost, requireRoomOwner, async (req, res) => {
+router.get('/rooms/:id/guests', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
   const sessions = await listGuestSessions(paramId(req.params.id));
   res.json({
     // `sub` no se expone: es el identificador interno del invitado en sync-core.
@@ -214,7 +212,7 @@ router.get('/rooms/:id/guests', requireAuthHost, requireRoomOwner, async (req, r
 });
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-router.post('/rooms/:id/guests/:jti/revoke', requireAuthHost, requireRoomOwner, async (req, res) => {
+router.post('/rooms/:id/guests/:jti/revoke', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
   const roomId = paramId(req.params.id);
   const jti = paramId(req.params.jti);
   const session = UUID_RE.test(jti) ? await findGuestSession(jti) : null;

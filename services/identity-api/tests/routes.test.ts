@@ -56,6 +56,8 @@ const invitation = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Por defecto la sala existe y está activa (requireActiveRoom).
+  vi.mocked(findById).mockResolvedValue({ id: 'room-1', hostId: 'host-1', title: 'Sala', status: 'active', mediaId: null, mediaKey: null } as any);
   authUser.override = null;
 });
 

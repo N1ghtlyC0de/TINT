@@ -30,7 +30,7 @@ vi.mock('../src/modules/guests/guestSessions.repo.js', () => ({
 }));
 
 import app from '../src/app.js';
-import { isOwner } from '../src/modules/rooms/rooms.repo.js';
+import { findById, isOwner } from '../src/modules/rooms/rooms.repo.js';
 import { findByJti, listByRoom, setRevoked } from '../src/modules/guests/guestSessions.repo.js';
 import { setRedisClient } from '../src/modules/tokens/revocation.js';
 
@@ -53,6 +53,8 @@ const redis = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Por defecto la sala existe y está activa (requireActiveRoom).
+  vi.mocked(findById).mockResolvedValue({ id: 'room-1', hostId: 'host-1', title: 'Sala', status: 'active', mediaId: null, mediaKey: null } as any);
   setRedisClient(redis as any);
 });
 

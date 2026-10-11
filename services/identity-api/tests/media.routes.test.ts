@@ -51,6 +51,8 @@ const revoked = new Set<string>();
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Por defecto la sala existe y está activa (requireActiveRoom).
+  vi.mocked(findById).mockResolvedValue({ id: 'room-1', hostId: 'host-1', title: 'Sala', status: 'active', mediaId: null, mediaKey: null } as any);
   revoked.clear();
   setMediaSigner({ presignGet });
   setRedisClient({ exists: vi.fn(async (k: string) => (revoked.has(k) ? 1 : 0)) } as any);
