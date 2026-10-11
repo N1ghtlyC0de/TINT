@@ -216,6 +216,14 @@ describe('rutas v1', () => {
     expect(res.status).toBe(404);
   });
 
+  it('POST /invitations/:code/revoke 404 (no 403) si la sala de la invitación no existe', async () => {
+    vi.mocked(findByCode).mockResolvedValueOnce(invitation as any);
+    vi.mocked(findById).mockResolvedValueOnce(null as any);
+    const res = await request(app).post('/api/v1/invitations/abc123def456/revoke');
+    expect(res.status).toBe(404);
+    expect(setRevoked).not.toHaveBeenCalled();
+  });
+
   it('POST /invitations/:code/revoke 403 si no es dueño de la sala', async () => {
     vi.mocked(findByCode).mockResolvedValueOnce(invitation as any);
     vi.mocked(findById).mockResolvedValueOnce({ ...room, hostId: 'otro-host' } as any);

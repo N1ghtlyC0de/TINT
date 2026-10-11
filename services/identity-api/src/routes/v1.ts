@@ -374,7 +374,10 @@ router.post('/invitations/:code/revoke', requireAuthHost, async (req, res) => {
     return res.status(404).json({ error: 'Not found' });
   }
   const room = await findById(invitation.roomId);
-  if (!room || room.hostId !== req.user!.id) {
+  if (!room) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  if (room.hostId !== req.user!.id) {
     return res.status(403).json({ error: 'Forbidden' });
   }
   await setRevoked(invitation.id, true);
