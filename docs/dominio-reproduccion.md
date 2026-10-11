@@ -535,7 +535,7 @@ sequenceDiagram
     ID-->>Host: { videoId, uploadUrl, headers }
     Host->>MI: PUT {videoId}/source.mp4 (progreso en la UI)
     Host->>ID: POST /rooms/:id/media/uploads/:videoId/complete
-    ID->>MI: HEAD (409 si no llegó; 413 y DELETE si supera sizeBytes o MAX_UPLOAD_BYTES)
+    ID->>MI: HEAD (409 si no llegó, 413 y DELETE si supera sizeBytes o MAX_UPLOAD_BYTES)
     ID->>PG: UPDATE videos SET status = processing WHERE status = pending
     ID->>R: XADD media:uploads video_id
     ID->>PG: rooms.media_id = videoId
