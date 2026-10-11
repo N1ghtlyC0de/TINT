@@ -119,7 +119,8 @@ describe('WatchRoom chat en vivo', () => {
     localStorage.setItem('tint_guest_token', guestJwt({ sub: 'u1', nick: 'Ana' }));
     renderWatch();
     expect(await screen.findByText('Hola grupo')).toBeInTheDocument();
-    expect(screen.getByText('Ana')).toBeInTheDocument();
+    const chip = screen.getByTitle(/conectado como ana/i);
+    expect(chip.textContent).toMatch(/ana/i);
   });
 
   it('alinea a la derecha los mensajes propios y a la izquierda los ajenos', async () => {

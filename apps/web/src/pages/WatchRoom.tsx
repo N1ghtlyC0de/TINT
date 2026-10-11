@@ -146,21 +146,34 @@ export default function WatchRoom() {
     <div className="min-h-[100dvh] bg-tint-bg text-tint-muted">
       <header className="sticky top-0 z-30 border-b border-white/10 bg-tint-bg/90 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-[1400px] items-center justify-between gap-4 px-4">
-          <div className="flex min-w-0 items-center gap-3">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
             <BrandMark />
             <BackLink />
-            <h1 className="truncate text-[15px] font-semibold tracking-tight text-white" title={heading}>
+            <h1 className="min-w-0 flex-1 truncate text-[15px] font-semibold tracking-tight text-white" title={heading}>
               {heading}
             </h1>
-            <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[12px] text-tint-muted">
-              Rol: {isGuest ? 'participante (invitado)' : 'host (registrado)'}
-            </span>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
             {identity && (
               <span
-                className="max-w-[160px] truncate rounded-full border border-tint-accent/30 bg-tint-accent/10 px-3 py-1 text-[12px] font-semibold text-white"
+                className="hidden max-w-[180px] truncate rounded-full border border-tint-accent/30 bg-tint-accent/10 px-3 py-1 text-[12px] font-semibold text-white sm:inline-flex sm:items-center sm:gap-1.5"
                 title={`Conectado como ${identity.nick}`}
               >
-                {identity.nick}
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 16 16"
+                  className="h-3.5 w-3.5 shrink-0"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                >
+                  <circle cx="8" cy="5" r="2.6" />
+                  <path d="M2.5 13.5c.8-2.8 2.9-4.2 5.5-4.2s4.7 1.4 5.5 4.2" />
+                </svg>
+                <span className="truncate">
+                  {identity.nick} · {isGuest ? 'participante' : 'host'}
+                </span>
               </span>
             )}
             {inviteLink && (
@@ -172,11 +185,15 @@ export default function WatchRoom() {
               </span>
             )}
           </div>
-          <div className="flex items-center gap-2" aria-label="Estado de sincronía">
+          <div
+            className="flex shrink-0 items-center gap-2 text-[13px] text-white"
+            aria-label="Estado de sincronía"
+            title="Sincronizado"
+          >
             <span aria-hidden="true" className="h-2 w-2 rounded-full bg-tint-success" />
-            <span className="text-[13px] text-white">Sincronizado</span>
+            <span className="hidden md:inline">Sincronizado</span>
           </div>
-          <p className="text-[12px]" role="status" aria-live="polite">
+          <p className="shrink-0 text-[12px]" role="status" aria-live="polite">
             {chatStatus}
           </p>
         </div>

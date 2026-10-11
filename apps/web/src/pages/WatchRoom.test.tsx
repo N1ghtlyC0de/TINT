@@ -45,6 +45,16 @@ function renderWatch() {
   );
 }
 
+function guestJwt(payload: Record<string, unknown>): string {
+  const b64 = (v: unknown) =>
+    btoa(JSON.stringify(v)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return `${b64({ alg: 'HS256' })}.${b64(payload)}.firma`;
+}
+
+function hostJwt(payload: Record<string, unknown>): string {
+  return guestJwt(payload);
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
@@ -52,21 +62,23 @@ beforeEach(() => {
 
 describe('WatchRoom', () => {
   it('muestra la sala y el rol host con sesión de host', async () => {
-    localStorage.setItem('tint_token', 'host-tok');
+    localStorage.setItem('tint_token', hostJwt({ sub: 'host-1', name: 'Drake' }));
     mockedApi.mockRejectedValue(new Error('offline'));
     renderWatch();
     expect(await screen.findByText(/Sala r1/)).toBeInTheDocument();
-    expect(screen.getByText(/host \(registrado\)/)).toBeInTheDocument();
+    expect(screen.getByTitle(/conectado como drake/i).textContent).toMatch(/host/);
   });
 
-  it('muestra el rol participante si hay guest token', () => {
-    localStorage.setItem('tint_guest_token', 'guest-tok');
+  it('muestra nick y rol de participante en un solo chip', () => {
+    localStorage.setItem('tint_guest_token', guestJwt({ sub: 'guest:u9', nick: 'Pedro' }));
     renderWatch();
-    expect(screen.getByText(/participante \(invitado\)/)).toBeInTheDocument();
+    const chip = screen.getByTitle(/conectado como pedro/i);
+    expect(chip.textContent).toMatch(/pedro/i);
+    expect(chip.textContent).toMatch(/participante/i);
   });
 
   it('el host manda aunque haya restos de invitado: pide el título fresco', async () => {
-    localStorage.setItem('tint_token', 'host-tok');
+    localStorage.setItem('tint_token', hostJwt({ sub: 'host-1', name: 'Drake' }));
     localStorage.setItem('tint_guest_token', 'guest-viejo');
     localStorage.setItem('tint_room_title', 'Sala vieja');
     mockedApi.mockImplementation((path: string) => {
@@ -75,7 +87,7 @@ describe('WatchRoom', () => {
     });
     renderWatch();
     expect(await screen.findByText('Testing')).toBeInTheDocument();
-    expect(screen.getByText(/host \(registrado\)/)).toBeInTheDocument();
+    expect(screen.getByTitle(/conectado como drake/i).textContent).toMatch(/host/);
     expect(screen.queryByText('Sala vieja')).not.toBeInTheDocument();
   });
 
@@ -142,6 +154,17 @@ describe('WatchRoom', () => {
     expect(logo.compareDocumentPosition(volver)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
+  });
+
+  it('fusiona nick y rol en un solo chip de persona', () => {
+    localStorage.setItem('tint_guest_token', guestJwt({ sub: 'guest:u9', nick: 'Pedro' }));
+    localStorage.setItem('tint_room_title', 'Noche de cine');
+    renderWatch();
+    const chip = screen.getByTitle(/conectado como pedro/i);
+    expect(chip.textContent).toMatch(/pedro/i);
+    expect(chip.textContent).toMatch(/participante/i);
+    expect(screen.queryByText(/rol:/i)).not.toBeInTheDocument();
+    expect(chip.querySelector('svg')).not.toBeNull();
   });
 
   it('sin ningún token muestra la puerta y no intenta nada (ni socket ni api)', () => {
