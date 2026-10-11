@@ -3,6 +3,8 @@ import {
   buildChatSend,
   buildSocialUrl,
   CHAT_MAX_LENGTH,
+  formatChatTime,
+  noticeText,
   parseSocialMessage,
 } from './socialSocket';
 
@@ -37,5 +39,49 @@ describe('socialSocket', () => {
     expect(parseSocialMessage('no-json')).toBeNull();
     expect(parseSocialMessage('{"type":"trivia"}')).toBeNull();
     expect(parseSocialMessage('42')).toBeNull();
+  });
+
+  it('parsea notice de presencia con kind joined/left', () => {
+    expect(
+      parseSocialMessage(
+        '{"type":"notice","event_id":"n1","room_id":"r1","user_id":"u1","nick":"Pedro","kind":"joined","text":"Pedro entró al chat","occurred_at":"2026-10-10T10:00:00Z"}',
+      ),
+    ).toMatchObject({ type: 'notice', kind: 'joined', nick: 'Pedro' });
+    expect(
+      parseSocialMessage('{"type":"notice","kind":"left","nick":"Ana"}'),
+    ).toMatchObject({ type: 'notice', kind: 'left' });
+  });
+});
+
+describe('noticeText', () => {
+  it('formula el aviso desde kind y nick', () => {
+    const base = {
+      event_id: 'n1',
+      type: 'notice',
+      room_id: 'r1',
+      user_id: 'u1',
+      text: 'ignorado',
+      occurred_at: '2026-10-10T10:00:00Z',
+    } as const;
+    expect(noticeText({ ...base, nick: 'Pedro', kind: 'joined' })).toBe('Pedro entró al chat');
+    expect(noticeText({ ...base, nick: 'Ana', kind: 'left' })).toBe('Ana salió del chat');
+  });
+});
+
+describe('formatChatTime', () => {
+  it('formatea HH:MM en hora local', () => {
+    const out = formatChatTime('2026-10-10T10:05:00Z');
+    expect(out).toMatch(/^\d{1,2}:\d{2}$/);
+    const expected = new Date('2026-10-10T10:05:00Z').toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+    expect(out).toBe(expected);
+  });
+
+  it('retorna vacío si la fecha es inválida o vacía', () => {
+    expect(formatChatTime('')).toBe('');
+    expect(formatChatTime('no-fecha')).toBe('');
   });
 });

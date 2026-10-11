@@ -59,6 +59,23 @@ describe('Login', () => {
     expect(localStorage.getItem('tint_token')).toBe('tok-123');
   });
 
+  it('al iniciar sesión borra restos de invitado (token, título y link)', async () => {
+    localStorage.setItem('tint_guest_token', 'guest-viejo');
+    localStorage.setItem('tint_room_title', 'Sala vieja');
+    localStorage.setItem('tint_invite_link', '/invite/vieja');
+    mockedSignIn.mockResolvedValueOnce({
+      user: { getIdToken: () => Promise.resolve('tok-123') },
+    } as unknown as UserCredential);
+    mockedApi.mockResolvedValueOnce({ user: { id: 'u1' }, isRegistered: true });
+    renderLogin();
+    await userEvent.click(screen.getByText('Iniciar sesión con Google'));
+    await waitFor(() => expect(screen.getByText('Dashboard OK')).toBeInTheDocument());
+    expect(localStorage.getItem('tint_token')).toBe('tok-123');
+    expect(localStorage.getItem('tint_guest_token')).toBeNull();
+    expect(localStorage.getItem('tint_room_title')).toBeNull();
+    expect(localStorage.getItem('tint_invite_link')).toBeNull();
+  });
+
   it('muestra el error y no navega si /auth/verify falla', async () => {
     mockedSignIn.mockResolvedValueOnce({
       user: { getIdToken: () => Promise.resolve('tok-123') },

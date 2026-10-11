@@ -56,7 +56,8 @@ func TestSocialInvalidJSONAndRoomMismatch(t *testing.T) {
 	wsBase := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/ws/social?room_id=r1"
 	c := dial(t, wsBase, guestToken(t, secret, "guest:a", "r1", time.Now().Add(time.Hour)))
 	defer c.Close(websocket.StatusNormalClosure, "")
-	_ = readJSON(t, c)
+	_ = readJSON(t, c) // history
+	_ = readJSON(t, c) // notice joined propio
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -84,7 +85,8 @@ func TestSocialRateLimited(t *testing.T) {
 	wsBase := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/ws/social?room_id=r1"
 	c := dial(t, wsBase, guestToken(t, secret, "guest:a", "r1", time.Now().Add(time.Hour)))
 	defer c.Close(websocket.StatusNormalClosure, "")
-	_ = readJSON(t, c)
+	_ = readJSON(t, c) // history
+	_ = readJSON(t, c) // notice joined propio
 	for i := 0; i < 5; i++ {
 		sendRaw(t, c, socialevent.ChatSend{
 			EventID: "e", Type: socialevent.TypeChatSend, RoomID: "r1",
@@ -123,9 +125,22 @@ func TestSocialCallsPublishTrackAndRemote(t *testing.T) {
 	c := dial(t, wsBase, guestToken(t, secret, "guest:a", "r1", time.Now().Add(time.Hour)))
 	defer c.Close(websocket.StatusNormalClosure, "")
 	_ = readJSON(t, c) // history
-	// El mensaje remoto debe llegar vía broadcast.
-	if got := readJSON(t, c); got["text"] != "desde otra réplica" {
-		t.Fatalf("remoto = %v", got)
+	// El aviso propio y el mensaje remoto pueden llegar en cualquier orden
+	// (el relay corre en otra goroutine): leer hasta ver ambos.
+	var sawNotice, sawRemote bool
+	for i := 0; i < 3 && !(sawNotice && sawRemote); i++ {
+		got := readJSON(t, c)
+		switch {
+		case got["type"] == "notice" && got["kind"] == "joined":
+			sawNotice = true
+		case got["text"] == "desde otra réplica":
+			sawRemote = true
+		default:
+			t.Fatalf("inesperado = %v", got)
+		}
+	}
+	if !sawNotice || !sawRemote {
+		t.Fatalf("notice=%v remoto=%v, want ambos", sawNotice, sawRemote)
 	}
 	sendRaw(t, c, socialevent.ChatSend{
 		EventID: "e1", Type: socialevent.TypeChatSend, RoomID: "r1",

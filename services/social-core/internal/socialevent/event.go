@@ -14,6 +14,7 @@ const (
 	TypeChatSend    Type = "chat_send"
 	TypeChatMessage Type = "chat_message"
 	TypeHistory     Type = "history"
+	TypeNotice      Type = "notice"
 	TypeError       Type = "error"
 )
 
@@ -27,6 +28,9 @@ var (
 	ErrMissingEventID   = errors.New("event_id es obligatorio")
 	ErrUnsupportedType  = errors.New("tipo de evento no soportado en /ws/social")
 	ErrMissingRoom      = errors.New("room_id es obligatorio")
+	ErrMissingUser      = errors.New("user_id es obligatorio")
+	ErrMissingNick      = errors.New("nick es obligatorio")
+	ErrInvalidKind      = errors.New("kind debe ser joined o left")
 	ErrEmptyText        = errors.New("text no puede estar vacío")
 	ErrTextTooLong      = errors.New("text supera los 280 caracteres")
 	ErrMissingTimestamp = errors.New("occurred_at es obligatorio")
@@ -97,6 +101,53 @@ func (m ChatMessage) Validate() error {
 	}
 	if m.ReceivedAt.Before(m.OccurredAt) {
 		return ErrReceivedBefore
+	}
+	return nil
+}
+
+// NoticeKind distingue entradas y salidas de la sala.
+type NoticeKind string
+
+const (
+	NoticeJoined NoticeKind = "joined"
+	NoticeLeft   NoticeKind = "left"
+)
+
+// Notice es el aviso de presencia que emite el servidor (solo en vivo,
+// no se guarda en el historial).
+type Notice struct {
+	EventID    string     `json:"event_id"`
+	Type       Type       `json:"type"`
+	RoomID     string     `json:"room_id"`
+	UserID     string     `json:"user_id"`
+	Nick       string     `json:"nick"`
+	Kind       NoticeKind `json:"kind"`
+	Text       string     `json:"text"`
+	OccurredAt time.Time  `json:"occurred_at"`
+}
+
+// Validate verifica un notice de presencia.
+func (m Notice) Validate() error {
+	if m.EventID == "" {
+		return ErrMissingEventID
+	}
+	if m.Type != TypeNotice {
+		return ErrUnsupportedType
+	}
+	if m.RoomID == "" {
+		return ErrMissingRoom
+	}
+	if m.UserID == "" {
+		return ErrMissingUser
+	}
+	if trim(m.Nick) == "" {
+		return ErrMissingNick
+	}
+	if m.Kind != NoticeJoined && m.Kind != NoticeLeft {
+		return ErrInvalidKind
+	}
+	if m.OccurredAt.IsZero() {
+		return ErrMissingTimestamp
 	}
 	return nil
 }

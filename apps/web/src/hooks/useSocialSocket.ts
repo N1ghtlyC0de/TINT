@@ -5,7 +5,11 @@ import {
   CHAT_HISTORY_LIMIT,
   parseSocialMessage,
   type ChatMessage,
+  type PresenceNotice,
 } from '../lib/socialSocket';
+
+/** Mensaje visible en el chat: texto o aviso de presencia. */
+export type SocialChatItem = ChatMessage | PresenceNotice;
 
 export type SocialStatus = 'connecting' | 'open' | 'reconnecting' | 'closed';
 
@@ -39,7 +43,7 @@ function resolveBaseUrl(override?: string): string {
  */
 export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocketOptions = {}) {
   const [status, setStatus] = useState<SocialStatus>('connecting');
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<SocialChatItem[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const attemptRef = useRef(0);
   const timerRef = useRef<number | null>(null);
@@ -61,7 +65,7 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
   }, []);
 
   const pushMessage = useCallback(
-    (msg: ChatMessage) => {
+    (msg: SocialChatItem) => {
       if (remember(msg.event_id)) return;
       const max = optsRef.current.maxMessages ?? CHAT_HISTORY_LIMIT;
       setMessages((prev) => [...prev.slice(-(max - 1)), msg]);
@@ -101,7 +105,7 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
         if (parsed.type === 'history') {
           for (const m of parsed.messages) remember(m.event_id);
           setMessages(parsed.messages.slice(-maxMessages));
-        } else if (parsed.type === 'chat_message') {
+        } else if (parsed.type === 'chat_message' || parsed.type === 'notice') {
           pushMessage(parsed);
         }
         // Los errores (RATE_LIMITED, etc.) se ignoran en esta fase.

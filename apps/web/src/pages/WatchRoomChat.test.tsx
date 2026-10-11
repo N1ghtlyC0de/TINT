@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { vi, beforeEach } from 'vitest';
 import WatchRoom from './WatchRoom';
+import { formatChatTime } from '../lib/socialSocket';
 
 vi.mock('../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/api')>();
@@ -22,8 +23,18 @@ vi.mock('../hooks/useSocialSocket', () => ({
         user_id: 'u1',
         nick: 'Ana',
         text: 'Hola grupo',
-        occurred_at: 't',
-        received_at: 't',
+        occurred_at: '2026-10-10T10:05:00Z',
+        received_at: '2026-10-10T10:05:01Z',
+      },
+      {
+        event_id: 'n1',
+        type: 'notice',
+        room_id: 'r1',
+        user_id: 'u2',
+        nick: 'Pedro',
+        kind: 'joined',
+        text: 'Pedro entró al chat',
+        occurred_at: '2026-10-10T10:06:00Z',
       },
     ],
     send: sendMock,
@@ -53,6 +64,25 @@ describe('WatchRoom chat en vivo', () => {
     await userEvent.type(screen.getByPlaceholderText('Escribe un mensaje'), 'Buenas');
     await userEvent.click(screen.getByText('Enviar'));
     expect(sendMock).toHaveBeenCalledWith('Buenas');
+  });
+
+  it('muestra la hora de envío de cada mensaje', async () => {
+    renderWatch();
+    expect(await screen.findByText('Hola grupo')).toBeInTheDocument();
+    const expected = formatChatTime('2026-10-10T10:05:00Z');
+    expect(expected).not.toBe('');
+    const time = screen.getByText(expected);
+    expect(time.tagName).toBe('TIME');
+    expect(time).toHaveAttribute('dateTime', '2026-10-10T10:05:00Z');
+  });
+
+  it('muestra el aviso de entrada diferenciado del mensaje normal', async () => {
+    renderWatch();
+    const notice = await screen.findByText('Pedro entró al chat');
+    expect(notice).toBeInTheDocument();
+    // El aviso no lleva el prefijo "Nick:" de un mensaje normal.
+    expect(screen.queryByText('Pedro:')).not.toBeInTheDocument();
+    expect(notice.closest('li')).not.toHaveClass('bg-white/5');
   });
 
   it('la lista de mensajes tiene altura acotada con scroll interno', async () => {

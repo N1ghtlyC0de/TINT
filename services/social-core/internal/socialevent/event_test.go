@@ -62,3 +62,41 @@ func TestChatMessageReceivedBeforeOccurred(t *testing.T) {
 		t.Fatalf("Validate() = %v, want ErrReceivedBefore", err)
 	}
 }
+
+func baseNotice() Notice {
+	return Notice{
+		EventID: "n1", Type: TypeNotice, RoomID: "r1",
+		UserID: "u1", Nick: "Pedro", Kind: NoticeJoined,
+		Text: "Pedro entró al chat", OccurredAt: time.Now().UTC(),
+	}
+}
+
+func TestNoticeOK(t *testing.T) {
+	if err := baseNotice().Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+	left := baseNotice()
+	left.Kind = NoticeLeft
+	left.Text = "Pedro salió del chat"
+	if err := left.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+}
+
+func TestNoticeRejects(t *testing.T) {
+	now := time.Now().UTC()
+	cases := map[string]Notice{
+		"sin event_id":    {Type: TypeNotice, RoomID: "r1", UserID: "u1", Nick: "Pedro", Kind: NoticeJoined, Text: "t", OccurredAt: now},
+		"tipo incorrecto": {EventID: "e", Type: "chat_message", RoomID: "r1", UserID: "u1", Nick: "Pedro", Kind: NoticeJoined, Text: "t", OccurredAt: now},
+		"sin sala":        {EventID: "e", Type: TypeNotice, UserID: "u1", Nick: "Pedro", Kind: NoticeJoined, Text: "t", OccurredAt: now},
+		"sin usuario":     {EventID: "e", Type: TypeNotice, RoomID: "r1", Nick: "Pedro", Kind: NoticeJoined, Text: "t", OccurredAt: now},
+		"sin nick":        {EventID: "e", Type: TypeNotice, RoomID: "r1", UserID: "u1", Nick: "  ", Kind: NoticeJoined, Text: "t", OccurredAt: now},
+		"kind inválido":   {EventID: "e", Type: TypeNotice, RoomID: "r1", UserID: "u1", Nick: "Pedro", Kind: "typing", Text: "t", OccurredAt: now},
+		"sin occurred":    {EventID: "e", Type: TypeNotice, RoomID: "r1", UserID: "u1", Nick: "Pedro", Kind: NoticeJoined, Text: "t"},
+	}
+	for name, m := range cases {
+		if err := m.Validate(); err == nil {
+			t.Errorf("%s: Validate() = nil, want error", name)
+		}
+	}
+}

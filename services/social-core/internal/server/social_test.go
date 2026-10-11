@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,14 +29,14 @@ func guestToken(t *testing.T, secret, sub, room string, exp time.Time) string {
 }
 
 func testDeps(secret string) *Deps {
-	var n int64
+	var n atomic.Int64
 	return &Deps{
 		Hub:               chat.NewHub(),
 		History:           chat.NewMemoryStore(50),
 		JWTSecret:         secret,
 		FirebaseProjectID: "tint-login",
 		Now:               func() time.Time { return time.Now().UTC() },
-		NewID:             func() string { n++; return "srv-conn-" + itoa(n) },
+		NewID:             func() string { return "srv-conn-" + itoa(n.Add(1)) },
 	}
 }
 
@@ -138,8 +139,18 @@ func TestSocialChatBroadcastAndHistory(t *testing.T) {
 	if m := readJSON(t, a); m["type"] != "history" {
 		t.Fatalf("primer mensaje A = %v, want history", m)
 	}
+	if m := readJSON(t, a); m["type"] != "notice" || m["kind"] != "joined" {
+		t.Fatalf("segundo mensaje A = %v, want notice joined propio", m)
+	}
 	if m := readJSON(t, b); m["type"] != "history" {
 		t.Fatalf("primer mensaje B = %v, want history", m)
+	}
+	if m := readJSON(t, b); m["type"] != "notice" || m["kind"] != "joined" {
+		t.Fatalf("segundo mensaje B = %v, want notice joined propio", m)
+	}
+	// A se entera de que B entró.
+	if m := readJSON(t, a); m["type"] != "notice" || m["kind"] != "joined" || m["nick"] != "Invitado" {
+		t.Fatalf("aviso en A = %v, want notice joined de B", m)
 	}
 
 	send := socialevent.ChatSend{
@@ -163,13 +174,17 @@ func TestSocialChatBroadcastAndHistory(t *testing.T) {
 		}
 	}
 
-	// Tercer cliente recibe historial con el mensaje.
+	// Tercer cliente recibe historial solo con el mensaje (los avisos
+	// de presencia son solo en vivo, no se guardan).
 	c := dial(t, wsBase, guestToken(t, secret, "guest:c", "r1", exp))
 	defer c.Close(websocket.StatusNormalClosure, "")
 	hist := readJSON(t, c)
 	msgs, _ := hist["messages"].([]any)
 	if len(msgs) != 1 {
 		t.Fatalf("history messages = %v, want 1", hist)
+	}
+	if msg, _ := msgs[0].(map[string]any); msg["type"] != "chat_message" {
+		t.Fatalf("history[0] = %v, want chat_message", msgs[0])
 	}
 }
 
@@ -181,6 +196,7 @@ func TestSocialRejectsTooLong(t *testing.T) {
 	c := dial(t, wsBase, guestToken(t, secret, "guest:a", "r1", time.Now().Add(time.Hour)))
 	defer c.Close(websocket.StatusNormalClosure, "")
 	_ = readJSON(t, c) // history
+	_ = readJSON(t, c) // notice joined propio
 	send := socialevent.ChatSend{
 		EventID: "c9", Type: socialevent.TypeChatSend, RoomID: "r1",
 		Text: strings.Repeat("x", socialevent.MaxTextRunes+1), OccurredAt: time.Now().UTC(),
