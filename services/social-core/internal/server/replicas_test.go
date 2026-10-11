@@ -52,7 +52,13 @@ func TestReactionsReachOtherReplicasOnce(t *testing.T) {
 	for name, col := range map[string]*collector{"A": colA, "B": colB} {
 		reactions := 0
 		for {
-			m, ok := col.next(500 * time.Millisecond)
+			// Espera generosa hasta la primera reacción; luego una ventana
+			// corta para detectar duplicados.
+			wait := 5 * time.Second
+			if reactions > 0 {
+				wait = 300 * time.Millisecond
+			}
+			m, ok := col.next(wait)
 			if !ok {
 				break
 			}

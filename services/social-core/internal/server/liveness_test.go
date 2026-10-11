@@ -19,8 +19,9 @@ func TestSocialDropsUnresponsiveClient(t *testing.T) {
 	secret := "s3cr3t"
 	deps := testDeps(secret)
 	deps.LeaveGrace = 10 * time.Millisecond
-	deps.PingInterval = 20 * time.Millisecond
-	deps.PingTimeout = 50 * time.Millisecond
+	// Holgura para que B (que sí lee) conteste a tiempo incluso con -race.
+	deps.PingInterval = 50 * time.Millisecond
+	deps.PingTimeout = 500 * time.Millisecond
 	srv := httptest.NewServer(NewRouterWithDeps(deps))
 	defer srv.Close()
 	wsBase := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/ws/social?room_id=r1"
