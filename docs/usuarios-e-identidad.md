@@ -55,6 +55,8 @@ El rol **no** se guarda en la tabla `users`: se deriva del contexto.
 | :--- | :---: | :---: | :---: | :---: | :---: |
 | Iniciar sesión / `POST /auth/verify` | ✅ | ✅ | — | — | — |
 | Crear sala (`POST /rooms`) y listar las suyas | ✅ | ✅ | ❌ | ❌ | ❌ |
+| Ver, renombrar (`PATCH`) o borrar (`DELETE`, lógico) **su** sala | ✅ (dueño) | ❌ | ❌ | ❌ | ❌ |
+| Subir vídeo (`POST /rooms/:id/media/uploads` + `complete`) | ✅ (dueño) | ❌ | ❌ | ❌ | ❌ |
 | Crear o revocar invitaciones de **su** sala | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Reclamar invitación (`POST /invitations/claim`) | — | — | ✅ | — | ✅ (así se convierte en invitado) |
 | Obtener sync-ticket | ✅ (dueño) | ❌ | ❌ | ❌ | ❌ |
@@ -75,8 +77,10 @@ El rol **no** se guarda en la tabla `users`: se deriva del contexto.
 erDiagram
     users ||--o{ rooms : "host_id (cascade)"
     users ||--o{ invitations : "created_by"
+    users ||--o{ videos : "uploaded_by (set null)"
     rooms ||--o{ invitations : "room_id (cascade)"
     rooms ||--o{ guest_sessions : "room_id (cascade)"
+    rooms ||--o{ videos : "room_id (cascade)"
 
     users {
         uuid id PK "gen_random_uuid()"
@@ -92,6 +96,7 @@ erDiagram
         uuid id PK
         uuid host_id FK "users.id"
         varchar title "máx. 150"
+        varchar status "active | deleted (borrado lógico)"
         uuid media_id "nullable, v2"
         text media_key "nullable, v2, clave en MinIO"
         timestamptz created_at
@@ -115,14 +120,27 @@ erDiagram
         timestamptz expires_at "exp del token"
         boolean revoked "false"
     }
+    videos {
+        uuid id PK "= video_id de media:uploads"
+        uuid room_id FK
+        uuid uploaded_by FK "nullable"
+        text storage_key "{id}/source.ext"
+        varchar content_type
+        bigint size_bytes
+        integer duration_ms "lo escribe media-worker"
+        varchar status "pending | processing | ready | failed"
+        timestamptz created_at
+        timestamptz updated_at
+    }
 ```
 
 | Tabla | Migración | Notas |
 | :--- | :--- | :--- |
 | `users` | `0000_shiny_quasimodo.sql` | Se crea en el primer `requireAuthHost` (*upsert* por `provider` + `provider_sub`). |
-| `rooms` | `0000` y `0001_room_media.sql` | Si se borra el usuario, se borran sus salas. |
+| `rooms` | `0000`, `0001_add-room-status.sql` y `0002_room_media.sql` | `DELETE /rooms/:id` es un **borrado lógico** (`status = 'deleted'`): la sala desaparece de los listados y sus rutas responden 410. Si se borra el usuario, se borran sus salas. |
 | `invitations` | `0000` | El código `nanoid(12)` es la URL `/invite/:code`. Una invitación sirve para muchos invitados. |
-| `guest_sessions` | `0002_guest_sessions.sql` | Una fila por guest token emitido. Permite listar y revocar. |
+| `guest_sessions` | `0003_guest_sessions.sql` | Una fila por guest token emitido. Permite listar y revocar. |
+| `videos` | `0004_videos.sql` | Vídeos subidos a MinIO. identity-api crea la fila (`pending`) y media-worker la avanza a `processing` → `ready`/`failed`. |
 
 Las migraciones se generan con `drizzle-kit generate` y se aplican con `npx drizzle-kit migrate`, usando `DATABASE_URL`.
 
@@ -207,6 +225,7 @@ No se guarda: la web pide uno nuevo en cada (re)conexión del WebSocket.
 | Redis | `room:{id}:sync_state.host_id` | `sub` del último Host conectado | 12 h |
 | Redis Stream | `analytics:events` | Métricas `sync_drift` **sin** `sub`, `nick` ni token | `MAXLEN ~100000` |
 | Navegador | `localStorage.tint_token` / `tint_guest_token` | Tokens del usuario | Hasta cerrar sesión, revocación (4001) o expiración |
+| Navegador | `localStorage.tint_room_title` / `tint_invite_link` | Título y link que recibe el invitado al reclamar la invitación (el invitado no puede pedirlos a la API de host) | Hasta el siguiente claim |
 
 ---
 
@@ -280,7 +299,7 @@ sequenceDiagram
     else válida
         API->>API: firma guest token (sub guest:uuid, jti)
         API->>PG: INSERT guest_sessions
-        API-->>W: { token, roomId, nick }
+        API-->>W: { token, roomId, nick, roomTitle }
         W->>W: borra tint_token y guarda tint_guest_token
         W-->>I: /watch/:roomId
         W->>API: GET /rooms/:id/playback (guest token)

@@ -28,8 +28,8 @@ flowchart TB
 
     subgraph servicios["Servicios"]
         ID["identity-api<br/>TypeScript/Express :8081"]
-        SYNC["sync-core<br/>Go :8082 · N réplicas"]
-        SOCIAL["social-core<br/>Go (esqueleto)"]
+        SYNC["sync-core<br/>Go :8083 · N réplicas"]
+        SOCIAL["social-core<br/>Go :8082"]
         MEDIA["media-worker<br/>Python + FFmpeg"]
         AN["analytics<br/>Python"]
     end
@@ -42,16 +42,17 @@ flowchart TB
 
     WEB -- "HTTP /api/v1" --> ID
     WEB -- "WebSocket /ws/sync" --> SYNC
-    WEB -. "WebSocket social (previsto)" .-> SOCIAL
-    WEB -- "GET vídeo (URL firmada)" --> MI
+    WEB -- "WebSocket /ws/social" --> SOCIAL
+    WEB -- "PUT y GET de vídeo (URLs firmadas)" --> MI
     ID --> PG
-    ID -- "revocación" --> RD
-    ID -. "firma URLs" .-> MI
+    ID -- "revocación · XADD media:uploads" --> RD
+    ID -. "firma URLs · HEAD" .-> MI
     SYNC -- "estado, Pub/Sub, presencia" --> RD
     SYNC -- "XADD analytics:events" --> RD
-    SOCIAL -. "heatmaps, leaderboards" .-> RD
+    SOCIAL -- "historial de chat, Pub/Sub" --> RD
+    RD -- "XREADGROUP media:uploads" --> MEDIA
     MEDIA -- "source / ambilight.json" --> MI
-    MEDIA -. "videos" .-> PG
+    MEDIA -- "UPDATE videos" --> PG
     AN -- "XREADGROUP" --> RD
     AN -- "telemetry_events, room_kpis" --> PG
 ```
@@ -60,23 +61,25 @@ flowchart TB
 
 | Servicio | Responsabilidad | Estado | Guía |
 | :--- | :--- | :--- | :--- |
-| `apps/web` | UI: login, dashboard, crear sala, invitación, sala con reproductor sincronizado | ✅ Implementado (chat local, social pendiente) | [AGENTS](../apps/web/AGENTS.md) |
-| `services/identity-api` | Usuarios, salas, invitaciones, tokens, vídeo de la sala, invitados | ✅ Implementado | [AGENTS](../services/identity-api/AGENTS.md) |
+| `apps/web` | UI: login, dashboard, gestión de salas, invitación, subida de vídeo, reproductor sincronizado y chat | ✅ Implementado | [AGENTS](../apps/web/AGENTS.md) |
+| `services/identity-api` | Usuarios, salas (renombrar, borrado lógico), invitaciones, tokens, subida y reproducción de vídeo, invitados | ✅ Implementado | [AGENTS](../services/identity-api/AGENTS.md) |
 | `services/sync-core` | Reloj Maestro, Canal Sync, drift, presencia, delegación | ✅ Implementado (v2) | [AGENTS](../services/sync-core/AGENTS.md) |
-| `services/social-core` | Chat, reacciones, heatmaps, trivias | 🟡 Esqueleto (limitador y puntaje) | [AGENTS](../services/social-core/AGENTS.md) |
-| `services/media-worker` | `ffprobe`, Ambilight, subida a MinIO | 🟡 Núcleo (probe y ambilight) | [AGENTS](../services/media-worker/AGENTS.md) |
+| `services/social-core` | Chat en vivo (`/ws/social`), reacciones, heatmaps, trivias | 🟢 Chat implementado; reacciones y trivias en curso | [AGENTS](../services/social-core/AGENTS.md) |
+| `services/media-worker` | Consume `media:uploads`: `ffprobe`, Ambilight y estado de `videos` | 🟡 Núcleo en `develop`; consumidor en la rama `feat/media-worker-probe` (contrato verificado de punta a punta) | [AGENTS](../services/media-worker/AGENTS.md) |
 | `services/analytics` | Ingesta de `analytics:events`, sanitización, KPIs | 🟡 Núcleo (sanitize y KPIs) | [AGENTS](../services/analytics/AGENTS.md) |
 
 ## 4. Almacenes de datos
 
 | Almacén | Dueño | Contenido principal |
 | :--- | :--- | :--- |
-| PostgreSQL | identity-api | `users`, `rooms`, `invitations`, `guest_sessions` ([esquema](usuarios-e-identidad.md#3-esquema-de-datos-postgresql)) |
-| PostgreSQL | media-worker / analytics | `videos`, `telemetry_events`, `room_kpis` (según sus guías) |
+| PostgreSQL | identity-api | `users`, `rooms`, `invitations`, `guest_sessions`, `videos` ([esquema](usuarios-e-identidad.md#3-esquema-de-datos-postgresql)); media-worker solo actualiza `videos` |
+| PostgreSQL | analytics | `telemetry_events`, `room_kpis` (según su guía) |
 | Redis | sync-core | `room:{id}:*` (estado, Pub/Sub, presencia, delegación) ([modelo](dominio-reproduccion.md#7-modelo-de-datos-en-redis)) |
 | Redis | identity-api → sync-core | `token:revoked:{jti}` |
-| Redis Stream | todos → analytics | `analytics:events` |
-| MinIO | media-worker / identity-api | Bucket `tint-media`: vídeos y `ambilight.json` |
+| Redis | social-core | `room:{id}:chat:history`, Pub/Sub `room:{id}:social` |
+| Redis Stream | identity-api → media-worker | `media:uploads` (grupo `media-workers`) |
+| Redis Stream | sync-core, social-core → analytics | `analytics:events` |
+| MinIO | web (PUT/GET firmados) · media-worker | Bucket `tint-media`: `{videoId}/source.*` y `{videoId}/ambilight.json` |
 
 ## 5. Contratos compartidos entre dominios
 
@@ -89,6 +92,7 @@ Son los únicos puntos en los que un PR puede necesitar coordinar dos dominios (
 | Revocación (`token:revoked:{jti}` + `REVOKED`) | identity-api → sync-core | [dominio-reproduccion §6.6](dominio-reproduccion.md#66-retirar-a-un-invitado-f5) |
 | `mediaId` / `media_id` | identity-api → web → sync-core | [dominio-reproduccion §6.7](dominio-reproduccion.md#67-cambio-de-vídeo-f3--load) |
 | API REST `/api/v1` | identity-api → web | [identity-api/AGENTS.md](../services/identity-api/AGENTS.md#api) |
+| `media:uploads` + tabla `videos` | identity-api → media-worker | Evento `{video_id}`; columnas `id`, `storage_key`, `duration_ms`, `status` ([dominio-reproduccion §6.7](dominio-reproduccion.md#67-subida-y-cambio-de-vídeo)) |
 | `analytics:events` | sync-core, social-core → analytics | Campos obligatorios `event_id`, `type`, `room_id`, `occurred_at`; sin PII |
 
 ## 6. Puertos locales
@@ -97,7 +101,8 @@ Son los únicos puntos en los que un PR puede necesitar coordinar dos dominios (
 | :--- | :--- | :--- |
 | web | 5173 | `npm run dev` |
 | identity-api | 8081 | `npm run dev` |
-| sync-core | 8082 → 8080 | `docker compose` (`/ws/sync`, `/healthz`, `/metrics`) |
+| social-core | 8082 | `docker compose` (`/ws/social`, `/healthz`) |
+| sync-core | 8083 → 8080 | `docker compose` (`/ws/sync`, `/healthz`, `/metrics`) |
 | PostgreSQL | 5432 | |
 | Redis | 6379 | |
 | MinIO | 9000 (API) · 9001 (consola) | |

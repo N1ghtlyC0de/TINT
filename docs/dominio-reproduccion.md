@@ -66,6 +66,12 @@ TINT es una *Watch Party*: todos los participantes de una sala deben ver **el mi
 - Humo de carga k6 en CI.
 - `npm ci` de identity-api reparado y probado en CI.
 
+**v2.1 — Integración con `develop` y subida de vídeo**
+- Rebase sobre `develop`, que trae el chat social, la gestión de salas y el borrado lógico. sync-core pasa al puerto 8083 porque social-core usa el 8082.
+- Las rutas del Canal Sync en identity-api respetan el borrado lógico (410).
+- **Subida directa al Blob Storage:** URL PUT firmada → MinIO → confirmación → `XADD media:uploads` → media-worker, con la tabla `videos` (migración `0004`).
+- Prueba de integración del flujo completo con los servicios reales (`npm run test:integration`).
+
 ### Historial de commits
 
 ```mermaid
@@ -176,7 +182,7 @@ flowchart LR
     PG[("PostgreSQL<br/>rooms.media_*<br/>guest_sessions")]
     MI[("MinIO<br/>bucket tint-media")]
 
-    subgraph sync["sync-core :8082 (N réplicas)"]
+    subgraph sync["sync-core :8083 (N réplicas)"]
         WS["/ws/sync<br/>JSON o MessagePack"]
         HUB["hub<br/>comandos, drift, barrido"]
         ST["store<br/>CAS Lua"]
@@ -498,27 +504,51 @@ sequenceDiagram
     ID-->>Inv: 401 Token revoked
 ```
 
-### 6.7 Cambio de vídeo (F3 + LOAD)
+### 6.7 Subida y cambio de vídeo
+
+El archivo **nunca pasa por identity-api**: el navegador lo sube directo a MinIO con una URL PUT firmada, y lo reproduce con una URL GET firmada.
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Host
     participant ID as identity-api
+    participant PG as PostgreSQL
+    participant MI as MinIO
+    participant R as Redis
+    participant MW as media-worker
     participant SC as sync-core
     actor Inv as Invitados
-    participant MI as MinIO
 
-    Host->>ID: PUT /rooms/:id/media { mediaKey }
+    Host->>ID: POST /rooms/:id/media/uploads { filename, contentType, sizeBytes }
+    ID->>PG: INSERT videos (pending)
+    ID-->>Host: { videoId, uploadUrl, headers }
+    Host->>MI: PUT {videoId}/source.mp4 (progreso en la UI)
+    Host->>ID: POST /rooms/:id/media/uploads/:videoId/complete
+    ID->>MI: HEAD (409 si no llegó)
+    ID->>R: XADD media:uploads video_id
+    ID->>PG: rooms.media_id = videoId
     ID-->>Host: { mediaId }
-    Host->>SC: LOAD { media_id: mediaId, position_ms: 0 }
-    SC-->>Host: LOAD (pausa, rate 1, media_id)
-    SC-->>Inv: LOAD
+    Host->>SC: LOAD { media_id, position_ms: 0 }
+    SC-->>Inv: LOAD (pausa, rate 1, media_id)
     Inv->>ID: GET /rooms/:id/playback (guest token)
-    ID-->>Inv: { url firmada, expiresAt }
+    ID-->>Inv: { url firmada, status, ambilightUrl }
     Inv->>MI: GET vídeo
-    Note over Inv: la URL se renueva ~1 min antes de expiresAt<br/>conservando la posición
+    R-->>MW: XREADGROUP media-workers
+    MW->>PG: processing → ready (duration_ms)
+    MW->>MI: PUT {videoId}/ambilight.json
+    Note over Inv: la web consulta playback cada ~5 s mientras status es<br/>pending/processing y renueva la URL antes de expiresAt
 ```
+
+| Paso | Endpoint / evento | Errores |
+| :--- | :--- | :--- |
+| Reservar | `POST /rooms/:id/media/uploads` | 400 (no es `video/*`), 413 (> `MAX_UPLOAD_BYTES`, 2 GiB), 403, 410 |
+| Subir | `PUT uploadUrl` a MinIO (Content-Type firmado, 15 min) | CORS según `MINIO_CORS_ALLOW_ORIGIN` |
+| Confirmar | `POST /rooms/:id/media/uploads/:videoId/complete` | 409 `Upload missing`, 503 si Redis falla (se puede reintentar), 404 |
+| Procesar | `media:uploads` → media-worker | El vídeo queda en `failed` si ffprobe no lo acepta; la reproducción del original sigue |
+| Reproducir | `GET /rooms/:id/playback` | 401 si el token fue revocado, 410 si la sala se borró |
+
+Sigue existiendo `PUT /rooms/:id/media { mediaKey }`, para asignar un objeto que ya está en el bucket (sin fila en `videos`, `status: null`).
 
 ### 6.8 Ciclo de vida de una conexión
 
@@ -649,7 +679,9 @@ flowchart LR
 | Método y ruta | Autorización | Respuesta |
 | :--- | :--- | :--- |
 | `POST /rooms/:id/sync-ticket` | Host dueño (Firebase) | `{ token, expiresAt }` (HS256, `role: host`, 10 min) |
-| `PUT /rooms/:id/media` | Host dueño | `{ mediaId, mediaKey }` (nuevo `mediaId` en cada llamada) |
+| `POST /rooms/:id/media/uploads` | Host dueño | `{ videoId, uploadUrl, storageKey, expiresAt, headers }`: reserva el vídeo y firma el PUT a MinIO |
+| `POST /rooms/:id/media/uploads/:videoId/complete` | Host dueño | `{ mediaId, mediaKey, status }`: HEAD del objeto, `XADD media:uploads` y asignación a la sala |
+| `PUT /rooms/:id/media` | Host dueño | `{ mediaId, mediaKey }`: asigna un objeto que ya está en el bucket (nuevo `mediaId` en cada llamada) |
 | `GET /rooms/:id/playback` | Host dueño **o** guest token de la sala no revocado | `{ mediaId, url, expiresAt }` o `null`s si no hay vídeo |
 | `GET /rooms/:id/guests` | Host dueño | `{ guests: [{ jti, nick, joinedAt, expiresAt, revoked }] }` (sin `sub`) |
 | `POST /rooms/:id/guests/:jti/revoke` | Host dueño | `{ success: true }`, idempotente; 404 si el `jti` no es de la sala |
@@ -731,14 +763,15 @@ flowchart TD
 
 ```bash
 cp .env.example .env                     # JWT_SECRET compartido por identity-api y sync-core
-docker compose up -d                     # postgres, redis, minio (+ bucket) y sync-core
-cd services/identity-api && npm ci && npm run dev   # :8081 (aplicar migraciones 0001 y 0002)
+docker compose up -d                     # postgres, redis, minio (+ bucket), social-core :8082 y sync-core :8083
+cd services/identity-api && npm ci && npx drizzle-kit migrate && npm run dev   # :8081, migraciones 0000–0004
 cd apps/web && cp .env.example .env && npm run dev  # :5173
 ```
 
 Para probar el vídeo:
-1. Sube un MP4 al bucket `tint-media` desde la consola de MinIO (`localhost:9001`).
-2. Como Host, usa "Cambiar vídeo" con su clave.
+1. Como Host, en la sala usa **"Subir vídeo"** y elige un archivo; se sube directo a MinIO con barra de progreso.
+2. Al terminar, todos los conectados reciben `LOAD` y lo reproducen desde MinIO.
+3. Con el media-worker corriendo (`python -m media_worker --consume`), el vídeo pasa a `ready` y aparece "Ambilight listo".
 
 | Variable | Servicio | Por defecto |
 | :--- | :--- | :--- |
@@ -749,7 +782,9 @@ Para probar el vídeo:
 | `MINIO_ENDPOINT` / `MINIO_PUBLIC_ENDPOINT` | identity-api | `http://localhost:9000` / igual a `MINIO_ENDPOINT` |
 | `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` / `MINIO_BUCKET` / `MINIO_REGION` | identity-api | `tintadmin` / `tintadmin123` / `tint-media` / `us-east-1` |
 | `PLAYBACK_URL_TTL_SECONDS` | identity-api | `3600` |
-| `VITE_SYNC_WS_URL` | web | `ws://localhost:8082/ws/sync` |
+| `UPLOAD_URL_TTL_SECONDS` / `MAX_UPLOAD_BYTES` | identity-api | `900` / `2147483648` (2 GiB) |
+| `MINIO_CORS_ALLOW_ORIGIN` | docker compose (MinIO) | `http://localhost:5173` |
+| `VITE_SYNC_WS_URL` | web | `ws://localhost:8083/ws/sync` |
 | `VITE_SYNC_ENCODING` | web | `json` (`msgpack` opcional) |
 | `VITE_DEMO_VIDEO_URL` | web | respaldo solo si la sala no tiene vídeo |
 
