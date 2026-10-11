@@ -75,8 +75,8 @@ flowchart TB
 | PostgreSQL | identity-api | `users`, `rooms`, `invitations`, `guest_sessions`, `videos` ([esquema](usuarios-e-identidad.md#3-esquema-de-datos-postgresql)); media-worker solo actualiza `videos` |
 | PostgreSQL | analytics | `telemetry_events`, `room_kpis` (según su guía) |
 | Redis | sync-core | `room:{id}:*` (estado, Pub/Sub, presencia, delegación) ([modelo](dominio-reproduccion.md#7-modelo-de-datos-en-redis)) |
-| Redis | identity-api → sync-core | `token:revoked:{jti}` |
-| Redis | social-core | `room:{id}:chat:history`, Pub/Sub `room:{id}:social` |
+| Redis | identity-api → sync-core, social-core | `token:revoked:{jti}` |
+| Redis | social-core | `room:{id}:chat:history`, Pub/Sub `room:{id}:social` (chat y reacciones entre réplicas) |
 | Redis Stream | identity-api → media-worker | `media:uploads` (grupo `media-workers`) |
 | Redis Stream | sync-core, social-core → analytics | `analytics:events` |
 | MinIO | web (PUT/GET firmados) · media-worker | Bucket `tint-media`: `{videoId}/source.*` y `{videoId}/ambilight.json` |
@@ -87,9 +87,10 @@ Son los únicos puntos en los que un PR puede necesitar coordinar dos dominios (
 
 | Contrato | Productor → consumidor | Definición |
 | :--- | :--- | :--- |
-| JWT HS256 (guest token, sync-ticket) | identity-api → sync-core | [usuarios-e-identidad §4](usuarios-e-identidad.md#4-esquemas-de-tokens) · `JWT_SECRET`/`JWT_ISSUER`/`JWT_AUDIENCE` iguales en ambos |
+| JWT HS256 (guest token, sync-ticket) | identity-api → sync-core, social-core | [usuarios-e-identidad §4](usuarios-e-identidad.md#4-esquemas-de-tokens) · `JWT_SECRET`/`JWT_ISSUER`/`JWT_AUDIENCE` iguales en los tres; social-core exige `jti`, `iss`, `aud` y `exp` |
+| Firebase ID token RS256 (host en `/ws/social`) | Firebase → social-core | Firma verificada con los certificados x509 públicos de Google por `kid`; `iss`/`aud` = `FIREBASE_PROJECT_ID` (sin él, se rechaza) |
 | Protocolo del Canal Sync v2 | sync-core ↔ web | [sync-core/AGENTS.md](../services/sync-core/AGENTS.md#protocolo-del-canal-sync) |
-| Revocación (`token:revoked:{jti}` + `REVOKED`) | identity-api → sync-core | [dominio-reproduccion §6.6](dominio-reproduccion.md#66-retirar-a-un-invitado-f5) |
+| Revocación (`token:revoked:{jti}` + `REVOKED`) | identity-api → sync-core, social-core | [dominio-reproduccion §6.6](dominio-reproduccion.md#66-retirar-a-un-invitado-f5) · social-core lee `REVOKED` de `room:{id}:sync` y cierra con 4001 |
 | `mediaId` / `media_id` | identity-api → web → sync-core | [dominio-reproduccion §6.7](dominio-reproduccion.md#67-cambio-de-vídeo-f3--load) |
 | API REST `/api/v1` | identity-api → web | [identity-api/AGENTS.md](../services/identity-api/AGENTS.md#api) |
 | `media:uploads` + tabla `videos` | identity-api → media-worker | Evento `{video_id}`; columnas `id`, `storage_key`, `duration_ms`, `status` ([dominio-reproduccion §6.7](dominio-reproduccion.md#67-subida-y-cambio-de-vídeo)) |
