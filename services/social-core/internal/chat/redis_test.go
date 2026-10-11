@@ -127,6 +127,34 @@ func TestRedisSubscribeDeliversRevoked(t *testing.T) {
 	}
 }
 
+func TestRedisPublishReactionRelayed(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+	s := NewRedisStoreWithClient(client, 3, time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sub, stop := s.Subscribe(ctx, "r1")
+	defer stop()
+	waitSubscribers(t, mr, ChannelKey("r1"))
+	now := time.Now().UTC()
+	r := socialevent.Reaction{
+		EventID: "re1", Type: socialevent.TypeReaction, RoomID: "r1", UserID: "u1",
+		Nick: "Ana", Emoji: "👏", PositionMS: 5000, OccurredAt: now, ReceivedAt: now,
+	}
+	if err := s.PublishReaction(ctx, "r1", r); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-sub:
+		if got.EventID != "re1" || !strings.Contains(string(got.Payload), `"type":"reaction"`) {
+			t.Fatalf("sub = %+v", got)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout esperando la reacción")
+	}
+}
+
 func waitSubscribers(t *testing.T, mr *miniredis.Miniredis, channel string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)

@@ -25,7 +25,9 @@ type Deps struct {
 	Hub     *chat.Hub
 	History chat.Store
 	Publish func(ctx context.Context, roomID string, msg socialevent.ChatMessage) error
-	Track   func(ctx context.Context, roomID string, messageLength int, eventID string, occurredAt time.Time)
+	// PublishReaction reenvía la reacción a las demás réplicas (nil = una réplica).
+	PublishReaction func(ctx context.Context, roomID string, r socialevent.Reaction) error
+	Track           func(ctx context.Context, roomID string, messageLength int, eventID string, occurredAt time.Time)
 	// Subscribe abre la suscripción Pub/Sub de la sala (eventos de otras
 	// réplicas y REVOKED de identity-api); una sola por sala y réplica.
 	Subscribe func(ctx context.Context, roomID string) (<-chan chat.Inbound, func())
@@ -469,6 +471,10 @@ func (d *Deps) handleReaction(ctx context.Context, c *websocket.Conn, roomID str
 	if d.ReactionBuckets != nil {
 		d.ReactionBuckets.Add(roomID, reactions.BucketIndex(bucketPosition(out.PositionMS)), out.Emoji)
 	}
+	if d.PublishReaction != nil {
+		_ = d.PublishReaction(ctx, roomID, out)
+	}
+	// broadcastRawOnce traga el eco de Redis si el relay lo vio primero.
 	d.broadcastRawOnce(roomID, out.EventID, out)
 }
 

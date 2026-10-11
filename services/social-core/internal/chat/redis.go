@@ -89,6 +89,15 @@ func (s *RedisStore) Publish(ctx context.Context, roomID string, msg socialevent
 	return s.client.Publish(ctx, ChannelKey(roomID), raw).Err()
 }
 
+// PublishReaction emite una reacción al canal de la sala (multirréplica).
+func (s *RedisStore) PublishReaction(ctx context.Context, roomID string, r socialevent.Reaction) error {
+	raw, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	return s.client.Publish(ctx, ChannelKey(roomID), raw).Err()
+}
+
 // IsRevoked indica si identity-api revocó el jti (EXISTS token:revoked:{jti}).
 // Un error de Redis se devuelve tal cual: el llamador debe fallar cerrado.
 func (s *RedisStore) IsRevoked(ctx context.Context, jti string) (bool, error) {
@@ -145,7 +154,8 @@ func (s *RedisStore) Subscribe(ctx context.Context, roomID string) (<-chan Inbou
 }
 
 // decodeInbound traduce un payload de Pub/Sub. Del canal de sync solo
-// interesa REVOKED; del social, los chat_message de otras réplicas.
+// interesa REVOKED; del social, los chat_message y reaction de otras
+// réplicas (se re-serializan por tipo: nunca se reenvía JSON arbitrario).
 func decodeInbound(fromSync bool, raw []byte) (Inbound, bool) {
 	if fromSync {
 		var ev struct {
@@ -157,15 +167,30 @@ func decodeInbound(fromSync bool, raw []byte) (Inbound, bool) {
 		}
 		return Inbound{RevokedJTI: ev.JTI}, true
 	}
-	var m socialevent.ChatMessage
-	if json.Unmarshal(raw, &m) != nil || m.Type != socialevent.TypeChatMessage || m.EventID == "" {
+	var head struct {
+		Type    socialevent.Type `json:"type"`
+		EventID string           `json:"event_id"`
+	}
+	if json.Unmarshal(raw, &head) != nil || head.EventID == "" {
 		return Inbound{}, false
 	}
-	payload, err := json.Marshal(m)
+	var v any
+	switch head.Type {
+	case socialevent.TypeChatMessage:
+		v = &socialevent.ChatMessage{}
+	case socialevent.TypeReaction:
+		v = &socialevent.Reaction{}
+	default:
+		return Inbound{}, false
+	}
+	if json.Unmarshal(raw, v) != nil {
+		return Inbound{}, false
+	}
+	payload, err := json.Marshal(v)
 	if err != nil {
 		return Inbound{}, false
 	}
-	return Inbound{EventID: m.EventID, Payload: payload}, true
+	return Inbound{EventID: head.EventID, Payload: payload}, true
 }
 
 // TrackChat publica telemetría sin texto (solo message_length, Ley 1581).
