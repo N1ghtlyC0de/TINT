@@ -37,44 +37,97 @@ type Deps struct {
 	mu     sync.Mutex
 	relays map[string]*roomRelay
 	seen   *seenIDs
-	// presence cuenta conexiones por sala y usuario para emitir un solo
-	// aviso de entrada/salida aunque el usuario abra varias pestañas.
-	presence map[string]map[string]int
+	// LeaveGrace retrasa el aviso de salida: si el usuario vuelve dentro de
+	// la ventana se considera el mismo de antes (cero = DefaultLeaveGrace).
+	LeaveGrace time.Duration
+	// presence cuenta conexiones por sala y usuario para no spamear avisos
+	// con multipestaña, StrictMode (doble montaje) o flaps de red.
+	presence map[string]map[string]*presenceEntry
 }
 
-// presenceJoin suma una conexión; true si es la primera del usuario en la sala.
-func (d *Deps) presenceJoin(roomID, userID string) bool {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+// DefaultLeaveGrace es la ventana de gracia de presencia en producción.
+const DefaultLeaveGrace = 5 * time.Second
+
+// presenceEntry lleva las conexiones activas, la última salida y una
+// generación para invalidar timers viejos cuando el usuario reingresa.
+type presenceEntry struct {
+	conns     int
+	lastLeave time.Time
+	gen       uint64
+}
+
+func (d *Deps) leaveGrace() time.Duration {
+	if d.LeaveGrace > 0 {
+		return d.LeaveGrace
+	}
+	return DefaultLeaveGrace
+}
+
+func (d *Deps) presenceUsers(roomID string) map[string]*presenceEntry {
 	if d.presence == nil {
-		d.presence = make(map[string]map[string]int)
+		d.presence = make(map[string]map[string]*presenceEntry)
 	}
 	users := d.presence[roomID]
 	if users == nil {
-		users = make(map[string]int)
+		users = make(map[string]*presenceEntry)
 		d.presence[roomID] = users
 	}
-	users[userID]++
-	return users[userID] == 1
+	return users
 }
 
-// presenceLeave resta una conexión; true si fue la última del usuario.
-func (d *Deps) presenceLeave(roomID, userID string) bool {
+// presenceJoin suma una conexión; true si hay que avisar la entrada.
+// No se avisa si ya hay otra conexión activa (multipestaña) ni si el
+// usuario salió dentro de la ventana de gracia (reingreso/flap).
+func (d *Deps) presenceJoin(roomID, userID string, now time.Time) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	users := d.presence[roomID]
-	if users == nil || users[userID] <= 0 {
+	users := d.presenceUsers(roomID)
+	e := users[userID]
+	if e == nil {
+		e = &presenceEntry{}
+		users[userID] = e
+	}
+	e.conns++
+	e.gen++
+	if e.conns > 1 {
 		return false
 	}
-	users[userID]--
-	if users[userID] > 0 {
+	if !e.lastLeave.IsZero() && now.Sub(e.lastLeave) < d.leaveGrace() {
 		return false
-	}
-	delete(users, userID)
-	if len(users) == 0 {
-		delete(d.presence, roomID)
 	}
 	return true
+}
+
+// presenceLeave resta una conexión y, si fue la última, programa el aviso
+// de salida tras la gracia: solo se emite si el usuario sigue ausente
+// (misma generación). Así un reingreso rápido cancela el aviso.
+func (d *Deps) presenceLeave(roomID string, claims auth.Claims) {
+	d.mu.Lock()
+	users := d.presence[roomID]
+	e := users[claims.Subject]
+	if e == nil || e.conns <= 0 {
+		d.mu.Unlock()
+		return
+	}
+	e.conns--
+	if e.conns > 0 {
+		d.mu.Unlock()
+		return
+	}
+	e.lastLeave = d.now()
+	e.gen++
+	gen := e.gen
+	grace := d.leaveGrace()
+	d.mu.Unlock()
+	time.AfterFunc(grace, func() {
+		d.mu.Lock()
+		cur := d.presence[roomID][claims.Subject]
+		fire := cur != nil && cur.conns == 0 && cur.gen == gen
+		d.mu.Unlock()
+		if fire {
+			d.emitNotice(roomID, claims, socialevent.NoticeLeft)
+		}
+	})
 }
 
 func noticeText(nick string, kind socialevent.NoticeKind) string {
@@ -197,8 +250,9 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 	histRaw, _ := json.Marshal(socialevent.HistoryEnvelope{Type: socialevent.TypeHistory, RoomID: roomID, Messages: recent})
 	_ = c.Write(ctx, websocket.MessageText, histRaw)
 
-	// Aviso de entrada (solo en vivo, tras el historial).
-	if d.presenceJoin(roomID, claims.Subject) {
+	// Aviso de entrada (solo en vivo, tras el historial). Se perdona el
+	// reingreso dentro de la gracia (StrictMode, refresh, flap).
+	if d.presenceJoin(roomID, claims.Subject, d.now()) {
 		d.emitNotice(roomID, claims, socialevent.NoticeJoined)
 	}
 
@@ -276,10 +330,10 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 	}
 
 	// Salida explícita antes del defer: el que se va no recibe su propio aviso.
+	// El aviso de salida es diferido (ventana de gracia): si el usuario
+	// vuelve antes, se cancela.
 	d.Hub.Leave(roomID, connID)
-	if d.presenceLeave(roomID, claims.Subject) {
-		d.emitNotice(roomID, claims, socialevent.NoticeLeft)
-	}
+	d.presenceLeave(roomID, claims)
 }
 
 func trimText(s string) string {

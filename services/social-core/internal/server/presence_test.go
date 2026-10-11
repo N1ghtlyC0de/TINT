@@ -93,7 +93,9 @@ func expectSilence(t *testing.T, cols ...*collector) {
 
 func TestSocialJoinNoticeWithNick(t *testing.T) {
 	secret := "s3cr3t"
-	srv := httptest.NewServer(NewRouterWithDeps(testDeps(secret)))
+	deps := testDeps(secret)
+	deps.LeaveGrace = 300 * time.Millisecond
+	srv := httptest.NewServer(NewRouterWithDeps(deps))
 	defer srv.Close()
 	wsBase := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/ws/social?room_id=r1"
 	exp := time.Now().Add(time.Hour)
@@ -119,7 +121,9 @@ func TestSocialJoinNoticeWithNick(t *testing.T) {
 
 func TestSocialLeaveNotice(t *testing.T) {
 	secret := "s3cr3t"
-	srv := httptest.NewServer(NewRouterWithDeps(testDeps(secret)))
+	deps := testDeps(secret)
+	deps.LeaveGrace = 300 * time.Millisecond
+	srv := httptest.NewServer(NewRouterWithDeps(deps))
 	defer srv.Close()
 	wsBase := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/ws/social?room_id=r1"
 	exp := time.Now().Add(time.Hour)
@@ -149,7 +153,9 @@ func TestSocialLeaveNotice(t *testing.T) {
 
 func TestSocialSameUserTwiceEmitsOnce(t *testing.T) {
 	secret := "s3cr3t"
-	srv := httptest.NewServer(NewRouterWithDeps(testDeps(secret)))
+	deps := testDeps(secret)
+	deps.LeaveGrace = 300 * time.Millisecond
+	srv := httptest.NewServer(NewRouterWithDeps(deps))
 	defer srv.Close()
 	wsBase := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/ws/social?room_id=r1"
 	exp := time.Now().Add(time.Hour)
@@ -190,4 +196,83 @@ func TestSocialSameUserTwiceEmitsOnce(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 	expectNoticeCol(t, colB, "left", "Ana")
+}
+
+// Reingreso dentro de la gracia (doble montaje StrictMode / refresh):
+// un solo "entró", ningún "salió".
+func TestSocialRejoinWithinGraceIsSilent(t *testing.T) {
+	secret := "s3cr3t"
+	deps := testDeps(secret)
+	deps.LeaveGrace = 300 * time.Millisecond
+	srv := httptest.NewServer(NewRouterWithDeps(deps))
+	defer srv.Close()
+	wsBase := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/ws/social?room_id=r1"
+	exp := time.Now().Add(time.Hour)
+
+	obs := dial(t, wsBase, guestTokenAs(t, secret, "guest:obs", "Obs", "r1", exp))
+	defer obs.Close(websocket.StatusNormalClosure, "")
+	colObs := collectConn(obs)
+	if m, ok := colObs.next(5 * time.Second); !ok || m["type"] != "history" {
+		t.Fatalf("primer mensaje obs = %v, want history", m)
+	}
+	expectNoticeCol(t, colObs, "joined", "Obs")
+
+	a := dial(t, wsBase, guestTokenAs(t, secret, "guest:drake", "Drake", "r1", exp))
+	colA := collectConn(a)
+	if m, ok := colA.next(5 * time.Second); !ok || m["type"] != "history" {
+		t.Fatalf("primer mensaje A = %v, want history", m)
+	}
+	expectNoticeCol(t, colA, "joined", "Drake")
+	expectNoticeCol(t, colObs, "joined", "Drake")
+
+	// Primera conexión se cae y vuelve de inmediato (como StrictMode).
+	if err := a.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	a2 := dial(t, wsBase, guestTokenAs(t, secret, "guest:drake", "Drake", "r1", exp))
+	defer a2.Close(websocket.StatusNormalClosure, "")
+	if m := readJSON(t, a2); m["type"] != "history" {
+		t.Fatalf("primer mensaje A2 = %v, want history", m)
+	}
+	// Ni "salió" ni segundo "entró" para el observador.
+	expectSilence(t, colObs)
+}
+
+// Reingreso tras la gracia: cuenta como entrada nueva (y la salida sí se avisó).
+func TestSocialRejoinAfterGraceEmitsAgain(t *testing.T) {
+	secret := "s3cr3t"
+	deps := testDeps(secret)
+	deps.LeaveGrace = 200 * time.Millisecond
+	srv := httptest.NewServer(NewRouterWithDeps(deps))
+	defer srv.Close()
+	wsBase := "ws://" + strings.TrimPrefix(srv.URL, "http://") + "/ws/social?room_id=r1"
+	exp := time.Now().Add(time.Hour)
+
+	obs := dial(t, wsBase, guestTokenAs(t, secret, "guest:obs", "Obs", "r1", exp))
+	defer obs.Close(websocket.StatusNormalClosure, "")
+	colObs := collectConn(obs)
+	if m, ok := colObs.next(5 * time.Second); !ok || m["type"] != "history" {
+		t.Fatalf("primer mensaje obs = %v, want history", m)
+	}
+	expectNoticeCol(t, colObs, "joined", "Obs")
+
+	a := dial(t, wsBase, guestTokenAs(t, secret, "guest:drake", "Drake", "r1", exp))
+	if m := readJSON(t, a); m["type"] != "history" {
+		t.Fatalf("primer mensaje A = %v, want history", m)
+	}
+	expectNoticeCol(t, colObs, "joined", "Drake")
+
+	if err := a.Close(websocket.StatusNormalClosure, ""); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	// La salida sí se avisa (prueba que la ventana ya pasó).
+	expectNoticeCol(t, colObs, "left", "Drake")
+
+	a2 := dial(t, wsBase, guestTokenAs(t, secret, "guest:drake", "Drake", "r1", exp))
+	defer a2.Close(websocket.StatusNormalClosure, "")
+	if m := readJSON(t, a2); m["type"] != "history" {
+		t.Fatalf("primer mensaje A2 = %v, want history", m)
+	}
+	// Volver tras la gracia es una entrada nueva.
+	expectNoticeCol(t, colObs, "joined", "Drake")
 }
