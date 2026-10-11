@@ -5,6 +5,7 @@ Este repositorio es un monorepo multi-lenguaje. **Antes de modificar cualquier a
 | Dominio | Ruta | Guía |
 | :--- | :--- | :--- |
 | Frontend | `apps/web` | [apps/web/AGENTS.md](apps/web/AGENTS.md) |
+| Identidad & Catálogo | `services/identity-api` | [services/identity-api/AGENTS.md](services/identity-api/AGENTS.md) |
 | Sincronización | `services/sync-core` | [services/sync-core/AGENTS.md](services/sync-core/AGENTS.md) |
 | Social & Gamificación | `services/social-core` | [services/social-core/AGENTS.md](services/social-core/AGENTS.md) |
 | Media Worker | `services/media-worker` | [services/media-worker/AGENTS.md](services/media-worker/AGENTS.md) |
