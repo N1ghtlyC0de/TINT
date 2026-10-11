@@ -5,15 +5,33 @@ import { validate } from '../middlewares/validate.js';
 import { requireAuthHost } from '../middlewares/auth.js';
 import { requireRoomOwner } from '../middlewares/requireRoomOwner.js';
 import { upsertByProvider } from '../modules/users/users.repo.js';
-import { create as createRoom, listByHost, findById, softRemoveById, updateTitle } from '../modules/rooms/rooms.repo.js';
+import { requireRoomHostOrGuest } from '../middlewares/guestAuth.js';
+import { requireActiveRoom } from '../middlewares/activeRoom.js';
+import { create as createRoom, listByHost, findById, softRemoveById, updateTitle, setMedia } from '../modules/rooms/rooms.repo.js';
 import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../modules/invitations/invitations.repo.js';
-import { issueGuestToken } from '../modules/auth/auth.service.js';
+import { issueGuestToken, generateSyncTicket } from '../modules/auth/auth.service.js';
+import { getMediaSigner } from '../modules/media/media.signer.js';
+import { getMediaStore } from '../modules/media/media.store.js';
+import { enqueueMediaUpload } from '../modules/media/media.queue.js';
+import { create as createVideo, findById as findVideo } from '../modules/videos/videos.repo.js';
+import {
+  create as createGuestSession,
+  findByJti as findGuestSession,
+  listByRoom as listGuestSessions,
+  setRevoked as setGuestSessionRevoked,
+} from '../modules/guests/guestSessions.repo.js';
+import { markTokenRevoked, publishRevoked } from '../modules/tokens/revocation.js';
+import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
 
 function getRoomId(req: { params: unknown }) {
   const rawId = (req.params as Record<string, unknown>).id;
   return Array.isArray(rawId) ? rawId[0] : (rawId as string);
+}
+
+function paramId(raw: string | string[]) {
+  return Array.isArray(raw) ? raw[0] : raw;
 }
 
 router.get('/healthz', (req, res) => {
@@ -145,6 +163,163 @@ router.post('/rooms/:id/invitations', requireAuthHost, requireRoomOwner, validat
   });
 });
 
+router.post('/rooms/:id/sync-ticket', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
+  const rawId = req.params.id;
+  const roomId = Array.isArray(rawId) ? rawId[0] : rawId;
+  const user = req.user!;
+  const { token, expiresAt } = generateSyncTicket({
+    userId: user.id,
+    roomId,
+    nick: user.displayName || user.email,
+  });
+  res.json({ token, expiresAt: expiresAt.toISOString() });
+});
+
+const setMediaSchema = z.object({
+  mediaKey: z
+    .string()
+    .trim()
+    .min(1)
+    .max(512)
+    .refine((key) => !key.includes('..'), { message: 'mediaKey no puede contener ".."' })
+    .refine((key) => !key.startsWith('/'), { message: 'mediaKey no puede empezar con "/"' }),
+});
+router.put('/rooms/:id/media', requireAuthHost, requireRoomOwner, validate(setMediaSchema), requireActiveRoom, async (req, res) => {
+  const roomId = paramId(req.params.id);
+  const { mediaKey } = req.body;
+  const mediaId = uuidv4();
+  const room = await setMedia(roomId, { mediaId, mediaKey });
+  if (!room) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  res.json({ mediaId, mediaKey });
+});
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// Extensiones permitidas en la clave del bucket: el nombre del usuario nunca forma parte de ella.
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.mov', '.mkv', '.m4v', '.ogv']);
+const EXTENSION_BY_TYPE: Record<string, string> = {
+  'video/mp4': '.mp4',
+  'video/webm': '.webm',
+  'video/quicktime': '.mov',
+  'video/x-matroska': '.mkv',
+  'video/x-m4v': '.m4v',
+  'video/ogg': '.ogv',
+};
+
+function videoExtension(filename: string, contentType: string) {
+  const match = /\.[a-z0-9]{1,5}$/i.exec(filename);
+  const fromName = match?.[0].toLowerCase();
+  if (fromName && VIDEO_EXTENSIONS.has(fromName)) return fromName;
+  return EXTENSION_BY_TYPE[contentType.toLowerCase()] ?? '';
+}
+
+const startUploadSchema = z.object({
+  filename: z.string().trim().min(1).max(255),
+  contentType: z.string().trim().toLowerCase().regex(/^video\/[a-z0-9.+-]+$/, 'Debe ser un vídeo'),
+  sizeBytes: z.number().int().positive(),
+});
+
+// 1) Reserva el vídeo y entrega una URL PUT firmada: el archivo va directo del
+//    navegador a MinIO, sin pasar por identity-api.
+router.post('/rooms/:id/media/uploads', requireAuthHost, requireRoomOwner, validate(startUploadSchema), requireActiveRoom, async (req, res) => {
+  const { filename, contentType, sizeBytes } = req.body;
+  if (sizeBytes > env.MAX_UPLOAD_BYTES) {
+    return res.status(413).json({ error: 'File too large' });
+  }
+  const videoId = uuidv4();
+  const storageKey = `${videoId}/source${videoExtension(filename, contentType)}`;
+  await createVideo({
+    id: videoId,
+    roomId: req.room!.id,
+    uploadedBy: req.user!.id,
+    storageKey,
+    contentType,
+    sizeBytes,
+    status: 'pending',
+  });
+  const ttl = env.UPLOAD_URL_TTL_SECONDS;
+  const uploadUrl = await getMediaSigner().presignPut(storageKey, contentType, ttl);
+  res.json({
+    videoId,
+    uploadUrl,
+    storageKey,
+    expiresAt: new Date(Date.now() + ttl * 1000).toISOString(),
+    headers: { 'Content-Type': contentType },
+  });
+});
+
+// 2) Confirma la subida: comprueba el objeto, encola el procesamiento
+//    (XADD media:uploads) y asigna el vídeo a la sala. Idempotente.
+router.post('/rooms/:id/media/uploads/:videoId/complete', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
+  const roomId = req.room!.id;
+  const videoId = paramId(req.params.videoId);
+  const video = UUID_RE.test(videoId) ? await findVideo(videoId) : null;
+  if (!video || video.roomId !== roomId) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  if (!(await getMediaStore().exists(video.storageKey))) {
+    return res.status(409).json({ error: 'Upload missing' });
+  }
+  try {
+    await enqueueMediaUpload(video.id);
+  } catch (err) {
+    console.error('[uploads] no se pudo encolar media:uploads:', (err as Error).message);
+    return res.status(503).json({ error: 'Service unavailable' });
+  }
+  const room = await setMedia(roomId, { mediaId: video.id, mediaKey: video.storageKey });
+  if (!room) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  res.json({ mediaId: video.id, mediaKey: video.storageKey, status: video.status });
+});
+
+router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, async (req, res) => {
+  const room = req.room!;
+  if (!room.mediaId || !room.mediaKey) {
+    return res.json({ mediaId: null, url: null, expiresAt: null, status: null, ambilightUrl: null });
+  }
+  const ttl = env.PLAYBACK_URL_TTL_SECONDS;
+  const expiresAt = new Date(Date.now() + ttl * 1000);
+  const signer = getMediaSigner();
+  const url = await signer.presignGet(room.mediaKey, ttl);
+  // Vídeos subidos por la API tienen fila en `videos` (estado del media-worker);
+  // los asignados por clave manual no (status null). El original se reproduce
+  // aunque el procesamiento no haya terminado.
+  const video = await findVideo(room.mediaId);
+  const ambilightUrl = video?.status === 'ready' ? await signer.presignGet(`${video.id}/ambilight.json`, ttl) : null;
+  res.json({
+    mediaId: room.mediaId,
+    url,
+    expiresAt: expiresAt.toISOString(),
+    status: video?.status ?? null,
+    ambilightUrl,
+  });
+});
+
+router.get('/rooms/:id/guests', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
+  const sessions = await listGuestSessions(paramId(req.params.id));
+  res.json({
+    // `sub` no se expone: es el identificador interno del invitado en sync-core.
+    guests: sessions.map(({ jti, nick, joinedAt, expiresAt, revoked }) => ({ jti, nick, joinedAt, expiresAt, revoked })),
+  });
+});
+
+router.post('/rooms/:id/guests/:jti/revoke', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
+  const roomId = paramId(req.params.id);
+  const jti = paramId(req.params.jti);
+  const session = UUID_RE.test(jti) ? await findGuestSession(jti) : null;
+  if (!session || session.roomId !== roomId) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  // Idempotente: revocar de nuevo reescribe la marca y vuelve a publicar REVOKED.
+  await setGuestSessionRevoked(jti);
+  await markTokenRevoked(jti, Math.floor(session.expiresAt.getTime() / 1000));
+  await publishRevoked(roomId, jti);
+  res.json({ success: true });
+});
+
 router.post('/invitations/:code/revoke', requireAuthHost, async (req, res) => {
   const rawCode = req.params.code;
   const code = Array.isArray(rawCode) ? rawCode[0] : rawCode;
@@ -162,7 +337,7 @@ router.post('/invitations/:code/revoke', requireAuthHost, async (req, res) => {
 
 const claimSchema = z.object({
   code: z.string().trim(),
-  nick: z.string().trim().min(1),
+  nick: z.string().trim().min(1).max(64),
 });
 router.post('/invitations/claim', validate(claimSchema), async (req, res) => {
   const { code, nick } = req.body;
@@ -180,7 +355,16 @@ router.post('/invitations/claim', validate(claimSchema), async (req, res) => {
   if (room && room.status === 'deleted') {
     return res.status(410).json({ error: 'Deleted' });
   }
-  const { token } = issueGuestToken(invitation.roomId, nick);
+  const { token, payload } = issueGuestToken(invitation.roomId, nick);
+  // Registrar la sesión antes de entregar el token: un token sin fila no se podría listar ni revocar.
+  await createGuestSession({
+    jti: payload.jti,
+    roomId: payload.room_id,
+    sub: payload.sub,
+    nick: payload.nick,
+    joinedAt: new Date(payload.iat * 1000),
+    expiresAt: new Date(payload.exp * 1000),
+  });
   res.json({ token, roomId: invitation.roomId, nick, roomTitle: room?.title ?? null });
 });
 
