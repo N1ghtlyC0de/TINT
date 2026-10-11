@@ -25,13 +25,14 @@ vi.mock('../lib/api', () => ({
 const mockedSignIn = vi.mocked(signInWithPopup);
 const mockedApi = vi.mocked(apiFetch);
 
-function renderLogin() {
+function renderLogin(entry = '/login') {
   return render(
-    <MemoryRouter initialEntries={['/login']}>
+    <MemoryRouter initialEntries={[entry]}>
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/dashboard" element={<p>Dashboard OK</p>} />
         <Route path="/invite/:code" element={<p>Invitación OK</p>} />
+        <Route path="/watch/:roomId" element={<p>Sala OK</p>} />
       </Routes>
     </MemoryRouter>,
   );
@@ -109,5 +110,25 @@ describe('Login', () => {
     await userEvent.click(screen.getByText('Continuar sin cuenta'));
     await waitFor(() => expect(screen.getByText(/no parece válido/i)).toBeInTheDocument());
     expect(screen.queryByText('Invitación OK')).not.toBeInTheDocument();
+  });
+
+  it('tras login vuelve al next (?next=/watch/r1) en vez del dashboard', async () => {
+    mockedSignIn.mockResolvedValueOnce({
+      user: { getIdToken: () => Promise.resolve('tok-123') },
+    } as unknown as UserCredential);
+    mockedApi.mockResolvedValueOnce({ user: { id: 'u1' }, isRegistered: true });
+    renderLogin('/login?next=/watch/r1');
+    await userEvent.click(screen.getByText('Iniciar sesión con Google'));
+    await waitFor(() => expect(screen.getByText('Sala OK')).toBeInTheDocument());
+  });
+
+  it('ignora un next externo y va al dashboard', async () => {
+    mockedSignIn.mockResolvedValueOnce({
+      user: { getIdToken: () => Promise.resolve('tok-123') },
+    } as unknown as UserCredential);
+    mockedApi.mockResolvedValueOnce({ user: { id: 'u1' }, isRegistered: true });
+    renderLogin('/login?next=https://evil.example/');
+    await userEvent.click(screen.getByText('Iniciar sesión con Google'));
+    await waitFor(() => expect(screen.getByText('Dashboard OK')).toBeInTheDocument());
   });
 });

@@ -15,6 +15,34 @@
       "when": 1791579645914,
       "tag": "0001_add-room-status",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1791694622846,
+      "tag": "0002_room_media",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1791694669149,
+      "tag": "0003_guest_sessions",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791695104954,
+      "tag": "0004_videos",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791727586827,
+      "tag": "0005_users_provider_unique",
+      "breakpoints": true
     }
   ]
 }

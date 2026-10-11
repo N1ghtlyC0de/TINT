@@ -51,7 +51,7 @@ def test_three_hour_video_is_streamed_one_frame_at_a_time():
     assert entries[-1]["t_ms"] == (THREE_HOURS_S - 1) * 1000
     # Leer todo el stdout de golpe ocuparía ~466 MB; nunca se pide más de un fotograma.
     assert stdout.max_read == FRAME_SIZE
-    # Margen amplio para CI: en local son ~6 s (FFmpeg real domina el tiempo total).
+    # Margen amplio para CI: en local son ~3 s (FFmpeg real domina el tiempo total).
     assert elapsed < 60, f"{THREE_HOURS_S} fotogramas en {elapsed:.1f} s"
 
 

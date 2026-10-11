@@ -1,7 +1,7 @@
 # STATUS — media-worker
 
 Última revisión: 2026-10-11 · Rama: `feat/media-worker-probe`
-Tests: 98 passed · Cobertura: 100 % (245 stmts, 44 branches; mín. ≥ 85 %) · ruff: limpio
+Tests: 146 passed · Cobertura: 100 % (428 stmts, 74 branches; mín. ≥ 85 %) · ruff: limpio
 
 IDs oficiales según el documento "Dominio del worker" (no existe MED-BE-04).
 Flujo de estado oficial: `processing -> ready | failed`.
@@ -11,10 +11,10 @@ Flujo de estado oficial: `processing -> ready | failed`.
 | ID | Tarea | Estado | Evidencia |
 | :-- | :-- | :-- | :-- |
 | MED-BE-01 | Dockerfile y entorno (ffmpeg/ffprobe, conexiones a MinIO y SQL) | Hecha | `requirements.txt` (boto3, psycopg[binary]); `config.Settings.from_env`. Redis y el CLI (`__main__.py`) retirados el 2026-10-11; la imagen no tiene `CMD` hasta que exista la API |
-| MED-BE-02 | Listener/consumidor de eventos de subida | Retirada (2026-10-11) | El consumidor de Redis Streams se eliminó: el procesamiento lo invocará una API que llama a `pipeline.process_video`. La API está pendiente |
+| MED-BE-02 | Listener/consumidor de eventos de subida | Hecha (2026-10-11, rama `fix/flujo-completo`) | Retirado por la mañana y recuperado como adaptador: `consumer.py` + `jobs.py` + `__main__.py` hacen de "API" que llama a `process_video` sin modificarlo. Ver la decisión del 2026-10-11 (tarde) abajo |
 | MED-BE-03 | VideoInspector con ffprobe, metadatos y paso a `failed` | Hecha | `probe.inspect_status` + `repository.VideoRepository.mark_failed`; `pipeline.process_video` marca `failed` si el archivo está corrupto, no existe o FFmpeg falla; en ese caso no se sube nada al bucket |
 | MED-BE-05 | Persistir `ambilight.json` en el blob y transición a `ready` | Hecha | `ambilight.extract_ambilight` (FFmpeg `rgb24` 160×90 a 1 FPS en streaming), `storage.S3BlobStore.upload_file`/`put_json`, `repository.mark_ready` (guarda `storage_key`); vídeo y artefacto se suben antes de marcar `ready` |
-| MED-TEST-01 | Pruebas de estrés de procesamiento | Hecha | `tests/test_stress.py` (`-m stress`): vídeo de 3 h leído fotograma a fotograma (~6 s) y memoria acotada. Las ráfagas de eventos duplicados se retiraron junto con Redis |
+| MED-TEST-01 | Pruebas de estrés de procesamiento | Hecha | `tests/test_stress.py` (`-m stress`): vídeo de 3 h leído fotograma a fotograma (~3 s) y memoria acotada. Las ráfagas de eventos duplicados se retiraron junto con Redis |
 | MED-TEST-02 | Auditoría de cobertura ≥ 85 % | Hecha | 100 %; `fail_under = 85` |
 
 ## Sin ID oficial
@@ -48,11 +48,27 @@ Flujo de estado oficial: `processing -> ready | failed`.
 - **Errores:** `video_id` inválido → `InvalidVideoIdError`; fila inexistente → `VideoNotFoundError` (ninguno toca el estado). Fallos del vídeo (corrupto, inexistente, FFmpeg) → `failed`, no se sube nada y se devuelve `VideoStatus.FAILED`. Fallos de infraestructura (SQL, S3) → se propagan sin marcar `failed`, para que quien llama decida si reintenta.
 - **Esquema `videos`:** el worker no cambia el esquema, solo hace `UPDATE` de columnas existentes. Cualquier columna nueva se pide en un PR aparte al dominio dueño del esquema.
 
+- **Disparador recuperado (2026-10-11, tarde):** la subida directa del navegador al bucket es un requisito del producto, así que la "API" que llama a `process_video` es un adaptador dentro del worker: consume `media:uploads`, descarga el original de la zona de staging `incoming/{id}/original.<ext>` y llama a `process_video` tal cual. Se respeta "preprocesar antes de publicar": el original nunca está en `{id}/source.<ext>`; solo `process_video` publica ahí. El núcleo (`pipeline`, `repository`, `storage`, `Settings`) sigue sin conocer Redis: la configuración de Redis vive en `TriggerSettings`. `repository.get_video` añade un `SELECT` de `status` y `storage_key`. Servicio `media-worker` en `docker-compose.yml` y regla de ciclo de vida para `incoming/` en `minio-init`.
+
+## Rendimiento (2026-10-11)
+
+Medido con FFmpeg 8.1.1 real en local (4 núcleos con carga de fondo; scripts de medición fuera del repo). `ambilight.json` es idéntico byte a byte antes y después.
+
+| Vídeo (testsrc2, H.264) | Wall extracción | CPU ffmpeg | CPU Python | RSS ffmpeg / Python |
+| :-- | :-- | :-- | :-- | :-- |
+| 1080p30, 10 min (390 MB) | ~26 s (sin cambio) | ~90 s (sin cambio) | 0,27 s → 0,20 s | 122 MB / 21 MB |
+| 720p30, 1 h (1,2 GB) | ~39,5 s (sin cambio) | ~124 s (sin cambio) | 1,35 s → 0,83 s | 84 MB / 23 MB |
+| 3 h sintéticas (sin FFmpeg) | 12–14 s → 3–3,6 s | — | 2,82 s → 1,26 s | — |
+
+- `frame_colors` (160×90): 532–597 µs → 225–266 µs por fotograma (`itemgetter` + sumas por canal, sin bucle por fila).
+- **El coste está en decodificar el vídeo completo** (~99 % de la CPU): `fps=1` necesita todos los fotogramas H.264. Ninguna opción de FFmpeg que conserve la salida ayuda: `-an -sn -dn` (el muxer `rawvideo` ya ignora el audio), `-threads 1/2` (−25 % de RSS pero 1,9–3,4× más lento), `-thread_type slice` (3,5× más lento).
+- Descartado por cambiar la salida: `-skip_frame nokey` (1080p: 26 s → 1,2 s; 720p 1 h: 37 s → 3,6 s; muestrea keyframes, no el fotograma de cada segundo), `-skip_loop_filter all` (−16 % CPU en 1080p) y `scale` con `fast_bilinear`. Adoptar `nokey` sería una decisión de producto (colores algo distintos).
+- Descartado por no ayudar: `TransferConfig` de boto3 (MinIO local, 390 MB: subida ~1,0–1,1 s y bajada ~0,5 s con cualquier tamaño de parte/concurrencia), copia en servidor `incoming/ → source` (ahorra ~0,5 s pero cambia el contrato de `process_video` y deja de servir al normalizar), `readinto` en `read_frames` (< 7 % del tiempo Python) y unir `SELECT`/`UPDATE` (un viaje de ms frente a decenas de segundos).
+
 ## Decisiones abiertas
 
 1. **Quién crea la fila en `videos` con estado `processing`:** HU-MED-01 sugiere que la crea el worker, pero `AGENTS.md` dice que solo la transiciona. Propuesta: la crea quien atienda `POST /media` y el worker solo la actualiza. Confirmar con el equipo. **Implementado según la propuesta:** si la fila no existe, `process_video` lanza `VideoNotFoundError` sin procesar (cambiarlo a `INSERT` sería local a `repository.py`/`pipeline.py`).
 
 ## Fuera de este dominio / siguientes pasos
 
-- **API:** falta implementarla. Debe guardar el archivo recibido en local (no en el bucket), crear la fila, llamar a `process_video`, traducir `InvalidVideoIdError`/`VideoNotFoundError` a errores de cliente y borrar el archivo local al terminar. También debe definir el `CMD` de la imagen.
-- **`docker-compose.yml` (raíz):** no incluye el servicio del worker ni `DATABASE_URL` en `.env.example`; añadirlo es un cambio de infraestructura compartida (PR aparte). Además, `minio/minio:latest` ya no se puede descargar de Docker Hub (relacionado con la rama remota `fix/missing-minio-images`).
+- ~~API~~ y ~~`docker-compose.yml`~~: resueltos con el disparador (arriba). La imagen tiene `CMD ["python", "-m", "media_worker"]`.

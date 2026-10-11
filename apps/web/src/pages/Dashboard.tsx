@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { apiFetch, ApiError } from '../lib/api';
+import { apiFetch, ApiError, loginRedirectPath } from '../lib/api';
 import { toAbsoluteInviteLink } from '../lib/invite';
 import { Link, useNavigate } from 'react-router-dom';
 import { AppShell } from '../components/layout/AppShell';
@@ -21,7 +21,7 @@ export default function Dashboard() {
       .catch((e: unknown) => {
         if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
           localStorage.removeItem('tint_token');
-          navigate('/login');
+          navigate(loginRedirectPath('/dashboard'));
         } else {
           setError(e instanceof Error ? e.message : 'Error desconocido');
         }

@@ -22,6 +22,8 @@ export default function CreateRoom() {
   const [gone, setGone] = useState(false);
   const [saved, setSaved] = useState(false);
   const [notice, setNotice] = useState('');
+  /** Sala recién creada: el host entra directo como host (no por la invitación). */
+  const [createdRoomId, setCreatedRoomId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!roomId) return;
@@ -69,6 +71,7 @@ export default function CreateRoom() {
           body: JSON.stringify({ title }),
         });
         setInvitation(res.invitation);
+        setCreatedRoomId(res.room?.id ?? null);
         setCopied(false);
       }
     } catch (err) {
@@ -213,6 +216,14 @@ export default function CreateRoom() {
                 </div>
               </dl>
               <div className="mt-5 flex flex-wrap gap-3">
+                {!isManage && createdRoomId && (
+                  <Link
+                    to={`/watch/${createdRoomId}`}
+                    className="inline-flex items-center justify-center whitespace-nowrap rounded-full bg-tint-accent px-5 py-2.5 text-sm font-semibold text-tint-bg transition hover:bg-tint-accentHover active:scale-[0.98]"
+                  >
+                    Entrar a la sala
+                  </Link>
+                )}
                 <Button type="button" onClick={copyLink} variant="ghost">
                   {copied ? 'Copiado' : 'Copiar link'}
                 </Button>

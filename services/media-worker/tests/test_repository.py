@@ -40,3 +40,15 @@ def test_mark_failed_only_touches_status():
     assert "duration_ms" not in sql
     assert "storage_key" not in sql
     assert params == (VideoStatus.FAILED.value, "v1")
+
+
+def test_get_video_returns_status_and_storage_key():
+    conn = conn_returning(("processing", "incoming/v1/original.mp4"))
+    assert VideoRepository(conn).get_video("v1") == ("processing", "incoming/v1/original.mp4")
+    sql, params = conn.execute.call_args.args
+    assert sql == "SELECT status, storage_key FROM videos WHERE id = %s"
+    assert params == ("v1",)
+
+
+def test_get_video_returns_none_when_missing():
+    assert VideoRepository(conn_returning(None)).get_video("nope") is None

@@ -6,6 +6,8 @@ import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from redis.exceptions import ResponseError
+
 
 def fake_run(returncode=0, stdout="", stderr=""):
     return Mock(return_value=SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr))
@@ -89,3 +91,41 @@ class FakeBlobStore:
     def put_json(self, key, data):
         self.objects[key] = json.dumps(data, separators=(",", ":"))
         self.puts.append(key)
+
+
+class FakeRedis:
+    """Subconjunto de Redis Streams con un solo stream y grupo de consumidores."""
+
+    def __init__(self):
+        self.groups = set()
+        self.entries = []
+        self.delivered = 0
+        self.pending = {}
+        self.acks = []
+
+    def xgroup_create(self, name, groupname, id="$", mkstream=False):
+        if (name, groupname) in self.groups:
+            raise ResponseError("BUSYGROUP Consumer Group name already exists")
+        self.groups.add((name, groupname))
+
+    def xadd(self, name, fields):
+        message_id = f"{len(self.entries) + 1}-0"
+        self.entries.append((message_id, fields))
+        return message_id
+
+    def xreadgroup(self, groupname, consumername, streams, count=None, block=None):
+        ((stream, last_id),) = streams.items()
+        if last_id == "0":
+            batch = [(mid, fields) for mid, (_c, fields) in self.pending.items()][:count]
+        else:
+            batch = self.entries[self.delivered : self.delivered + count]
+            self.delivered += len(batch)
+            for mid, fields in batch:
+                self.pending[mid] = (consumername, fields)
+        return [[stream, batch]] if batch else []
+
+    def xack(self, name, groupname, *ids):
+        for mid in ids:
+            self.pending.pop(mid, None)
+            self.acks.append(mid)
+        return len(ids)

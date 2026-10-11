@@ -68,6 +68,22 @@ describe('CreateRoom', () => {
     });
   });
 
+  it('tras crear la sala ofrece entrar como host como acción principal', async () => {
+    mockedApi.mockResolvedValueOnce({
+      room: { id: 'r9' },
+      invitation: { code: 'abc123', link: '/invite/abc123', expiresAt: 'mañana' },
+    });
+    render(
+      <MemoryRouter>
+        <CreateRoom />
+      </MemoryRouter>,
+    );
+    await userEvent.type(screen.getByPlaceholderText('Título'), 'Noche de cine');
+    await userEvent.click(screen.getByText('Crear'));
+    const enter = await screen.findByRole('link', { name: 'Entrar a la sala' });
+    expect(enter).toHaveAttribute('href', '/watch/r9');
+  });
+
   it('muestra el error si la creación falla', async () => {
     mockedApi.mockRejectedValueOnce(new Error('Unauthorized'));
     render(

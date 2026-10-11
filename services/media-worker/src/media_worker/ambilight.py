@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import functools
 import subprocess
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from operator import itemgetter
 from typing import IO
 
 EDGE_RATIO = 0.10
@@ -88,27 +90,63 @@ def ffmpeg_frames_cmd(path: str, width: int = FRAME_WIDTH, height: int = FRAME_H
     ]
 
 
+def _region_slices(width: int, region: Region) -> list[slice]:
+    """Tramos de bytes de `region` en un fotograma `rgb24`; si ocupa filas enteras, uno solo."""
+    row_bytes = width * 3
+    if region.x == 0 and region.width == width:
+        return [slice(region.y * row_bytes, (region.y + region.height) * row_bytes)]
+    start, stop = region.x * 3, (region.x + region.width) * 3
+    return [
+        slice(y * row_bytes + start, y * row_bytes + stop)
+        for y in range(region.y, region.y + region.height)
+    ]
+
+
+def _region_reader(width: int, region: Region) -> Callable[[bytes], str]:
+    """Función que calcula el color de `region` sin bucles por fila ni por píxel en Python.
+
+    `itemgetter` recorta todas las filas en C y se concatenan en un solo `bytes`; cada canal se
+    suma con un corte de paso 3. Da exactamente las mismas sumas enteras que recorrer los píxeles.
+    """
+    slices = _region_slices(width, region)
+    pixels = region.width * region.height
+    if len(slices) == 1:
+        (only,) = slices
+
+        def strip(frame: bytes) -> bytes:
+            return frame[only]
+    else:
+        get_rows = itemgetter(*slices)
+
+        def strip(frame: bytes) -> bytes:
+            return b"".join(get_rows(frame))
+
+    def color(frame: bytes) -> str:
+        data = strip(frame)
+        return _hex(sum(data[0::3]), sum(data[1::3]), sum(data[2::3]), pixels)
+
+    return color
+
+
+@functools.lru_cache(maxsize=8)
+def _edge_readers(width: int, height: int) -> tuple[tuple[str, Callable[[bytes], str]], ...]:
+    """Lectores de las cuatro franjas, calculados una vez por tamaño de fotograma."""
+    return tuple(
+        (edge, _region_reader(width, region))
+        for edge, region in edge_regions(width, height).items()
+    )
+
+
 def region_color(frame: bytes, width: int, region: Region) -> str:
     """Color promedio hex de `region` dentro de un fotograma `rgb24` de ancho `width`."""
-    r_sum = g_sum = b_sum = 0
-    row_bytes = width * 3
-    for y in range(region.y, region.y + region.height):
-        start = y * row_bytes + region.x * 3
-        row = frame[start : start + region.width * 3]
-        r_sum += sum(row[0::3])
-        g_sum += sum(row[1::3])
-        b_sum += sum(row[2::3])
-    return _hex(r_sum, g_sum, b_sum, region.width * region.height)
+    return _region_reader(width, region)(frame)
 
 
 def frame_colors(frame: bytes, width: int, height: int) -> dict[str, str]:
     """Colores hex de las cuatro franjas de borde de un fotograma `rgb24`."""
     if len(frame) != width * height * 3:
         raise AmbilightError("tamaño de fotograma inesperado")
-    return {
-        edge: region_color(frame, width, region)
-        for edge, region in edge_regions(width, height).items()
-    }
+    return {edge: color(frame) for edge, color in _edge_readers(width, height)}
 
 
 def read_frames(stream: IO[bytes], frame_size: int) -> Iterator[bytes]:

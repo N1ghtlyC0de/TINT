@@ -1,15 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   buildChatSend,
+  buildReactionSend,
   buildSocialUrl,
   CHAT_HISTORY_LIMIT,
+  isReactionEmoji,
   parseSocialMessage,
   type ChatMessage,
   type PresenceNotice,
+  type ReactionBroadcast,
+  type ReactionEmoji,
 } from '../lib/socialSocket';
 
 /** Mensaje visible en el chat: texto o aviso de presencia. */
 export type SocialChatItem = ChatMessage | PresenceNotice;
+
+/** Tope de reacciones en memoria para el overlay (efímeras, fuera del chat). */
+export const REACTION_STREAM_LIMIT = 30;
 
 export type SocialStatus = 'connecting' | 'open' | 'reconnecting' | 'closed';
 
@@ -32,9 +39,7 @@ const SEEN_CAP = 200;
 
 function resolveBaseUrl(override?: string): string {
   if (override) return override;
-  const fromEnv = (import.meta as unknown as { env?: Record<string, string> }).env
-    ?.VITE_SOCIAL_WS_URL;
-  return fromEnv || 'ws://localhost:8082/ws/social';
+  return import.meta.env.VITE_SOCIAL_WS_URL || 'ws://localhost:8082/ws/social';
 }
 
 /**
@@ -44,6 +49,7 @@ function resolveBaseUrl(override?: string): string {
 export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocketOptions = {}) {
   const [status, setStatus] = useState<SocialStatus>('connecting');
   const [messages, setMessages] = useState<SocialChatItem[]>([]);
+  const [reactions, setReactions] = useState<ReactionBroadcast[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const attemptRef = useRef(0);
   const timerRef = useRef<number | null>(null);
@@ -69,6 +75,14 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
       if (remember(msg.event_id)) return;
       const max = optsRef.current.maxMessages ?? CHAT_HISTORY_LIMIT;
       setMessages((prev) => [...prev.slice(-(max - 1)), msg]);
+    },
+    [remember],
+  );
+
+  const pushReaction = useCallback(
+    (msg: ReactionBroadcast) => {
+      if (remember(msg.event_id)) return;
+      setReactions((prev) => [...prev.slice(-(REACTION_STREAM_LIMIT - 1)), msg]);
     },
     [remember],
   );
@@ -107,6 +121,8 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
           setMessages(parsed.messages.slice(-maxMessages));
         } else if (parsed.type === 'chat_message' || parsed.type === 'notice') {
           pushMessage(parsed);
+        } else if (parsed.type === 'reaction') {
+          pushReaction(parsed);
         }
         // Los errores (RATE_LIMITED, etc.) se ignoran en esta fase.
       };
@@ -140,7 +156,7 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [roomId, pushMessage, remember]);
+  }, [roomId, pushMessage, pushReaction, remember]);
 
   const send = useCallback(
     (text: string) => {
@@ -154,5 +170,16 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     [roomId],
   );
 
-  return { status, messages, send };
+  const sendReaction = useCallback(
+    (emoji: string, positionMs = 0) => {
+      if (!roomId || !isReactionEmoji(emoji)) return false;
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      ws.send(buildReactionSend(roomId, emoji as ReactionEmoji, positionMs));
+      return true;
+    },
+    [roomId],
+  );
+
+  return { status, messages, reactions, send, sendReaction };
 }

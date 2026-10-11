@@ -1,8 +1,8 @@
 // Package auth valida tokens de host (Firebase) e invitado para /ws/social.
 //
-// Fase 1: verifica firma HS256 de guest tokens (mismo JWT_SECRET de identity-api)
-// y acepta host tokens Firebase por estructura (iss/aud/exp) con verificación
-// completa de firma marcada como TODO (requiere JWKS RS256).
+// Guest tokens: HS256 con el JWT_SECRET compartido con identity-api.
+// Host tokens: Firebase ID tokens RS256 verificados contra los certificados
+// públicos de Google (ver firebase.go). Ante cualquier duda, se rechaza.
 package auth
 
 import (
@@ -22,6 +22,8 @@ type Claims struct {
 	Role    string
 	Nick    string
 	IsGuest bool
+	// JTI identifica el token HS256: permite revocarlo (token:revoked:{jti}).
+	JTI string
 }
 
 var (
@@ -31,18 +33,54 @@ var (
 	ErrWrongRoom    = errors.New("token no pertenece a esta sala")
 )
 
-type guestPayload struct {
-	Sub    string `json:"sub"`
-	RoomID string `json:"room_id"`
-	Role   string `json:"role"`
-	Nick   string `json:"nick"`
-	Exp    int64  `json:"exp"`
+// Valores por defecto del contrato JWT con identity-api (JWT_ISSUER/JWT_AUDIENCE).
+const (
+	DefaultIssuer   = "tint-identity"
+	DefaultAudience = "tint:room"
+)
+
+// GuestConfig es el contrato compartido con identity-api para tokens HS256.
+type GuestConfig struct {
+	Secret   string
+	Issuer   string // vacío = DefaultIssuer
+	Audience string // vacío = DefaultAudience
 }
 
-// VerifyGuest verifica un guest token HS256 emitido por identity-api.
-func VerifyGuest(token, secret, wantRoom string, now time.Time) (Claims, error) {
+type guestPayload struct {
+	Sub    string          `json:"sub"`
+	RoomID string          `json:"room_id"`
+	Role   string          `json:"role"`
+	Nick   string          `json:"nick"`
+	JTI    string          `json:"jti"`
+	Iss    string          `json:"iss"`
+	Aud    json.RawMessage `json:"aud"`
+	Exp    int64           `json:"exp"`
+}
+
+// hasAudience acepta aud como texto o arreglo de textos (RFC 7519 §4.1.3).
+func hasAudience(raw json.RawMessage, want string) bool {
+	var one string
+	if json.Unmarshal(raw, &one) == nil {
+		return one == want
+	}
+	var many []string
+	if json.Unmarshal(raw, &many) != nil {
+		return false
+	}
+	for _, a := range many {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
+// VerifyGuest verifica un token HS256 emitido por identity-api: firma, iss,
+// aud, exp obligatorio, sub y jti no vacíos y que sea de wantRoom.
+func VerifyGuest(token string, cfg GuestConfig, wantRoom string, now time.Time) (Claims, error) {
+	secret := cfg.Secret
 	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
+	if len(parts) != 3 || secret == "" {
 		return Claims{}, ErrInvalidToken
 	}
 	mac := hmac.New(sha256.New, []byte(secret))
@@ -59,63 +97,23 @@ func VerifyGuest(token, secret, wantRoom string, now time.Time) (Claims, error) 
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return Claims{}, ErrInvalidToken
 	}
-	if p.Sub == "" {
+	issuer, audience := cfg.Issuer, cfg.Audience
+	if issuer == "" {
+		issuer = DefaultIssuer
+	}
+	if audience == "" {
+		audience = DefaultAudience
+	}
+	if p.Sub == "" || p.JTI == "" || p.Iss != issuer || !hasAudience(p.Aud, audience) || p.Exp == 0 {
 		return Claims{}, ErrInvalidToken
 	}
-	if p.Exp > 0 && now.Unix() > p.Exp {
+	if now.Unix() > p.Exp {
 		return Claims{}, ErrExpired
 	}
 	if wantRoom != "" && p.RoomID != wantRoom {
 		return Claims{}, ErrWrongRoom
 	}
-	return Claims{Subject: p.Sub, RoomID: p.RoomID, Role: p.Role, Nick: p.Nick, IsGuest: true}, nil
-}
-
-// firebasePayload es el subset que nos interesa de un Firebase ID token.
-type firebasePayload struct {
-	Sub   string `json:"sub"`
-	Email string `json:"email"`
-	Name  string `json:"name"`
-	Exp   int64  `json:"exp"`
-	Iss   string `json:"iss"`
-	Aud   string `json:"aud"`
-}
-
-// ParseHostUnverified extrae claims de un Firebase ID token sin verificar firma.
-//
-// TODO(auth): verificar firma RS256 contra JWKS de Google antes de producción.
-func ParseHostUnverified(token, projectID string, now time.Time) (Claims, error) {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		return Claims{}, ErrInvalidToken
-	}
-	raw, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil {
-		return Claims{}, ErrInvalidToken
-	}
-	var p firebasePayload
-	if err := json.Unmarshal(raw, &p); err != nil {
-		return Claims{}, ErrInvalidToken
-	}
-	if p.Sub == "" {
-		return Claims{}, ErrInvalidToken
-	}
-	if projectID != "" {
-		if p.Aud != projectID || p.Iss != "https://securetoken.google.com/"+projectID {
-			return Claims{}, ErrInvalidToken
-		}
-	}
-	if p.Exp > 0 && now.Unix() > p.Exp {
-		return Claims{}, ErrExpired
-	}
-	nick := p.Name
-	if nick == "" {
-		nick = p.Email
-	}
-	if nick == "" {
-		nick = "Host"
-	}
-	return Claims{Subject: p.Sub, Nick: nick, Role: "host"}, nil
+	return Claims{Subject: p.Sub, RoomID: p.RoomID, Role: p.Role, Nick: p.Nick, IsGuest: true, JTI: p.JTI}, nil
 }
 
 // BearerToken extrae el token de un header Authorization o query ?token=.

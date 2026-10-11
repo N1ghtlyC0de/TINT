@@ -1,9 +1,9 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 
-export function BrandMark() {
+export function BrandMark({ to = '/dashboard' }: { to?: string }) {
   return (
-    <Link to="/dashboard" className="flex items-center gap-3" aria-label="TINT inicio">
+    <Link to={to} className="flex items-center gap-3" aria-label="TINT inicio">
       <span aria-hidden="true" className="grid h-9 w-9 place-items-center rounded-xl bg-tint-accent">
         <span className="block h-3.5 w-3.5 rounded-[4px] bg-tint-bg" />
       </span>

@@ -47,6 +47,24 @@ function lastSocket() {
   return FakeSocket.instances[FakeSocket.instances.length - 1];
 }
 
+describe('useSocialSocket — URL del canal', () => {
+  const create = (url: string) => new FakeSocket(url) as unknown as WebSocket;
+
+  it('usa VITE_SOCIAL_WS_URL si está definida', () => {
+    vi.stubEnv('VITE_SOCIAL_WS_URL', 'wss://social.test/ws/social');
+    renderHook(() => useSocialSocket('r1', { createSocket: create }));
+    expect(lastSocket().url.startsWith('wss://social.test/ws/social')).toBe(true);
+    vi.unstubAllEnvs();
+  });
+
+  it('por defecto apunta a social-core en el puerto 8082', () => {
+    vi.stubEnv('VITE_SOCIAL_WS_URL', '');
+    renderHook(() => useSocialSocket('r1', { createSocket: create }));
+    expect(lastSocket().url.startsWith('ws://localhost:8082/ws/social')).toBe(true);
+    vi.unstubAllEnvs();
+  });
+});
+
 describe('useSocialSocket', () => {
   it('conecta con room y token, carga historial y recibe mensajes', () => {
     localStorage.setItem('tint_guest_token', 'g123');
@@ -111,6 +129,32 @@ describe('useSocialSocket', () => {
     expect(result.current.send('  hola  ')).toBe(true);
     const payload = JSON.parse(lastSocket().sent[0]);
     expect(payload).toMatchObject({ type: 'chat_send', room_id: 'r1', text: 'hola' });
+  });
+
+  it('sendReaction envía reaction_send y acumula el broadcast aparte del chat', () => {
+    const { result } = renderHook(() =>
+      useSocialSocket('r1', {
+        createSocket: (url) => new FakeSocket(url) as unknown as WebSocket,
+      }),
+    );
+    expect(result.current.sendReaction('👏', 12000)).toBe(false); // aún CONNECTING
+    act(() => lastSocket().open());
+    expect(result.current.sendReaction('👏', 12000)).toBe(true);
+    expect(JSON.parse(lastSocket().sent[0])).toMatchObject({
+      type: 'reaction_send',
+      room_id: 'r1',
+      emoji: '👏',
+      position_ms: 12000,
+    });
+    expect(result.current.reactions).toHaveLength(0);
+    act(() => {
+      lastSocket().receive(
+        '{"type":"reaction","event_id":"e1","room_id":"r1","user_id":"u2","nick":"B","emoji":"👏","position_ms":12000,"occurred_at":"t","received_at":"t"}',
+      );
+    });
+    expect(result.current.reactions).toHaveLength(1);
+    expect(result.current.messages).toHaveLength(0);
+    expect(result.current.reactions[0]).toMatchObject({ type: 'reaction', emoji: '👏' });
   });
 
   it('reconecta con backoff exponencial tras un corte', () => {
