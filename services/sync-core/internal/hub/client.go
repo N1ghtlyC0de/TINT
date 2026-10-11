@@ -36,6 +36,11 @@ type Client struct {
 	// Rate limit por ventana fija; solo lo toca la goroutine lectora.
 	windowStartMs int64
 	windowCount   int
+
+	// Hasta encolar el STATE inicial, lo que llega por la sala se retiene
+	// (HU-SYNC-01: el STATE va primero). Protegidos por Hub.mu.
+	ready bool
+	held  [][]byte
 }
 
 func newClient(parent context.Context, claims auth.Claims, nowMs int64) *Client {
@@ -85,6 +90,20 @@ func (c *Client) Claims() auth.Claims { return c.claims }
 func (c *Client) RTT() int64 { return c.rttMs.Load() }
 
 // enqueue nunca bloquea: un cliente lento no puede frenar a los demás.
+// deliver encola un mensaje de la sala o lo retiene si el cliente aún no
+// recibió su STATE. Requiere Hub.mu.
+func (c *Client) deliver(msg []byte) {
+	if !c.ready {
+		if len(c.held) >= SendBuffer {
+			c.close(ErrSlowConsumer)
+			return
+		}
+		c.held = append(c.held, msg)
+		return
+	}
+	c.enqueue(msg)
+}
+
 func (c *Client) enqueue(msg []byte) {
 	if c.ctx.Err() != nil {
 		return

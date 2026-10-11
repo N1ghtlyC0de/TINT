@@ -247,7 +247,9 @@ func (h *Hub) snapshotClients() []*Client {
 	var out []*Client
 	for _, r := range h.rooms {
 		for c := range r.clients {
-			out = append(out, c)
+			if c.ready { // los que aún esperan su STATE los atiende Connect
+				out = append(out, c)
+			}
 		}
 	}
 	return out
@@ -367,7 +369,9 @@ func (h *Hub) applyDelegate(room, holder string) {
 		}
 		ev := baseEvent(syncevent.Control, room, now)
 		ev.CanControl = syncevent.Bool(c.claims.Sub == holder)
-		c.enqueueEvent(ev)
+		if raw, err := c.codec.Encode(ev); err == nil {
+			c.deliver(raw)
+		}
 	}
 }
 
@@ -450,6 +454,7 @@ func (h *Hub) Connect(parent context.Context, claims auth.Claims, opts ...ConnOp
 	ev.Online = syncevent.Bool(p.Online > 0)
 	ev.CanControl = syncevent.Bool(claims.CanControl() || (p.Delegate != "" && p.Delegate == claims.Sub))
 	c.enqueueEvent(ev)
+	h.release(c)
 	if _, err := h.sweep(ctx, room, nowMs); err != nil {
 		log.Printf("hub: barrido sala %s: %v", room, err)
 	}
@@ -527,14 +532,14 @@ func (h *Hub) Deliver(roomID string, payload []byte) {
 	var packed []byte
 	for c := range r.clients {
 		if c.codec == codec.JSON {
-			c.enqueue(payload)
+			c.deliver(payload)
 			continue
 		}
 		if packed == nil && parsed {
 			packed, _ = c.codec.Encode(ev)
 		}
 		if packed != nil {
-			c.enqueue(packed)
+			c.deliver(packed)
 		}
 	}
 }
@@ -658,6 +663,18 @@ func (h *Hub) Tick(c *Client) ([]byte, error) {
 	ev.RTTMs = c.RTT()
 	ev.DriftMs = c.lastDriftMs.Load()
 	return c.codec.Encode(ev)
+}
+
+// release marca al cliente como listo (ya tiene su STATE) y le entrega, en
+// orden, lo que llegó a la sala mientras se conectaba.
+func (h *Hub) release(c *Client) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	c.ready = true
+	for _, msg := range c.held {
+		c.enqueue(msg)
+	}
+	c.held = nil
 }
 
 func (h *Hub) join(ctx context.Context, c *Client) error {
