@@ -7,6 +7,7 @@ Eres el agente responsable del procesamiento multimedia asíncrono de **TINT**. 
 ## Stack Técnico
 
 - Python 3.11
+- Redis Streams (`redis==5.2.1`) solo en el disparador; el núcleo no depende de Redis
 - FFmpeg / ffprobe (instalados en la imagen Docker)
 - MinIO (Blob Storage) y PostgreSQL (estado del vídeo)
 - pytest + pytest-cov, ruff
@@ -17,6 +18,7 @@ Eres el agente responsable del procesamiento multimedia asíncrono de **TINT**. 
 - Extracción de paleta Ambilight por bordes (`src/media_worker/ambilight.py`).
 - Preprocesamiento del vídeo recibido (validación, normalización y Ambilight) antes de publicarlo en el bucket.
 - Transición de estado del vídeo y publicación de artefactos en el bucket.
+- Disparador: consumir `media:uploads` y procesar el original de `incoming/` (`consumer.py`, `jobs.py`, `__main__.py`).
 
 ## Límites de Dominio
 
@@ -29,7 +31,9 @@ Eres el agente responsable del procesamiento multimedia asíncrono de **TINT**. 
 | Entidad | Almacén | Campos clave |
 | :--- | :--- | :--- |
 | `videos` | PostgreSQL | `id`, `storage_key` (lo escribe el worker al publicar), `duration_ms`, `status` (`processing` → `ready` \| `failed`), `updated_at` |
+| `incoming/{video_id}/original.*` | MinIO (`tint-media`) | Original subido por el navegador (staging; lo lee el worker, caduca a los 2 días) |
 | `{video_id}/source.*` | MinIO (`tint-media`) | Vídeo preprocesado (nunca el original sin preprocesar) |
+| `media:uploads` | Redis Stream (grupo `media-workers`) | Evento `{video_id}` que publica identity-api al confirmar la subida |
 | `{video_id}/ambilight.json` | MinIO (`tint-media`) | `[{ "t_ms", "top", "bottom", "left", "right" }]` colores hex a 1 FPS |
 
 ## Reglas de Dominio

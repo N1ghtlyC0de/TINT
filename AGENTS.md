@@ -26,7 +26,7 @@ La documentación de features vive en [`docs/`](docs/README.md), con diagramas M
 2. **TDD obligatorio:** Red → Green → Refactor. Cobertura mínima **85 %** por servicio; el CI (`.github/workflows/ci-pipeline.yml`) bloquea el merge si no se cumple.
 3. **Conventional Commits en español:** `tipo(alcance): descripción`, con el dominio como alcance: `feat(sync-core): …`, `fix(identity-api): …`, `docs(web): …`, `perf(sync-core): …`, `ci: …`, `chore: …`. El cuerpo explica el *porqué* y, si hay mediciones, las incluye.
 4. **Ramas:** `main` (producción) y `develop` (integración) están protegidas. Trabaja en `feat/*`, `fix/*` o `chore/*` y abre el PR hacia `develop`.
-5. **Infraestructura local:** `docker compose up -d` (PostgreSQL, Redis, MinIO y sync-core). **Nunca subas `.env`** ni credenciales; documenta las variables nuevas en el `.env.example` correspondiente.
+5. **Infraestructura local:** `docker compose up -d` (PostgreSQL, Redis, MinIO, media-worker, social-core y sync-core). **Nunca subas `.env`** ni credenciales; documenta las variables nuevas en el `.env.example` correspondiente.
 6. **Verificación:** `make test-all` antes de abrir un PR, más los comandos propios del dominio.
 7. **Archivos ajenos:** los `.docx` de planeación en la raíz no se versionan. No los agregues a commits.
 8. **Dependencias:** no agregues dependencias sin justificarlas en el commit y en el Stack Técnico del `AGENTS.md` del dominio. Fija versiones exactas en Go y prefiere versiones exactas en npm.
@@ -40,7 +40,7 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 | `JWT_SECRET` / `JWT_ISSUER` / `JWT_AUDIENCE` | identity-api ↔ sync-core, social-core | `.env.example` raíz |
 | Protocolo del Canal Sync v2 | sync-core ↔ web | [sync-core/AGENTS.md](services/sync-core/AGENTS.md#protocolo-del-canal-sync) |
 | Revocación `token:revoked:{jti}` + `REVOKED` (cierre `4001`; token caducado `4003`) | identity-api → sync-core, social-core, web | [dominio-reproduccion §6.6](docs/dominio-reproduccion.md#66-retirar-a-un-invitado-f5) |
-| Stream `media:uploads` + tabla `videos` (`id`, `storage_key`, `duration_ms`, `status`) | identity-api → media-worker | [dominio-reproduccion §6.7](docs/dominio-reproduccion.md#67-subida-y-cambio-de-vídeo) |
+| Stream `media:uploads` + tabla `videos` (`id`, `storage_key`, `duration_ms`, `status`) + staging `incoming/{id}/original.*` (el worker publica `{id}/source.*` y reescribe `storage_key`) | identity-api → media-worker | [dominio-reproduccion §6.7](docs/dominio-reproduccion.md#67-subida-y-cambio-de-vídeo) |
 | Puertos locales: social-core 8082, sync-core 8083 | infra ↔ web | `docker-compose.yml`, `.env.example` de la web |
 | API REST `/api/v1` | identity-api → web | [identity-api/AGENTS.md](services/identity-api/AGENTS.md#api) |
 | Stream `analytics:events` (sin PII) | productores → analytics | [analytics/AGENTS.md](services/analytics/AGENTS.md) |

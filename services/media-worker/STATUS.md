@@ -11,7 +11,7 @@ Flujo de estado oficial: `processing -> ready | failed`.
 | ID | Tarea | Estado | Evidencia |
 | :-- | :-- | :-- | :-- |
 | MED-BE-01 | Dockerfile y entorno (ffmpeg/ffprobe, conexiones a MinIO y SQL) | Hecha | `requirements.txt` (boto3, psycopg[binary]); `config.Settings.from_env`. Redis y el CLI (`__main__.py`) retirados el 2026-10-11; la imagen no tiene `CMD` hasta que exista la API |
-| MED-BE-02 | Listener/consumidor de eventos de subida | Retirada (2026-10-11) | El consumidor de Redis Streams se eliminó: el procesamiento lo invocará una API que llama a `pipeline.process_video`. La API está pendiente |
+| MED-BE-02 | Listener/consumidor de eventos de subida | Hecha (2026-10-11, rama `fix/flujo-completo`) | Retirado por la mañana y recuperado como adaptador: `consumer.py` + `jobs.py` + `__main__.py` hacen de "API" que llama a `process_video` sin modificarlo. Ver la decisión del 2026-10-11 (tarde) abajo |
 | MED-BE-03 | VideoInspector con ffprobe, metadatos y paso a `failed` | Hecha | `probe.inspect_status` + `repository.VideoRepository.mark_failed`; `pipeline.process_video` marca `failed` si el archivo está corrupto, no existe o FFmpeg falla; en ese caso no se sube nada al bucket |
 | MED-BE-05 | Persistir `ambilight.json` en el blob y transición a `ready` | Hecha | `ambilight.extract_ambilight` (FFmpeg `rgb24` 160×90 a 1 FPS en streaming), `storage.S3BlobStore.upload_file`/`put_json`, `repository.mark_ready` (guarda `storage_key`); vídeo y artefacto se suben antes de marcar `ready` |
 | MED-TEST-01 | Pruebas de estrés de procesamiento | Hecha | `tests/test_stress.py` (`-m stress`): vídeo de 3 h leído fotograma a fotograma (~6 s) y memoria acotada. Las ráfagas de eventos duplicados se retiraron junto con Redis |
@@ -48,11 +48,12 @@ Flujo de estado oficial: `processing -> ready | failed`.
 - **Errores:** `video_id` inválido → `InvalidVideoIdError`; fila inexistente → `VideoNotFoundError` (ninguno toca el estado). Fallos del vídeo (corrupto, inexistente, FFmpeg) → `failed`, no se sube nada y se devuelve `VideoStatus.FAILED`. Fallos de infraestructura (SQL, S3) → se propagan sin marcar `failed`, para que quien llama decida si reintenta.
 - **Esquema `videos`:** el worker no cambia el esquema, solo hace `UPDATE` de columnas existentes. Cualquier columna nueva se pide en un PR aparte al dominio dueño del esquema.
 
+- **Disparador recuperado (2026-10-11, tarde):** la subida directa del navegador al bucket es un requisito del producto, así que la "API" que llama a `process_video` es un adaptador dentro del worker: consume `media:uploads`, descarga el original de la zona de staging `incoming/{id}/original.<ext>` y llama a `process_video` tal cual. Se respeta "preprocesar antes de publicar": el original nunca está en `{id}/source.<ext>`; solo `process_video` publica ahí. El núcleo (`pipeline`, `repository`, `storage`, `Settings`) sigue sin conocer Redis: la configuración de Redis vive en `TriggerSettings`. `repository.get_video` añade un `SELECT` de `status` y `storage_key`. Servicio `media-worker` en `docker-compose.yml` y regla de ciclo de vida para `incoming/` en `minio-init`.
+
 ## Decisiones abiertas
 
 1. **Quién crea la fila en `videos` con estado `processing`:** HU-MED-01 sugiere que la crea el worker, pero `AGENTS.md` dice que solo la transiciona. Propuesta: la crea quien atienda `POST /media` y el worker solo la actualiza. Confirmar con el equipo. **Implementado según la propuesta:** si la fila no existe, `process_video` lanza `VideoNotFoundError` sin procesar (cambiarlo a `INSERT` sería local a `repository.py`/`pipeline.py`).
 
 ## Fuera de este dominio / siguientes pasos
 
-- **API:** falta implementarla. Debe guardar el archivo recibido en local (no en el bucket), crear la fila, llamar a `process_video`, traducir `InvalidVideoIdError`/`VideoNotFoundError` a errores de cliente y borrar el archivo local al terminar. También debe definir el `CMD` de la imagen.
-- **`docker-compose.yml` (raíz):** no incluye el servicio del worker ni `DATABASE_URL` en `.env.example`; añadirlo es un cambio de infraestructura compartida (PR aparte). Además, `minio/minio:latest` ya no se puede descargar de Docker Hub (relacionado con la rama remota `fix/missing-minio-images`).
+- ~~API~~ y ~~`docker-compose.yml`~~: resueltos con el disparador (arriba). La imagen tiene `CMD ["python", "-m", "media_worker"]`.

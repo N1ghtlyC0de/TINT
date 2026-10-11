@@ -186,18 +186,18 @@ sequenceDiagram
     W->>ID: POST /rooms/:id/media/uploads {filename, contentType, sizeBytes}
     ID->>PG: INSERT videos (status pending)
     ID-->>W: uploadUrl (PUT firmado) + videoId
-    W->>MI: PUT {videoId}/source.mp4 (con progreso)
+    W->>MI: PUT incoming/{videoId}/original.mp4 (staging, con progreso)
     W->>ID: POST /rooms/:id/media/uploads/:videoId/complete
-    ID->>MI: HEAD (¿llegó el objeto?)
+    ID->>MI: HEAD (¿llegó? ¿tamaño correcto?)
+    ID->>PG: videos.status pending → processing
     ID->>R: XADD media:uploads video_id
     ID->>PG: rooms.media_id = videoId
     ID-->>W: mediaId
     R-->>MW: XREADGROUP (grupo media-workers)
-    MW->>PG: videos.status = processing
-    MW->>MI: descarga el original
+    MW->>MI: descarga incoming/{videoId}/original.mp4
     MW->>MW: ffprobe + paleta Ambilight
-    MW->>MI: PUT {videoId}/ambilight.json
-    MW->>PG: status = ready, duration_ms
+    MW->>MI: PUT {videoId}/source.mp4 + {videoId}/ambilight.json
+    MW->>PG: status ready, duration_ms, storage_key publicado
     MW->>R: XACK
     end
 
@@ -246,11 +246,11 @@ sequenceDiagram
 | :--- | :--- | :--- |
 | Sesión del Host | web + Firebase + identity-api | `users` (PostgreSQL) |
 | Crear sala e invitación | identity-api | `rooms`, `invitations` |
-| Subir vídeo | web → **MinIO directo** (PUT firmado por identity-api) | objeto `{videoId}/source.*`, fila `videos` (pending) |
-| Confirmar subida | identity-api | `XADD media:uploads`, `rooms.media_id` |
-| Procesar vídeo | media-worker | `videos.status`/`duration_ms`, `{videoId}/ambilight.json` |
+| Subir vídeo | web → **MinIO directo** (PUT firmado por identity-api) | original en `incoming/{videoId}/original.*` (staging, caduca a los 2 días), fila `videos` (pending) |
+| Confirmar subida | identity-api | `videos.status` processing, `XADD media:uploads`, `rooms.media_id` |
+| Procesar vídeo | media-worker | Si es válido publica `{videoId}/source.*` y `{videoId}/ambilight.json`; `videos.status` ready/failed, `duration_ms`, `storage_key` |
 | Unirse con el link | identity-api | `guest_sessions`, guest token |
-| Reproducir | web ← **MinIO** (GET firmado por identity-api) | — |
+| Reproducir | web ← **MinIO** (GET firmado de `videos.storage_key`: el original mientras se procesa, la versión publicada al quedar ready; un vídeo failed no se sirve) | — |
 | Sincronizar | sync-core | `room:{id}:sync_state`, Pub/Sub `room:{id}:sync` |
 | Chatear | social-core | `room:{id}:chat:history`, Pub/Sub `room:{id}:social` |
 | Medir | sync-core / social-core → analytics | Stream `analytics:events` |
@@ -331,21 +331,20 @@ Esquemas de tokens, matriz de permisos y flujos de login, invitación y retiro e
 **Requisitos:** Docker, Go 1.22+, Python 3.11+, Node.js 22+ y FFmpeg (para el media-worker fuera de Docker).
 
 ```bash
-# 1. Clonar e infraestructura (PostgreSQL, Redis, MinIO + bucket, social-core :8082, sync-core :8083)
+# 1. Clonar e infraestructura (PostgreSQL, Redis, MinIO + bucket, media-worker, social-core :8082, sync-core :8083)
 git clone https://github.com/HanamDavid/tint-monorepo.git && cd tint-monorepo
 cp .env.example .env
 docker compose up -d
 
-# 2. identity-api (:8081): dependencias, migraciones 0000–0004 y servidor
+# 2. identity-api (:8081): dependencias, migraciones 0000–0005 y servidor
+#    (el media-worker de docker compose necesita la tabla videos: migra antes de subir vídeos)
 cd services/identity-api
 cp .env.example .env            # define FIREBASE_PROJECT_ID
 npm ci && npx drizzle-kit migrate && npm run dev
 
-# 3. media-worker: consumidor de media:uploads (ffprobe + Ambilight)
-cd services/media-worker
-pip install -r requirements.txt
-DATABASE_URL=postgresql://tint:tint@localhost:5432/tint S3_ENDPOINT_URL=http://localhost:9000 \
-  S3_ACCESS_KEY=tintadmin S3_SECRET_KEY=tintadmin123 PYTHONPATH=src python -m media_worker --consume
+# 3. media-worker: ya corre en docker compose (`docker logs -f tint-media-worker`).
+#    Para desarrollarlo fuera de Docker: pip install -r requirements-dev.txt y
+#    DATABASE_URL=… S3_ACCESS_KEY=… S3_SECRET_KEY=… PYTHONPATH=src python -m media_worker
 
 # 4. web (:5173)
 cd apps/web
@@ -358,7 +357,7 @@ cd services/identity-api && WAIT_WORKER=1 npm run test:integration
 ```
 
 > [!IMPORTANT]
-> El consumidor `--consume` del media-worker llega con la rama `feat/media-worker-probe`. Sin el worker, el vídeo se reproduce igual desde el original; solo queda en `pending` y sin Ambilight.
+> Sin el media-worker el vídeo se reproduce igual desde el original de `incoming/`, pero queda en `processing` y sin Ambilight. Si el worker lo rechaza (archivo corrupto) queda `failed` y no se sirve.
 
 | Servicio local | URL |
 | :--- | :--- |
@@ -463,7 +462,7 @@ erDiagram
         uuid id PK "= video_id en media:uploads"
         uuid room_id FK
         uuid uploaded_by FK
-        text storage_key "{id}/source.ext"
+        text storage_key "incoming/{id}/original.ext → {id}/source.ext"
         varchar content_type
         bigint size_bytes
         integer duration_ms "lo escribe media-worker"

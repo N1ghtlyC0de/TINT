@@ -124,7 +124,7 @@ erDiagram
         uuid id PK "= video_id de media:uploads"
         uuid room_id FK
         uuid uploaded_by FK "nullable"
-        text storage_key "{id}/source.ext"
+        text storage_key "incoming/{id}/original.ext → {id}/source.ext"
         varchar content_type
         bigint size_bytes
         integer duration_ms "lo escribe media-worker"
