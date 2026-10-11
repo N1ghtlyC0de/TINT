@@ -200,6 +200,35 @@ describe('SyncedPlayer — aplicar estado', () => {
     expect(screen.getByRole('button', { name: 'Unirse a la reproducción' })).toBeInTheDocument();
   });
 
+  it('si la sala se pausa, retira el botón de unirse', async () => {
+    playSpy.mockRejectedValueOnce(new DOMException('blocked', 'NotAllowedError'));
+    const { rerender, videoRef } = renderPlayer({ sync: makeSync({ state: playingState }) });
+    await screen.findByRole('button', { name: 'Unirse a la reproducción' });
+    rerender(
+      <SyncedPlayer
+        src={SRC}
+        canControl
+        sync={makeSync({ state: { ...playingState, status: 'paused', version: 3 } })}
+        videoRef={videoRef}
+        now={() => 0}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: 'Unirse a la reproducción' })).not.toBeInTheDocument();
+  });
+
+  it('unirse re-aplica el estado maestro: salta a la posición actual y reproduce', async () => {
+    playSpy.mockRejectedValueOnce(new DOMException('blocked', 'NotAllowedError'));
+    let t = 0;
+    renderPlayer({ sync: makeSync({ state: playingState }), now: () => t });
+    const join = await screen.findByRole('button', { name: 'Unirse a la reproducción' });
+    // El usuario tarda 5 s en pulsar: debe entrar en el segundo actual, no en el de antes.
+    t = 5_000;
+    await act(async () => {
+      fireEvent.click(join);
+    });
+    expect(video().currentTime).toBeCloseTo(15);
+    expect(playSpy).toHaveBeenCalledTimes(2);
+  });
   it('tolera play() sin promesa (navegadores antiguos)', () => {
     playSpy.mockReturnValue(undefined as unknown as Promise<void>);
     renderPlayer({ sync: makeSync({ state: playingState }) });

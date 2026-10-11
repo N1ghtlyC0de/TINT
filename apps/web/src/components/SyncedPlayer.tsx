@@ -119,6 +119,8 @@ export function SyncedPlayer({
         tryPlay(video);
       } else {
         video.pause();
+        // Sala en pausa: no hay nada a lo que unirse (y no debe poder arrancarla).
+        setNeedsGesture(false);
       }
     },
     [cancelRateCorrection, fade, tryPlay],
@@ -216,9 +218,12 @@ export function SyncedPlayer({
     onToggleHelp: () => setShowHelp((v) => !v),
   });
 
+  // Re-aplica el estado maestro vigente: solo reproduce si la sala está reproduciendo
+  // (si no, alinea la posición) y entra en el segundo actual, no en el del bloqueo.
   const joinPlayback = () => {
     const video = videoRef.current;
-    if (video) tryPlay(video);
+    const snap = stateRef.current;
+    if (video && snap) applyMaster(video, snap);
   };
 
   const rateOptions: number[] = RATE_OPTIONS.includes(currentRate as (typeof RATE_OPTIONS)[number])
