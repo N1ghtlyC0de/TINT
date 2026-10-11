@@ -65,12 +65,36 @@ services:
     entrypoint: >
       /bin/sh -c "
       mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
-      mc mb --ignore-existing local/$${MINIO_BUCKET}
+      mc mb --ignore-existing local/$${MINIO_BUCKET} &&
+      echo '{\"Rules\":[{\"ID\":\"incoming-expira\",\"Status\":\"Enabled\",\"Filter\":{\"Prefix\":\"incoming/\"},\"Expiration\":{\"Days\":2}}]}' |
+      mc ilm import local/$${MINIO_BUCKET}
       "
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-tintadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-tintadmin123}
       MINIO_BUCKET: ${MINIO_BUCKET:-tint-media}
+
+  # Media worker (Python + FFmpeg): consume media:uploads, valida el vídeo subido
+  # a incoming/, extrae el Ambilight y publica {id}/source.<ext> + ambilight.json.
+  media-worker:
+    build: ./services/media-worker
+    container_name: tint-media-worker
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tint}:${POSTGRES_PASSWORD:-tint}@postgres:5432/${POSTGRES_DB:-tint}
+      REDIS_URL: redis://redis:6379
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-tintadmin}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-tintadmin123}
+      MINIO_BUCKET: ${MINIO_BUCKET:-tint-media}
+      MEDIA_WORKER_CONSUMER: media-worker-1
 
   # Canal Social (/ws/social): chat en vivo con historial corto en Redis.
   social-core:
