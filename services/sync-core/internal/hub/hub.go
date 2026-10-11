@@ -644,6 +644,12 @@ func (h *Hub) handleSyncCheck(ctx context.Context, c *Client, ev syncevent.Event
 	out.Strategy = string(corr.Strategy)
 	out.DriftMs = corr.DriftMs
 	out.Version = corr.Version
+	// Estado de la sala en esa versión: un cliente que perdió un broadcast
+	// (p. ej. reconexión del Pub/Sub) puede reconciliar status, velocidad y
+	// vídeo. Campos opcionales: los clientes que no los conocen los ignoran.
+	out.Status = string(st.Status)
+	out.Rate = st.Rate
+	out.MediaID = st.MediaID
 	c.enqueueEvent(out)
 	h.tel.EmitDrift(telemetry.DriftSample{
 		RoomID: room, DriftMs: corr.DriftMs, RTTMs: rtt, Strategy: string(corr.Strategy),

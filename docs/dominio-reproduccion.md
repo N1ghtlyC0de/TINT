@@ -414,11 +414,13 @@ sequenceDiagram
         C->>H: SYNC_CHECK { echo_server_ts, position_ms }
         H->>H: RTT EWMA con el reloj del servidor<br/>drift = pos − PositionAt(recv − RTT/2)
         alt |drift| > 500 ms
-            H-->>C: SYNC_CORRECTION { target_ms, strategy }
+            H-->>C: SYNC_CORRECTION { target_ms, strategy, version, status, rate, media_id }
             H-)T: sync_drift (no bloqueante)
         end
     end
 ```
+
+`SYNC_CORRECTION` incluye, además de `target_ms`, `strategy`, `drift_ms` y `version`, los campos opcionales `status`, `rate` (velocidad de la sala) y `media_id` del estado en esa `version`. Un cliente que perdió un broadcast (p. ej. por una reconexión del Pub/Sub) puede usarlos para reconciliar estado y vídeo; los clientes que no los conocen los ignoran. La web aún no los aplica.
 
 ```mermaid
 flowchart TD
