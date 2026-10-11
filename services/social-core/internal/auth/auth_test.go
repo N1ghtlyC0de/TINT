@@ -18,35 +18,84 @@ func signGuest(payload map[string]any, secret string) string {
 	return header + "." + body + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
+var guestCfg = GuestConfig{Secret: "secret", Issuer: "tint-identity", Audience: "tint:room"}
+
+func guestClaims(now time.Time, mutate func(map[string]any)) map[string]any {
+	c := map[string]any{
+		"sub": "guest:1", "room_id": "r1", "role": "participant", "nick": "Invitado",
+		"jti": "jti-1", "iss": "tint-identity", "aud": "tint:room",
+		"iat": now.Unix(), "exp": now.Add(time.Hour).Unix(),
+	}
+	if mutate != nil {
+		mutate(c)
+	}
+	return c
+}
+
 func TestVerifyGuestOKAndWrongRoom(t *testing.T) {
 	now := time.Now()
-	token := signGuest(map[string]any{
-		"sub": "guest:1", "room_id": "r1", "role": "participant",
-		"nick": "Invitado", "exp": now.Add(time.Hour).Unix(),
-	}, "secret")
-	got, err := VerifyGuest(token, "secret", "r1", now)
+	token := signGuest(guestClaims(now, nil), "secret")
+	got, err := VerifyGuest(token, guestCfg, "r1", now)
 	if err != nil {
 		t.Fatalf("VerifyGuest = %v", err)
 	}
-	if got.Subject != "guest:1" || !got.IsGuest || got.Nick != "Invitado" {
+	if got.Subject != "guest:1" || !got.IsGuest || got.Nick != "Invitado" || got.JTI != "jti-1" {
 		t.Fatalf("claims = %+v", got)
 	}
-	if _, err := VerifyGuest(token, "secret", "otra", now); err != ErrWrongRoom {
+	if _, err := VerifyGuest(token, guestCfg, "otra", now); err != ErrWrongRoom {
 		t.Fatalf("sala distinta debe dar ErrWrongRoom, got %v", err)
 	}
-	if _, err := VerifyGuest(token, "otra", "r1", now); err != ErrInvalidToken {
+	bad := guestCfg
+	bad.Secret = "otra"
+	if _, err := VerifyGuest(token, bad, "r1", now); err != ErrInvalidToken {
 		t.Fatalf("firma mala debe dar ErrInvalidToken, got %v", err)
 	}
-	expired := signGuest(map[string]any{"sub": "g", "room_id": "r1", "exp": now.Add(-time.Hour).Unix()}, "secret")
-	if _, err := VerifyGuest(expired, "secret", "r1", now); err != ErrExpired {
+	expired := signGuest(guestClaims(now, func(c map[string]any) { c["exp"] = now.Add(-time.Hour).Unix() }), "secret")
+	if _, err := VerifyGuest(expired, guestCfg, "r1", now); err != ErrExpired {
 		t.Fatalf("expirado debe dar ErrExpired, got %v", err)
+	}
+	// aud como arreglo (RFC 7519) también vale si contiene la audiencia.
+	arr := signGuest(guestClaims(now, func(c map[string]any) { c["aud"] = []string{"otra", "tint:room"} }), "secret")
+	if _, err := VerifyGuest(arr, guestCfg, "r1", now); err != nil {
+		t.Fatalf("aud arreglo = %v", err)
+	}
+}
+
+// Sin jti el token no se puede revocar; sin iss/aud/exp no es de identity-api.
+func TestVerifyGuestRequiresRegisteredClaims(t *testing.T) {
+	now := time.Now()
+	cases := map[string]func(map[string]any){
+		"sin jti":        func(c map[string]any) { delete(c, "jti") },
+		"sin exp":        func(c map[string]any) { delete(c, "exp") },
+		"iss ajeno":      func(c map[string]any) { c["iss"] = "otro" },
+		"sin iss":        func(c map[string]any) { delete(c, "iss") },
+		"aud ajena":      func(c map[string]any) { c["aud"] = "otra" },
+		"aud arreglo":    func(c map[string]any) { c["aud"] = []string{"otra"} },
+		"aud no texto":   func(c map[string]any) { c["aud"] = 3 },
+		"sin sub":        func(c map[string]any) { c["sub"] = "" },
+		"payload basura": func(c map[string]any) { c["exp"] = "mañana" },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := VerifyGuest(signGuest(guestClaims(now, mutate), "secret"), guestCfg, "r1", now); err == nil {
+				t.Fatal("debe fallar")
+			}
+		})
+	}
+}
+
+func TestGuestConfigDefaults(t *testing.T) {
+	now := time.Now()
+	token := signGuest(guestClaims(now, nil), "secret")
+	if _, err := VerifyGuest(token, GuestConfig{Secret: "secret"}, "r1", now); err != nil {
+		t.Fatalf("iss/aud por defecto (tint-identity, tint:room) = %v", err)
 	}
 }
 
 func TestVerifyGuestRejectsEmptySecret(t *testing.T) {
 	now := time.Now()
-	token := signGuest(map[string]any{"sub": "g", "room_id": "r1", "exp": now.Add(time.Hour).Unix()}, "")
-	if _, err := VerifyGuest(token, "", "r1", now); err != ErrInvalidToken {
+	token := signGuest(guestClaims(now, nil), "")
+	if _, err := VerifyGuest(token, GuestConfig{}, "r1", now); err != ErrInvalidToken {
 		t.Fatalf("secreto vacío debe fallar cerrado, got %v", err)
 	}
 }

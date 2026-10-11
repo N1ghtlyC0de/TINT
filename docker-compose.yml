@@ -82,6 +82,8 @@ services:
       SOCIAL_CORE_ADDR: ":8082"
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
+      JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-tint-login}
       # Orígenes (host[:puerto]) que pueden abrir /ws/social.
       ALLOWED_ORIGINS: ${SOCIAL_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173}

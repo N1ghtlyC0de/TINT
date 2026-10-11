@@ -58,6 +58,8 @@ func DefaultDeps(getenv func(string) string) *Deps {
 		Hub:               hub,
 		History:           history,
 		JWTSecret:         getenv("JWT_SECRET"),
+		JWTIssuer:         or(getenv("JWT_ISSUER"), auth.DefaultIssuer),
+		JWTAudience:       or(getenv("JWT_AUDIENCE"), auth.DefaultAudience),
 		FirebaseProjectID: getenv("FIREBASE_PROJECT_ID"),
 		HostKeys:          auth.NewGoogleCerts("", nil),
 		AllowedOrigins:    splitList(or(getenv("ALLOWED_ORIGINS"), defaultOrigins)),
@@ -68,9 +70,10 @@ func DefaultDeps(getenv func(string) string) *Deps {
 		d.Publish = func(ctx context.Context, roomID string, msg socialevent.ChatMessage) error {
 			return st.Publish(ctx, roomID, msg)
 		}
-		d.Subscribe = func(ctx context.Context, roomID string) (<-chan socialevent.ChatMessage, func()) {
+		d.Subscribe = func(ctx context.Context, roomID string) (<-chan chat.Inbound, func()) {
 			return st.Subscribe(ctx, roomID)
 		}
+		d.IsRevoked = st.IsRevoked
 		d.Track = func(ctx context.Context, roomID string, length int, eventID string, occurredAt time.Time) {
 			go func() {
 				tctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)

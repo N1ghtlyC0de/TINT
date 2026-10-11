@@ -20,8 +20,14 @@ import (
 
 func guestToken(t *testing.T, secret, sub, room string, exp time.Time) string {
 	t.Helper()
+	return guestTokenAs(t, secret, sub, "Invitado", room, exp)
+}
+
+// signGuestToken firma claims HS256 como identity-api (incluye jti/iss/aud).
+func signGuestToken(t *testing.T, secret string, claims map[string]any) string {
+	t.Helper()
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
-	raw, _ := json.Marshal(map[string]any{"sub": sub, "room_id": room, "role": "participant", "nick": "Invitado", "exp": exp.Unix()})
+	raw, _ := json.Marshal(claims)
 	body := base64.RawURLEncoding.EncodeToString(raw)
 	mac := hmac.New(sha256.New, []byte(secret))
 	_, _ = mac.Write([]byte(header + "." + body))

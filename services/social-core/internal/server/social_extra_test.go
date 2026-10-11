@@ -100,13 +100,14 @@ func TestSocialCallsPublishTrackAndRemote(t *testing.T) {
 	now := time.Now().UTC()
 	deps.Publish = func(_ context.Context, _ string, _ socialevent.ChatMessage) error { published++; return nil }
 	deps.Track = func(_ context.Context, _ string, _ int, _ string, _ time.Time) { tracked++ }
-	deps.Subscribe = func(_ context.Context, _ string) (<-chan socialevent.ChatMessage, func()) {
-		out := make(chan socialevent.ChatMessage, 4)
-		out <- socialevent.ChatMessage{
+	deps.Subscribe = func(_ context.Context, _ string) (<-chan chat.Inbound, func()) {
+		out := make(chan chat.Inbound, 4)
+		raw, _ := json.Marshal(socialevent.ChatMessage{
 			EventID: "rem-1", Type: socialevent.TypeChatMessage, RoomID: "r1",
 			UserID: "otro", Nick: "Remoto", Text: "desde otra réplica",
 			OccurredAt: now, ReceivedAt: now,
-		}
+		})
+		out <- chat.Inbound{EventID: "rem-1", Payload: raw}
 		return out, func() {}
 	}
 	srv := httptest.NewServer(NewRouterWithDeps(deps))

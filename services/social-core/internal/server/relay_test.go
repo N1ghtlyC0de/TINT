@@ -38,9 +38,9 @@ func TestRelaySharedAndReleased(t *testing.T) {
 	deps := &Deps{
 		Hub:     chat.NewHub(),
 		History: chat.NewMemoryStore(10),
-		Subscribe: func(ctx context.Context, _ string) (<-chan socialevent.ChatMessage, func()) {
+		Subscribe: func(ctx context.Context, _ string) (<-chan chat.Inbound, func()) {
 			atomic.AddInt64(&subscribes, 1)
-			out := make(chan socialevent.ChatMessage)
+			out := make(chan chat.Inbound)
 			stopped := make(chan struct{})
 			go func() {
 				select {
@@ -49,7 +49,7 @@ func TestRelaySharedAndReleased(t *testing.T) {
 				}
 			}()
 			_ = out
-			ch := make(chan socialevent.ChatMessage)
+			ch := make(chan chat.Inbound)
 			return ch, func() { close(stopped) }
 		},
 	}
@@ -103,10 +103,10 @@ func TestRelayConcurrentAcquireSingleSubscribe(t *testing.T) {
 	deps := &Deps{
 		Hub:     chat.NewHub(),
 		History: chat.NewMemoryStore(10),
-		Subscribe: func(ctx context.Context, _ string) (<-chan socialevent.ChatMessage, func()) {
+		Subscribe: func(ctx context.Context, _ string) (<-chan chat.Inbound, func()) {
 			atomic.AddInt64(&subscribes, 1)
 			time.Sleep(20 * time.Millisecond) // ventana para colisiones
-			return make(chan socialevent.ChatMessage), func() {}
+			return make(chan chat.Inbound), func() {}
 		},
 	}
 	const n = 8

@@ -22,6 +22,8 @@ type Claims struct {
 	Role    string
 	Nick    string
 	IsGuest bool
+	// JTI identifica el token HS256: permite revocarlo (token:revoked:{jti}).
+	JTI string
 }
 
 var (
@@ -31,16 +33,52 @@ var (
 	ErrWrongRoom    = errors.New("token no pertenece a esta sala")
 )
 
-type guestPayload struct {
-	Sub    string `json:"sub"`
-	RoomID string `json:"room_id"`
-	Role   string `json:"role"`
-	Nick   string `json:"nick"`
-	Exp    int64  `json:"exp"`
+// Valores por defecto del contrato JWT con identity-api (JWT_ISSUER/JWT_AUDIENCE).
+const (
+	DefaultIssuer   = "tint-identity"
+	DefaultAudience = "tint:room"
+)
+
+// GuestConfig es el contrato compartido con identity-api para tokens HS256.
+type GuestConfig struct {
+	Secret   string
+	Issuer   string // vacío = DefaultIssuer
+	Audience string // vacío = DefaultAudience
 }
 
-// VerifyGuest verifica un guest token HS256 emitido por identity-api.
-func VerifyGuest(token, secret, wantRoom string, now time.Time) (Claims, error) {
+type guestPayload struct {
+	Sub    string          `json:"sub"`
+	RoomID string          `json:"room_id"`
+	Role   string          `json:"role"`
+	Nick   string          `json:"nick"`
+	JTI    string          `json:"jti"`
+	Iss    string          `json:"iss"`
+	Aud    json.RawMessage `json:"aud"`
+	Exp    int64           `json:"exp"`
+}
+
+// hasAudience acepta aud como texto o arreglo de textos (RFC 7519 §4.1.3).
+func hasAudience(raw json.RawMessage, want string) bool {
+	var one string
+	if json.Unmarshal(raw, &one) == nil {
+		return one == want
+	}
+	var many []string
+	if json.Unmarshal(raw, &many) != nil {
+		return false
+	}
+	for _, a := range many {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
+// VerifyGuest verifica un token HS256 emitido por identity-api: firma, iss,
+// aud, exp obligatorio, sub y jti no vacíos y que sea de wantRoom.
+func VerifyGuest(token string, cfg GuestConfig, wantRoom string, now time.Time) (Claims, error) {
+	secret := cfg.Secret
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 || secret == "" {
 		return Claims{}, ErrInvalidToken
@@ -59,16 +97,23 @@ func VerifyGuest(token, secret, wantRoom string, now time.Time) (Claims, error) 
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return Claims{}, ErrInvalidToken
 	}
-	if p.Sub == "" {
+	issuer, audience := cfg.Issuer, cfg.Audience
+	if issuer == "" {
+		issuer = DefaultIssuer
+	}
+	if audience == "" {
+		audience = DefaultAudience
+	}
+	if p.Sub == "" || p.JTI == "" || p.Iss != issuer || !hasAudience(p.Aud, audience) || p.Exp == 0 {
 		return Claims{}, ErrInvalidToken
 	}
-	if p.Exp > 0 && now.Unix() > p.Exp {
+	if now.Unix() > p.Exp {
 		return Claims{}, ErrExpired
 	}
 	if wantRoom != "" && p.RoomID != wantRoom {
 		return Claims{}, ErrWrongRoom
 	}
-	return Claims{Subject: p.Sub, RoomID: p.RoomID, Role: p.Role, Nick: p.Nick, IsGuest: true}, nil
+	return Claims{Subject: p.Sub, RoomID: p.RoomID, Role: p.Role, Nick: p.Nick, IsGuest: true, JTI: p.JTI}, nil
 }
 
 // BearerToken extrae el token de un header Authorization o query ?token=.

@@ -22,13 +22,20 @@ import (
 
 // Deps son las dependencias del endpoint social (inyectables en tests).
 type Deps struct {
-	Hub       *chat.Hub
-	History   chat.Store
-	Publish   func(ctx context.Context, roomID string, msg socialevent.ChatMessage) error
-	Track     func(ctx context.Context, roomID string, messageLength int, eventID string, occurredAt time.Time)
-	Subscribe func(ctx context.Context, roomID string) (<-chan socialevent.ChatMessage, func())
+	Hub     *chat.Hub
+	History chat.Store
+	Publish func(ctx context.Context, roomID string, msg socialevent.ChatMessage) error
+	Track   func(ctx context.Context, roomID string, messageLength int, eventID string, occurredAt time.Time)
+	// Subscribe abre la suscripción Pub/Sub de la sala (eventos de otras
+	// réplicas y REVOKED de identity-api); una sola por sala y réplica.
+	Subscribe func(ctx context.Context, roomID string) (<-chan chat.Inbound, func())
+	// IsRevoked consulta token:revoked:{jti}. Nil = sin Redis (modo memoria).
+	// Un error rechaza el handshake (falla cerrado).
+	IsRevoked func(ctx context.Context, jti string) (bool, error)
 	// Auth
 	JWTSecret         string
+	JWTIssuer         string // vacío = auth.DefaultIssuer
+	JWTAudience       string // vacío = auth.DefaultAudience
 	FirebaseProjectID string
 	// HostKeys resuelve las claves públicas de Firebase por kid. Nil o sin
 	// FirebaseProjectID = los host tokens se rechazan (falla cerrado).
@@ -50,6 +57,8 @@ type Deps struct {
 	mu     sync.Mutex
 	relays map[string]*roomRelay
 	seen   *seenIDs
+	// conns son las conexiones locales por sala (para revocarlas por jti).
+	conns map[string]map[string]liveConn
 	// LeaveGrace retrasa el aviso de salida: si el usuario vuelve dentro de
 	// la ventana se considera el mismo de antes (cero = DefaultLeaveGrace).
 	LeaveGrace time.Duration
@@ -213,7 +222,8 @@ func (d *Deps) authenticate(ctx context.Context, token, roomID string) (auth.Cla
 	now := d.now()
 	switch auth.TokenAlg(token) {
 	case "HS256":
-		return auth.VerifyGuest(token, d.JWTSecret, roomID, now)
+		cfg := auth.GuestConfig{Secret: d.JWTSecret, Issuer: d.JWTIssuer, Audience: d.JWTAudience}
+		return auth.VerifyGuest(token, cfg, roomID, now)
 	case "RS256":
 		return auth.VerifyHost(ctx, token, d.FirebaseProjectID, d.HostKeys, now)
 	default:
@@ -242,6 +252,16 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		http.Error(w, http.StatusText(status), status)
 		return
 	}
+	// Un token revocado no reconecta; si no se puede comprobar, se rechaza.
+	revoked, err := d.checkRevoked(ctx, claims.JTI)
+	if err != nil {
+		http.Error(w, "no se pudo validar el token", http.StatusServiceUnavailable)
+		return
+	}
+	if revoked {
+		http.Error(w, "token revocado", http.StatusUnauthorized)
+		return
+	}
 
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: d.AllowedOrigins})
 	if err != nil {
@@ -251,6 +271,10 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 	c.SetReadLimit(8 * 1024)
 
 	connID := d.newID()
+	untrack := d.trackConn(roomID, connID, claims.JTI, func() {
+		go func() { _ = c.Close(StatusRevoked, "token revocado") }()
+	})
+	defer untrack()
 	send := make(chan []byte, 64)
 	d.Hub.Join(roomID, connID, send)
 	defer d.Hub.Leave(roomID, connID)

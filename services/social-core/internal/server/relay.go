@@ -87,15 +87,15 @@ func (d *Deps) acquireRelay(roomID string) (release func()) {
 	d.mu.Unlock()
 
 	go func() {
-		for m := range ch {
-			if seen.seen(m.EventID) {
-				continue // eco propio o redelivery
-			}
-			raw, err := json.Marshal(m)
-			if err != nil {
+		for in := range ch {
+			if in.RevokedJTI != "" {
+				d.revokeLocal(roomID, in.RevokedJTI) // nunca llega a los clientes
 				continue
 			}
-			hub.Broadcast(roomID, raw)
+			if in.EventID == "" || seen.seen(in.EventID) {
+				continue // eco propio o redelivery
+			}
+			hub.Broadcast(roomID, in.Payload)
 		}
 	}()
 	return func() { d.releaseRelay(roomID) }
