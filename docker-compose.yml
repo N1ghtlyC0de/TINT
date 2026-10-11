@@ -83,6 +83,8 @@ services:
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-tint-login}
+      # Orígenes (host[:puerto]) que pueden abrir /ws/social.
+      ALLOWED_ORIGINS: ${SOCIAL_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173}
     depends_on:
       redis:
         condition: service_healthy

@@ -33,6 +33,9 @@ type Deps struct {
 	// HostKeys resuelve las claves públicas de Firebase por kid. Nil o sin
 	// FirebaseProjectID = los host tokens se rechazan (falla cerrado).
 	HostKeys auth.KeySource
+	// AllowedOrigins son los patrones de host aceptados en el handshake
+	// (ALLOWED_ORIGINS). Vacío = solo mismo origen.
+	AllowedOrigins []string
 	// Utilidades
 	Now       func() time.Time
 	NewID     func() string
@@ -240,7 +243,7 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		return
 	}
 
-	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: []string{"*"}})
+	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{OriginPatterns: d.AllowedOrigins})
 	if err != nil {
 		return
 	}

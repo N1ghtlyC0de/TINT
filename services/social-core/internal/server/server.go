@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/auth"
@@ -16,6 +17,9 @@ import (
 )
 
 const defaultAddr = ":8082"
+
+// defaultOrigins son los orígenes del frontend en desarrollo (Vite).
+const defaultOrigins = "localhost:5173,127.0.0.1:5173"
 
 // ErrMissingSecret indica que no se configuró JWT_SECRET.
 var ErrMissingSecret = errors.New("JWT_SECRET es obligatorio")
@@ -56,6 +60,7 @@ func DefaultDeps(getenv func(string) string) *Deps {
 		JWTSecret:         getenv("JWT_SECRET"),
 		FirebaseProjectID: getenv("FIREBASE_PROJECT_ID"),
 		HostKeys:          auth.NewGoogleCerts("", nil),
+		AllowedOrigins:    splitList(or(getenv("ALLOWED_ORIGINS"), defaultOrigins)),
 		ReactionBuckets:   reactions.NewBuckets(),
 	}
 	if store != nil {
@@ -77,6 +82,23 @@ func DefaultDeps(getenv func(string) string) *Deps {
 		}
 	}
 	return d
+}
+
+func or(v, def string) string {
+	if v == "" {
+		return def
+	}
+	return v
+}
+
+func splitList(raw string) []string {
+	var out []string
+	for _, p := range strings.Split(raw, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // NewRouter construye el router HTTP del servicio.
