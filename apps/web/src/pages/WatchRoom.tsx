@@ -36,6 +36,36 @@ const MEDIA_STATUS_UI: Record<MediaStatus, { text: string; tone: string; dot: st
   },
 };
 
+/** Pantalla terminal de la sala (sin reintentos): expulsión, invitación inválida, etc. */
+function RoomNotice({
+  title,
+  body,
+  to = '/',
+  linkLabel = 'Volver al inicio',
+}: {
+  title: string;
+  body: string;
+  to?: string;
+  linkLabel?: string;
+}) {
+  return (
+    <div className="grid min-h-[100dvh] place-items-center bg-tint-bg px-4 text-tint-muted">
+      <Card className="max-w-md p-8 text-center">
+        <p role="alert" className="text-lg font-semibold tracking-tight text-white">
+          {title}
+        </p>
+        <p className="mt-2 text-sm leading-relaxed">{body}</p>
+        <Link
+          to={to}
+          className="mt-6 inline-flex rounded-full bg-tint-accent px-5 py-2.5 text-sm font-semibold text-tint-bg transition hover:bg-tint-accentHover"
+        >
+          {linkLabel}
+        </Link>
+      </Card>
+    </div>
+  );
+}
+
 export default function WatchRoom() {
   const { roomId } = useParams();
   const navigate = useNavigate();
@@ -164,22 +194,33 @@ export default function WatchRoom() {
   // Antes que la puerta: al revocar se borra el guest token y hasAccess cae a false.
   if (sync.revoked) {
     return (
-      <div className="grid min-h-[100dvh] place-items-center bg-tint-bg px-4 text-tint-muted">
-        <Card className="max-w-md p-8 text-center">
-          <p role="alert" className="text-lg font-semibold tracking-tight text-white">
-            Fuiste retirado de la sala por el host
-          </p>
-          <p className="mt-2 text-sm leading-relaxed">
-            Tu invitación ya no es válida. Si crees que es un error, pide al host un nuevo enlace.
-          </p>
-          <Link
-            to="/"
-            className="mt-6 inline-flex rounded-full bg-tint-accent px-5 py-2.5 text-sm font-semibold text-tint-bg transition hover:bg-tint-accentHover"
-          >
-            Volver al inicio
-          </Link>
-        </Card>
-      </div>
+      <RoomNotice
+        title="Fuiste retirado de la sala por el host"
+        body="Tu invitación ya no es válida. Si crees que es un error, pide al host un nuevo enlace."
+      />
+    );
+  }
+  // GET /playback en 401/403: retirado o caducado mientras la pestaña estaba cerrada.
+  if (playback.revoked) {
+    return (
+      <RoomNotice
+        title="Tu invitación ya no es válida"
+        body="El host te retiró de la sala o el enlace caducó. Pide al host un nuevo enlace para volver a entrar."
+      />
+    );
+  }
+  if (sync.fatalError) {
+    return (
+      <RoomNotice
+        title={sync.fatalError === 'NOT_HOST' ? 'No eres el host de esta sala' : 'La sala ya no existe'}
+        body={
+          sync.fatalError === 'NOT_HOST'
+            ? 'Tu cuenta no es la dueña de esta sala. Si te invitaron, entra con el link de invitación.'
+            : 'El host la eliminó o el enlace es incorrecto.'
+        }
+        to="/dashboard"
+        linkLabel="Ir al dashboard"
+      />
     );
   }
 

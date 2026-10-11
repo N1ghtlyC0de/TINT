@@ -29,6 +29,7 @@ function makeSync(over: Partial<SyncSocketApi> = {}): SyncSocketApi {
     rttMs: null,
     driftMs: null,
     revoked: false,
+    fatalError: null,
     reconnect: null,
     lastBroadcast: null,
     sendCommand: vi.fn(() => 'evt'),

@@ -327,3 +327,35 @@ describe('useRoomPlayback', () => {
     expect(mockedApiFetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('useRoomPlayback — invitación no válida', () => {
+  const httpError = (status: number) => Object.assign(new Error(`API error ${status}`), { status });
+
+  it.each([401, 403])('un %i con guest token borra el token y marca la invitación como no válida', async (status) => {
+    localStorage.setItem('tint_guest_token', 'g');
+    mockedApiFetch.mockRejectedValueOnce(httpError(status));
+    const { result } = setup({ roomId: 'r1', mediaId: undefined, opts: { role: 'guest' } });
+    await flush();
+    expect(result.current.revoked).toBe(true);
+    expect(localStorage.getItem('tint_guest_token')).toBeNull();
+  });
+
+  it('el host con 403 no toca el guest token ni se marca como revocado', async () => {
+    localStorage.setItem('tint_guest_token', 'g');
+    mockedApiFetch.mockRejectedValueOnce(httpError(403));
+    const { result } = setup({ roomId: 'r1', mediaId: undefined, opts: { role: 'host' } });
+    await flush();
+    expect(result.current.revoked).toBe(false);
+    expect(result.current.error).toMatch(/no se pudo cargar/i);
+    expect(localStorage.getItem('tint_guest_token')).toBe('g');
+  });
+
+  it('otros errores del invitado (p. ej. 500) solo muestran el error', async () => {
+    localStorage.setItem('tint_guest_token', 'g');
+    mockedApiFetch.mockRejectedValueOnce(httpError(500));
+    const { result } = setup({ roomId: 'r1', mediaId: undefined, opts: { role: 'guest' } });
+    await flush();
+    expect(result.current.revoked).toBe(false);
+    expect(localStorage.getItem('tint_guest_token')).toBe('g');
+  });
+});

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
+import { errorStatus } from '../lib/errorStatus';
 import type { Correction } from '../lib/drift';
 import {
   decodeFrame,
@@ -31,6 +32,14 @@ const MAX_MEDIA_ID = 128;
 const OWN_EVENTS_MEMORY = 50;
 
 export type SyncRole = 'host' | 'guest';
+
+export type SyncFatalError = 'NOT_HOST' | 'ROOM_GONE';
+
+function fatalTicketError(status: number | null): SyncFatalError | null {
+  if (status === 403) return 'NOT_HOST';
+  if (status === 404 || status === 410) return 'ROOM_GONE';
+  return null;
+}
 
 export interface UseSyncSocketOptions {
   roomId: string;
@@ -88,6 +97,11 @@ export interface SyncSocketApi {
   driftMs: number | null;
   /** El token fue revocado por el host (cierre 4001): no se reconecta. */
   revoked: boolean;
+  /**
+   * El host no puede sincronizar y reintentar no lo arregla: el sync-ticket respondió
+   * 403 (`NOT_HOST`, no es el dueño) o 404/410 (`ROOM_GONE`, sala inexistente o borrada).
+   */
+  fatalError: SyncFatalError | null;
   /** Reintento programado, o null si conectado / sin reintento. */
   reconnect: ReconnectInfo | null;
   lastBroadcast: SyncBroadcast | null;
@@ -138,6 +152,7 @@ export function useSyncSocket({
   const [rttMs, setRttMs] = useState<number | null>(null);
   const [driftMs, setDriftMs] = useState<number | null>(null);
   const [revoked, setRevoked] = useState(false);
+  const [fatalError, setFatalError] = useState<SyncFatalError | null>(null);
   const [reconnect, setReconnect] = useState<ReconnectInfo | null>(null);
   const [lastBroadcast, setLastBroadcast] = useState<SyncBroadcast | null>(null);
 
@@ -279,8 +294,15 @@ export function useSyncSocket({
         .then((ticket: SyncTicket) => {
           if (!disposed) openSocket(ticket.token);
         })
-        .catch(() => {
+        .catch((err: unknown) => {
           if (disposed) return;
+          const fatal = fatalTicketError(errorStatus(err));
+          if (fatal) {
+            // No es el dueño o la sala ya no existe: reintentar no lo arregla.
+            setFatalError(fatal);
+            setReconnect(null);
+            return;
+          }
           setLastError('TICKET');
           scheduleReconnect();
         });
@@ -362,6 +384,7 @@ export function useSyncSocket({
     rttMs,
     driftMs,
     revoked,
+    fatalError,
     reconnect,
     lastBroadcast,
     sendCommand,

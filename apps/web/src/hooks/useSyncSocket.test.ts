@@ -354,3 +354,37 @@ describe('useSyncSocket — comandos', () => {
     expect(ws.sent).toHaveLength(0);
   });
 });
+
+describe('useSyncSocket — ticket rechazado de forma definitiva', () => {
+  const httpError = (status: number) => Object.assign(new Error(`API error ${status}`), { status });
+
+  it.each([
+    [403, 'NOT_HOST'],
+    [404, 'ROOM_GONE'],
+    [410, 'ROOM_GONE'],
+  ])('con %i deja de reintentar y expone fatalError=%s', async (status, code) => {
+    vi.useFakeTimers();
+    mockedApiFetch.mockRejectedValue(httpError(status));
+    const { result } = setup({ role: 'host' });
+    await flush();
+    expect(result.current.fatalError).toBe(code);
+    expect(result.current.reconnect).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(mockedApiFetch).toHaveBeenCalledTimes(1);
+    expect(MockWebSocket.instances).toHaveLength(0);
+  });
+
+  it('un error transitorio (500) sigue reintentando sin fatalError', async () => {
+    vi.useFakeTimers();
+    mockedApiFetch.mockRejectedValueOnce(httpError(500)).mockResolvedValueOnce({ token: 'ok', expiresAt: 'x' });
+    const { result } = setup({ role: 'host' });
+    await flush();
+    expect(result.current.fatalError).toBeNull();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+    expect(MockWebSocket.instances).toHaveLength(1);
+  });
+});
