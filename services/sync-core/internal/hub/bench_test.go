@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -167,11 +169,63 @@ func BenchmarkHandleSyncCheck(b *testing.B) {
 }
 
 func benchRedisStore(b *testing.B) *store.Store {
+	s, _ := benchRedis(b)
+	return s
+}
+
+// benchRedis usa BENCH_REDIS_URL (Redis real) o, si no está, miniredis.
+func benchRedis(b *testing.B) (*store.Store, *redis.Client) {
 	b.Helper()
-	mr := miniredis.RunT(b)
-	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	opt := &redis.Options{}
+	if url := os.Getenv("BENCH_REDIS_URL"); url != "" {
+		var err error
+		if opt, err = redis.ParseURL(url); err != nil {
+			b.Fatal(err)
+		}
+	} else {
+		opt.Addr = miniredis.RunT(b).Addr()
+	}
+	rdb := redis.NewClient(opt)
 	b.Cleanup(func() { _ = rdb.Close() })
-	return store.New(rdb, 12*time.Hour)
+	return store.New(rdb, 12*time.Hour), rdb
+}
+
+// rtHook cuenta idas y vueltas a Redis (comando suelto o pipeline = 1).
+type rtHook struct{ n atomic.Int64 }
+
+func (h *rtHook) DialHook(next redis.DialHook) redis.DialHook { return next }
+func (h *rtHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
+	return func(ctx context.Context, cmd redis.Cmder) error { h.n.Add(1); return next(ctx, cmd) }
+}
+func (h *rtHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []redis.Cmder) error { h.n.Add(1); return next(ctx, cmds) }
+}
+
+// BenchmarkConnectDisconnect: alta (STATE incluido) y baja de un
+// participante en una sala con host, con su costo en idas y vueltas.
+func BenchmarkConnectDisconnect(b *testing.B) {
+	s, rdb := benchRedis(b)
+	h := New(s, nopBus{}, &fakeTelemetry{})
+	roomID := fmt.Sprintf("bench-connect-%d", time.Now().UnixNano())
+	hostClaims := auth.Claims{Sub: "host", RoomID: roomID, Role: auth.RoleHost}
+	hc, err := h.Connect(context.Background(), hostClaims)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.Cleanup(func() { h.Disconnect(hc) })
+	guestClaims := auth.Claims{Sub: "guest:1", RoomID: roomID, Role: auth.RoleParticipant}
+	rt := &rtHook{}
+	rdb.AddHook(rt)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		c, err := h.Connect(context.Background(), guestClaims)
+		if err != nil {
+			b.Fatal(err)
+		}
+		h.Disconnect(c)
+	}
+	b.ReportMetric(float64(rt.n.Load())/float64(b.N), "rt/op")
 }
 
 // BenchmarkHandleCommand: SEEK del host de punta a punta contra miniredis

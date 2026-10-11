@@ -68,11 +68,9 @@ type StateStore interface {
 	Load(ctx context.Context, roomID string) (master.State, error)
 	Apply(ctx context.Context, roomID, eventID string, cmd master.Command, receivedAtMs, rttMs int64, encode store.Encoder) (master.State, bool, error)
 	Touch(ctx context.Context, roomID string) error
-	HostSeen(ctx context.Context, roomID, connID string, nowMs int64) (int64, error)
 	HostGone(ctx context.Context, roomID, connID string, nowMs int64) (int64, error)
-	Beat(ctx context.Context, roomID string, hostConns, memberSubs []string, nowMs int64) error
 	MemberGone(ctx context.Context, roomID, sub string) error
-	Presence(ctx context.Context, roomID string, nowMs int64) (store.Presence, error)
+	BeatPresence(ctx context.Context, roomID string, hostConns, memberSubs []string, nowMs int64) (store.Presence, error)
 	Sweep(ctx context.Context, roomID string, hostConns, memberSubs []string, nowMs int64) (store.Presence, bool, error)
 	LiveMembers(ctx context.Context, roomID string, nowMs int64) ([]string, error)
 	SwapDelegate(ctx context.Context, roomID, sub string) (string, error)
@@ -430,16 +428,13 @@ func (h *Hub) Connect(parent context.Context, claims auth.Claims, opts ...ConnOp
 	}
 	h.cache(room, st, now.UnixMilli())
 	nowMs := now.UnixMilli()
+	var hosts, members []string
 	if claims.CanControl() {
-		_, err = h.store.HostSeen(ctx, room, c.id, nowMs)
+		hosts = []string{c.id}
 	} else {
-		err = h.store.Beat(ctx, room, nil, []string{claims.Sub}, nowMs)
+		members = []string{claims.Sub}
 	}
-	if err != nil {
-		h.Disconnect(c)
-		return nil, err
-	}
-	p, err := h.store.Presence(ctx, room, nowMs)
+	p, err := h.store.BeatPresence(ctx, room, hosts, members, nowMs)
 	if err != nil {
 		h.Disconnect(c)
 		return nil, err

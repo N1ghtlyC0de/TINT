@@ -87,6 +87,7 @@ func New(rdb redis.UniversalClient, ttl time.Duration) *Store {
 func (s *Store) Init(ctx context.Context, roomID, hostID string, nowMs int64) (master.State, error) {
 	key := syncevent.StateKey(roomID)
 	init := master.Initial(hostID, nowMs)
+	var raw *redis.MapStringStringCmd
 	_, err := s.rdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
 		for field, value := range fields(init) {
 			if field != "host_id" {
@@ -97,12 +98,13 @@ func (s *Store) Init(ctx context.Context, roomID, hostID string, nowMs int64) (m
 			p.HSet(ctx, key, "host_id", hostID)
 		}
 		p.PExpire(ctx, key, s.ttl)
+		raw = p.HGetAll(ctx, key) // en la misma transacción: sin otra ida y vuelta
 		return nil
 	})
 	if err != nil {
 		return master.State{}, fmt.Errorf("init sala %s: %w", roomID, err)
 	}
-	return s.Load(ctx, roomID)
+	return decode(raw.Val())
 }
 
 // Load lee el estado actual de la sala.
@@ -246,23 +248,32 @@ func (s *Store) Touch(ctx context.Context, roomID string) error {
 // HostSeen registra/refresca una conexión de host y devuelve cuántas hay vivas.
 func (s *Store) HostSeen(ctx context.Context, roomID, connID string, nowMs int64) (int64, error) {
 	key := syncevent.HostsKey(roomID)
+	var online *redis.IntCmd
 	_, err := s.rdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
 		p.ZAdd(ctx, key, redis.Z{Score: float64(nowMs), Member: connID})
 		p.PExpire(ctx, key, s.ttl)
+		online = p.ZCount(ctx, key, sinceArg(nowMs), "+inf")
 		return nil
 	})
 	if err != nil {
 		return 0, err
 	}
-	return s.OnlineHosts(ctx, roomID, nowMs)
+	return online.Val(), nil
 }
 
 // HostGone elimina una conexión de host y devuelve cuántas quedan vivas.
 func (s *Store) HostGone(ctx context.Context, roomID, connID string, nowMs int64) (int64, error) {
-	if err := s.rdb.ZRem(ctx, syncevent.HostsKey(roomID), connID).Err(); err != nil {
+	key := syncevent.HostsKey(roomID)
+	var online *redis.IntCmd
+	_, err := s.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
+		p.ZRem(ctx, key, connID)
+		online = p.ZCount(ctx, key, sinceArg(nowMs), "+inf")
+		return nil
+	})
+	if err != nil {
 		return 0, err
 	}
-	return s.OnlineHosts(ctx, roomID, nowMs)
+	return online.Val(), nil
 }
 
 // OnlineHosts cuenta las conexiones de host que latieron dentro del timeout.

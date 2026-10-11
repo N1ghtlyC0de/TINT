@@ -140,6 +140,40 @@ func zadd(ctx context.Context, p redis.Pipeliner, key string, members []string, 
 	p.PExpire(ctx, key, ttl)
 }
 
+// BeatPresence registra un latido (como Beat) y lee la presencia (como
+// Presence) en una sola ida y vuelta. Lo usa Connect para el STATE inicial.
+func (s *Store) BeatPresence(ctx context.Context, roomID string, hostConns, memberSubs []string, nowMs int64) (Presence, error) {
+	var (
+		online   *redis.IntCmd
+		delegate *redis.StringCmd
+		since    *redis.StringCmd
+	)
+	_, err := s.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
+		zadd(ctx, p, syncevent.HostsKey(roomID), hostConns, nowMs, s.ttl)
+		zadd(ctx, p, syncevent.MembersKey(roomID), memberSubs, nowMs, s.ttl)
+		if len(hostConns) > 0 || len(memberSubs) > 0 {
+			p.PExpire(ctx, syncevent.StateKey(roomID), s.ttl)
+		}
+		online, delegate, since = presenceCmds(ctx, p, roomID, nowMs)
+		return nil
+	})
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return Presence{}, err
+	}
+	return presenceOf(online, delegate, since), nil
+}
+
+func presenceCmds(ctx context.Context, p redis.Pipeliner, roomID string, nowMs int64) (*redis.IntCmd, *redis.StringCmd, *redis.StringCmd) {
+	return p.ZCount(ctx, syncevent.HostsKey(roomID), sinceArg(nowMs), "+inf"),
+		p.Get(ctx, syncevent.DelegateKey(roomID)),
+		p.Get(ctx, syncevent.HostlessSinceKey(roomID))
+}
+
+func presenceOf(online *redis.IntCmd, delegate, since *redis.StringCmd) Presence {
+	sinceMs, _ := strconv.ParseInt(since.Val(), 10, 64)
+	return Presence{Online: online.Val(), Delegate: delegate.Val(), HostlessSinceMs: sinceMs}
+}
+
 // MemberGone quita a un participante de la presencia.
 func (s *Store) MemberGone(ctx context.Context, roomID, sub string) error {
 	return s.rdb.ZRem(ctx, syncevent.MembersKey(roomID), sub).Err()
@@ -154,16 +188,13 @@ func (s *Store) Presence(ctx context.Context, roomID string, nowMs int64) (Prese
 		since    *redis.StringCmd
 	)
 	_, err := s.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
-		online = p.ZCount(ctx, syncevent.HostsKey(roomID), sinceArg(nowMs), "+inf")
-		delegate = p.Get(ctx, syncevent.DelegateKey(roomID))
-		since = p.Get(ctx, syncevent.HostlessSinceKey(roomID))
+		online, delegate, since = presenceCmds(ctx, p, roomID, nowMs)
 		return nil
 	})
 	if err != nil && !errors.Is(err, redis.Nil) {
 		return Presence{}, err
 	}
-	sinceMs, _ := strconv.ParseInt(since.Val(), 10, 64)
-	return Presence{Online: online.Val(), Delegate: delegate.Val(), HostlessSinceMs: sinceMs}, nil
+	return presenceOf(online, delegate, since), nil
 }
 
 // SetHostStatus guarda si la sala tiene host y dice si es una transición.
