@@ -1,8 +1,8 @@
-import { render, screen, within } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiFetch, ApiError } from '../../lib/api';
-import { ParticipantsPanel } from './ParticipantsPanel';
+import { PARTICIPANTS_POLL_MS, ParticipantsPanel } from './ParticipantsPanel';
 
 vi.mock('../../lib/api', async (orig) => ({
   ...(await orig<typeof import('../../lib/api')>()),
@@ -16,6 +16,36 @@ const guests = [
 ];
 
 beforeEach(() => mockedApiFetch.mockReset());
+
+describe('ParticipantsPanel — refresco automático', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('re-consulta la lista cada 10 s mientras está montado y para al desmontar', async () => {
+    vi.useFakeTimers();
+    mockedApiFetch.mockResolvedValueOnce({ guests: [] }).mockResolvedValue({ guests });
+    const { unmount } = render(<ParticipantsPanel roomId="r1" />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByText('Aún no hay invitados en la sala.')).toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PARTICIPANTS_POLL_MS);
+    });
+    expect(mockedApiFetch).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('list', { name: 'Invitados' })).toBeInTheDocument();
+    // El refresco silencioso no vuelve a mostrar el esqueleto de carga.
+    expect(screen.queryByText('Cargando participantes…')).not.toBeInTheDocument();
+    unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PARTICIPANTS_POLL_MS * 3);
+    });
+    expect(mockedApiFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('el intervalo por defecto es de ~10 s', () => {
+    expect(PARTICIPANTS_POLL_MS).toBe(10_000);
+  });
+});
 
 describe('ParticipantsPanel', () => {
   it('lista los invitados de la sala con el token de host', async () => {
