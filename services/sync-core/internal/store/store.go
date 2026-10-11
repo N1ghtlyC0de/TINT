@@ -41,6 +41,9 @@ const (
 	lockStripes = 256
 	// maxBackoff limita la espera aleatoria tras un conflicto entre réplicas.
 	maxBackoff = 4 * time.Millisecond
+	// maxLastAge: edad máxima del último estado escrito por esta réplica
+	// para aplicar el siguiente comando sin releerlo (ver lastWrite).
+	maxLastAge = time.Minute
 )
 
 // casScript aplica el estado calculado en Go solo si nadie escribió antes.
@@ -69,6 +72,7 @@ type Store struct {
 	rdb   redis.UniversalClient
 	ttl   time.Duration
 	locks [lockStripes]sync.Mutex
+	last  [lockStripes]lastWrite // protegido por locks[i]
 
 	conflicts atomic.Int64 // reintentos por escrituras de otras réplicas
 }
@@ -115,22 +119,26 @@ func (s *Store) Apply(ctx context.Context, roomID, eventID string, cmd master.Co
 
 	stateKey := syncevent.StateKey(roomID)
 	evtKey := syncevent.EventKey(roomID, eventID)
+	last := s.lastFor(roomID)
 	for i := 0; i < maxTxRetries; i++ {
-		var seen *redis.IntCmd
-		var raw *redis.MapStringStringCmd
-		if _, err := s.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
-			seen = p.Exists(ctx, evtKey)
-			raw = p.HGetAll(ctx, stateKey)
-			return nil
-		}); err != nil {
-			return master.State{}, false, err
-		}
-		cur, err := decode(raw.Val())
-		if err != nil {
-			return master.State{}, false, err
-		}
-		if seen.Val() > 0 {
-			return cur, true, nil
+		cur, ok := last.get(roomID, s.lastTTL())
+		if !ok {
+			var seen *redis.IntCmd
+			var raw *redis.MapStringStringCmd
+			if _, err := s.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
+				seen = p.Exists(ctx, evtKey)
+				raw = p.HGetAll(ctx, stateKey)
+				return nil
+			}); err != nil {
+				return master.State{}, false, err
+			}
+			var err error
+			if cur, err = decode(raw.Val()); err != nil {
+				return master.State{}, false, err
+			}
+			if seen.Val() > 0 {
+				return cur, true, nil
+			}
 		}
 		next, err := cur.Apply(cmd, receivedAtMs, rttMs)
 		if err != nil {
@@ -142,17 +150,26 @@ func (s *Store) Apply(ctx context.Context, roomID, eventID string, cmd master.Co
 		}
 		args := []any{cur.Version, dedupeWindow.Milliseconds(), s.ttl.Milliseconds(), syncevent.ChannelKey(roomID), payload}
 		for field, value := range fields(next) {
-			args = append(args, field, value)
+			if field != "host_id" { // lo fija Init; un comando nunca lo cambia
+				args = append(args, field, value)
+			}
 		}
 		res, err := casScript.Run(ctx, s.rdb, []string{stateKey, evtKey}, args...).Text()
 		if err != nil {
+			last.forget()
 			return master.State{}, false, err
 		}
 		switch res {
 		case "OK":
+			last.set(roomID, next)
 			return next, false, nil
 		case "DUP":
+			last.forget()
 			continue // el siguiente intento devuelve el estado con dup=true
+		}
+		last.forget()
+		if ok {
+			continue // la caché estaba vieja: releer sin esperar
 		}
 		// Otra réplica escribió primero: espera aleatoria para no chocar de nuevo.
 		s.conflicts.Add(1)
@@ -167,10 +184,48 @@ func (s *Store) Apply(ctx context.Context, roomID, eventID string, cmd master.Co
 func (s *Store) Conflicts() int64 { return s.conflicts.Load() }
 
 func (s *Store) lockFor(roomID string) *sync.Mutex {
+	return &s.locks[stripe(roomID)]
+}
+
+func (s *Store) lastFor(roomID string) *lastWrite {
+	return &s.last[stripe(roomID)]
+}
+
+func stripe(roomID string) uint32 {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(roomID))
-	return &s.locks[h.Sum32()%lockStripes]
+	return h.Sum32() % lockStripes
 }
+
+// lastTTL acota cuánto se confía en lastWrite. Mientras no pase el TTL de
+// la sala desde nuestra escritura, la clave no pudo expirar y recrearse con
+// la misma version; el minuto es margen adicional.
+func (s *Store) lastTTL() time.Duration { return min(s.ttl, maxLastAge) }
+
+// lastWrite es el último estado que esta réplica escribió en una sala de la
+// franja (lo protege el candado de la franja). Con él, un comando tras otro
+// de la misma sala se aplica con una sola ida y vuelta: el CAS por version
+// del script detecta si alguien escribió después (otra réplica) y entonces
+// se relee. version nunca se repite mientras la clave viva, así que partir
+// de la caché es tan seguro como partir de una lectura.
+type lastWrite struct {
+	room  string
+	state master.State
+	at    time.Time
+}
+
+func (l *lastWrite) get(room string, maxAge time.Duration) (master.State, bool) {
+	if l.room != room || time.Since(l.at) >= maxAge {
+		return master.State{}, false
+	}
+	return l.state, true
+}
+
+func (l *lastWrite) set(room string, st master.State) {
+	l.room, l.state, l.at = room, st, time.Now()
+}
+
+func (l *lastWrite) forget() { l.room = "" }
 
 func sleep(ctx context.Context, d time.Duration) error {
 	t := time.NewTimer(d)
