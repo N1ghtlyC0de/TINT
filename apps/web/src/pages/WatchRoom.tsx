@@ -86,6 +86,7 @@ export default function WatchRoom() {
   // Identidad para display (chip + mensajes propios). Solo UI.
   const identity = getLocalIdentity();
   const role = isGuest ? 'guest' : 'host';
+  const homePath = isGuest ? '/' : '/dashboard';
   // Respaldo solo si la sala no tiene vídeo asignado en identity-api.
   const demoVideoUrl = import.meta.env.VITE_DEMO_VIDEO_URL || undefined;
 
@@ -285,8 +286,9 @@ export default function WatchRoom() {
       <header className="sticky top-0 z-30 border-b border-white/10 bg-tint-bg/90 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-[1400px] items-center justify-between gap-4 px-4">
           <div className="flex min-w-0 flex-1 items-center gap-3">
-            <BrandMark />
-            <BackLink />
+            {/* El dashboard exige sesión de host: el invitado vuelve al inicio. */}
+            <BrandMark to={homePath} />
+            <BackLink to={homePath} />
             <h1 className="min-w-0 flex-1 truncate text-[15px] font-semibold tracking-tight text-white" title={heading}>
               {heading}
             </h1>

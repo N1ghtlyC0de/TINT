@@ -95,12 +95,21 @@ describe('WatchRoom', () => {
     expect(screen.queryByText('Sala vieja')).not.toBeInTheDocument();
   });
 
-  it('tiene un único enlace Volver al dashboard', () => {
-    localStorage.setItem('tint_guest_token', testGuestToken());
+  it('el host tiene un único enlace Volver al dashboard', () => {
+    localStorage.setItem('tint_token', 'host-tok');
+    mockedApi.mockRejectedValue(new Error('offline'));
     renderWatch();
     const backLinks = screen.getAllByRole('link', { name: 'Volver' });
     expect(backLinks).toHaveLength(1);
     expect(backLinks[0]).toHaveAttribute('href', '/dashboard');
+    expect(screen.getByRole('link', { name: 'TINT inicio' })).toHaveAttribute('href', '/dashboard');
+  });
+
+  it('el invitado vuelve al inicio, no al dashboard (que exige sesión de host)', () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    renderWatch();
+    expect(screen.getByRole('link', { name: 'Volver' })).toHaveAttribute('href', '/');
+    expect(screen.getByRole('link', { name: 'TINT inicio' })).toHaveAttribute('href', '/');
   });
 
   it('el host ve el titulo real de la sala y el link con copiar', async () => {
@@ -155,7 +164,6 @@ describe('WatchRoom', () => {
     localStorage.setItem('tint_guest_token', testGuestToken());
     renderWatch();
     const logo = screen.getByRole('link', { name: 'TINT inicio' });
-    expect(logo).toHaveAttribute('href', '/dashboard');
     const volver = screen.getByRole('link', { name: 'Volver' });
     expect(logo.compareDocumentPosition(volver)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
