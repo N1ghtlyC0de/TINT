@@ -43,6 +43,14 @@ func TestVerifyGuestOKAndWrongRoom(t *testing.T) {
 	}
 }
 
+func TestVerifyGuestRejectsEmptySecret(t *testing.T) {
+	now := time.Now()
+	token := signGuest(map[string]any{"sub": "g", "room_id": "r1", "exp": now.Add(time.Hour).Unix()}, "")
+	if _, err := VerifyGuest(token, "", "r1", now); err != ErrInvalidToken {
+		t.Fatalf("secreto vacío debe fallar cerrado, got %v", err)
+	}
+}
+
 func TestBearerToken(t *testing.T) {
 	got, err := BearerToken("Bearer abc", "")
 	if err != nil || got != "abc" {

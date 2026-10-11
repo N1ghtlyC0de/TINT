@@ -2,10 +2,33 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
+
+// Con JWT_SECRET vacío se verificaba con clave vacía (cualquiera podía firmar
+// guest tokens). Como sync-core, el servicio se niega a arrancar.
+func TestRunRequiresJWTSecret(t *testing.T) {
+	env := func(k string) string {
+		if k == "SOCIAL_CORE_ADDR" {
+			return "127.0.0.1:0"
+		}
+		return ""
+	}
+	done := make(chan error, 1)
+	go func() { done <- Run(env) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrMissingSecret) {
+			t.Fatalf("Run() = %v, want ErrMissingSecret", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run() arrancó sin JWT_SECRET")
+	}
+}
 
 func TestHealthz(t *testing.T) {
 	rec := httptest.NewRecorder()

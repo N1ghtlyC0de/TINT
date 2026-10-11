@@ -42,7 +42,7 @@ type guestPayload struct {
 // VerifyGuest verifica un guest token HS256 emitido por identity-api.
 func VerifyGuest(token, secret, wantRoom string, now time.Time) (Claims, error) {
 	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
+	if len(parts) != 3 || secret == "" {
 		return Claims{}, ErrInvalidToken
 	}
 	mac := hmac.New(sha256.New, []byte(secret))

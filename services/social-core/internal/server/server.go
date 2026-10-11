@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"time"
@@ -16,6 +17,9 @@ import (
 
 const defaultAddr = ":8082"
 
+// ErrMissingSecret indica que no se configuró JWT_SECRET.
+var ErrMissingSecret = errors.New("JWT_SECRET es obligatorio")
+
 // Addr resuelve la dirección de escucha a partir del entorno.
 func Addr(getenv func(string) string) string {
 	if addr := getenv("SOCIAL_CORE_ADDR"); addr != "" {
@@ -26,6 +30,9 @@ func Addr(getenv func(string) string) string {
 
 // Run arranca el servidor HTTP y bloquea hasta que falle.
 func Run(getenv func(string) string) error {
+	if getenv("JWT_SECRET") == "" {
+		return ErrMissingSecret // falla cerrado: nunca verificar con clave vacía
+	}
 	addr := Addr(getenv)
 	deps := DefaultDeps(getenv)
 	log.Printf("social-core escuchando en %s", addr)
