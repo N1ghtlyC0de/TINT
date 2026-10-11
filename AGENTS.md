@@ -36,10 +36,10 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 
 | Contrato | Lados | Fuente de verdad |
 | :--- | :--- | :--- |
-| Claims JWT HS256 (`sub`, `room_id`, `role`, `nick`, `jti`, `iss`, `aud`, `exp`) | identity-api ↔ sync-core | [usuarios-e-identidad §4](docs/usuarios-e-identidad.md#4-esquemas-de-tokens) |
-| `JWT_SECRET` / `JWT_ISSUER` / `JWT_AUDIENCE` | identity-api ↔ sync-core | `.env.example` raíz |
+| Claims JWT HS256 (`sub`, `room_id`, `role`, `nick`, `jti`, `iss`, `aud`, `exp`) | identity-api ↔ sync-core, social-core | [usuarios-e-identidad §4](docs/usuarios-e-identidad.md#4-esquemas-de-tokens) |
+| `JWT_SECRET` / `JWT_ISSUER` / `JWT_AUDIENCE` | identity-api ↔ sync-core, social-core | `.env.example` raíz |
 | Protocolo del Canal Sync v2 | sync-core ↔ web | [sync-core/AGENTS.md](services/sync-core/AGENTS.md#protocolo-del-canal-sync) |
-| Revocación `token:revoked:{jti}` + `REVOKED` | identity-api → sync-core | [dominio-reproduccion §6.6](docs/dominio-reproduccion.md#66-retirar-a-un-invitado-f5) |
+| Revocación `token:revoked:{jti}` + `REVOKED` (cierre `4001`; token caducado `4003`) | identity-api → sync-core, social-core, web | [dominio-reproduccion §6.6](docs/dominio-reproduccion.md#66-retirar-a-un-invitado-f5) |
 | Stream `media:uploads` + tabla `videos` (`id`, `storage_key`, `duration_ms`, `status`) | identity-api → media-worker | [dominio-reproduccion §6.7](docs/dominio-reproduccion.md#67-subida-y-cambio-de-vídeo) |
 | Puertos locales: social-core 8082, sync-core 8083 | infra ↔ web | `docker-compose.yml`, `.env.example` de la web |
 | API REST `/api/v1` | identity-api → web | [identity-api/AGENTS.md](services/identity-api/AGENTS.md#api) |
@@ -68,4 +68,7 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 - **Orden de mensajes:** el `STATE` inicial debe encolarse antes de cualquier publicación por el bus; los clientes filtran por `version`.
 - **Falla cerrado** en todo lo relacionado con autorización (revocación, tokens).
 - **No relajes umbrales** para que una prueba pase: documenta el resultado y la causa probable.
+- **Nunca confíes en un token sin verificar su firma**, ni como "respaldo": social-core aceptaba ID tokens de Firebase falsificados (bug hunting 2026-10).
+- **No compares relojes distintos** (cliente vs. servidor) para rechazar mensajes: un navegador adelantado perdía el chat en silencio.
+- **Rechazar antes del upgrade del WebSocket no le dice nada al navegador** (solo ve `1006` y reintenta): para estados terminales, haz upgrade y cierra con un código `4xxx`.
 - Los subagentes trabajan en worktrees aislados: hay que integrar sus commits (`cherry-pick`), volver a correr las pruebas en el árbol principal y borrar los worktrees al terminar.

@@ -67,3 +67,33 @@ Severidad: **A** alta (seguridad o flujo roto), **M** media, **B** baja.
 | `PUT /rooms/:id/media` acepta cualquier clave del bucket | Endpoint heredado del flujo manual; restringirlo a vídeos de la sala cambia la API pública de la web |
 | sync-core mantiene `Hub.mu` durante `Subscribe`/`Unsubscribe` de Redis | Refactor de concurrencia con riesgo; solo afecta mientras Redis reconecta |
 | Fallos de infraestructura que responden 401/403/500 en vez de 503 | Cambio transversal de semántica de errores |
+
+## 4. Resultado
+
+Todo lo de la sección 2 quedó corregido en la rama `fix/bug-hunting` (un commit por bug, con la prueba escrita primero).
+
+| Dominio | Commits | Gate |
+| :--- | :--- | :--- |
+| identity-api | 8 fixes + docs (migración `0005`: índice único de usuarios que fusiona duplicados existentes) | 185 pruebas, 98,4 % |
+| sync-core | 4 fixes (cierre `4001`/`4003` tras el upgrade, orígenes, TTL en el barrido, `SYNC_CORRECTION` completo) | 95,1 % con `-race` |
+| social-core | 8 fixes + docs (verificación RS256 de Firebase solo con la biblioteca estándar, revocación por `REVOKED`, ping, `ALLOWED_ORIGINS`) | 93,3 % con `-race`, 5 corridas seguidas sin fallos |
+| web | 11 fixes (renovación del token del host, validación del guest token, `4003`, unirse sin saltarse la pausa, host sin perder la sesión, etc.) | 524 pruebas, 99,25 %; lint, tsc y build |
+
+Verificación contra la infraestructura real tras los fixes:
+
+- `npm run test:integration` (identity-api): `live-room` y `video-flow` pasan; los 7 hallazgos reproducidos ya no aparecen.
+- Navegador real: sincronía dentro de ±0,1 s; un invitado con el token de otra sala ve la puerta; un invitado retirado con la pestaña cerrada ve "Tu invitación ya no es válida" en vez de reconectar sin fin.
+
+```mermaid
+flowchart LR
+  subgraph Antes
+    A1[Token Firebase falso] -->|abría| C1[(/ws/social)]
+    A2[Invitado retirado] -->|seguía en| C1
+    A3[Sala borrada] -->|sesiones vivas| C2[(/ws/sync)]
+  end
+  subgraph Después
+    B1[Firma RS256 verificada] --> D1[401]
+    B2[REVOKED por Redis] --> D2[cierre 4001 en sync y social]
+    B3[DELETE revoca cada jti] --> D2
+  end
+```
