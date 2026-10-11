@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
 import { auth } from '../lib/firebase';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { apiFetch } from '../lib/api';
 import { parseInviteCode } from '../lib/invite';
 import { Button } from '../components/ui/Button';
@@ -9,6 +9,11 @@ import { Field, ErrorAlert } from '../components/ui/Primitives';
 
 export default function Login() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  // Retorno tras login (p. ej. ?next=/watch/:id desde la puerta de la sala).
+  // Solo rutas internas para evitar open-redirect.
+  const next = searchParams.get('next');
+  const safeNext = next && next.startsWith('/') && !next.startsWith('//') ? next : '/dashboard';
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [invite, setInvite] = useState('');
@@ -37,7 +42,7 @@ export default function Login() {
       localStorage.removeItem('tint_room_title');
       localStorage.removeItem('tint_invite_link');
       await apiFetch('/auth/verify', { method: 'POST', body: JSON.stringify({}) });
-      navigate('/dashboard');
+      navigate(safeNext);
     } catch (e) {
       localStorage.removeItem('tint_token');
       setError(e instanceof Error ? e.message : 'No se pudo iniciar sesión');

@@ -1,24 +1,33 @@
-import { useParams } from 'react-router-dom';
+import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import { ReactionBar } from '../components/ReactionBar';
 import { CopyButton } from '../components/CopyButton';
 import { BackLink } from '../components/ui/BackLink';
-import { Card } from '../components/ui/Primitives';
+import { BrandMark } from '../components/layout/AppShell';
+import { Button } from '../components/ui/Button';
+import { Card, Field } from '../components/ui/Primitives';
 import { apiFetch } from '../lib/api';
-import { toAbsoluteInviteLink, pickLatestActiveInvitation } from '../lib/invite';
+import { toAbsoluteInviteLink, pickLatestActiveInvitation, parseInviteCode } from '../lib/invite';
 import { formatChatTime, noticeText } from '../lib/socialSocket';
 import { useSocialSocket } from '../hooks/useSocialSocket';
 
 export default function WatchRoom() {
   const { roomId } = useParams();
-  // Canal Social (/ws/social): el estado maestro del chat vive en social-core.
-  const { messages, send, status } = useSocialSocket(roomId);
+  const navigate = useNavigate();
   const guestToken = localStorage.getItem('tint_guest_token');
+  const hostToken = localStorage.getItem('tint_token');
+  // Sin ningún token no hay cómo autenticar el socket (401 + reconexión
+  // infinita): se muestra la puerta en vez de la sala.
+  const hasAccess = !!hostToken || !!guestToken;
+  // Canal Social (/ws/social): el estado maestro del chat vive en social-core.
+  const { messages, send, status } = useSocialSocket(hasAccess ? roomId : undefined);
   // Si hay sesión de host, manda el host aunque queden restos de invitado
   // (p. ej. guest token de una visita anterior al login). Coherente con
   // apiFetch, que prefiere el header de host.
   const isGuest = !localStorage.getItem('tint_token') && !!guestToken;
   const [chat, setChat] = useState('');
+  const [invite, setInvite] = useState('');
+  const [inviteHint, setInviteHint] = useState('');
   const [roomTitle, setRoomTitle] = useState<string | null>(null);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
 
@@ -32,7 +41,7 @@ export default function WatchRoom() {
   // Título y link de invitación: el host los pide al backend; el invitado
   // usa los guardados al canjear (su token no tiene auth de host).
   useEffect(() => {
-    if (!roomId) return;
+    if (!roomId || !hasAccess) return;
     if (isGuest) {
       setRoomTitle(localStorage.getItem('tint_room_title'));
       setInviteLink(localStorage.getItem('tint_invite_link'));
@@ -58,7 +67,7 @@ export default function WatchRoom() {
     return () => {
       cancelled = true;
     };
-  }, [roomId, isGuest]);
+  }, [roomId, isGuest, hasAccess]);
 
   const heading = roomTitle?.trim() ? roomTitle : `Sala ${roomId}`;
 
@@ -80,11 +89,62 @@ export default function WatchRoom() {
     if (el && stickRef.current) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
+  const handleGateJoin = (e: React.FormEvent) => {
+    e.preventDefault();
+    const code = parseInviteCode(invite);
+    if (!code) {
+      setInviteHint('Ese link no parece válido. Revisa que incluya /invite/ o el código.');
+      return;
+    }
+    setInviteHint('');
+    navigate(`/invite/${code}`);
+  };
+
+  if (!hasAccess) {
+    return (
+      <div className="grid min-h-[100dvh] place-items-center bg-tint-bg px-4 text-tint-muted">
+        <Card className="w-full max-w-md p-8">
+          <p className="text-[11px] uppercase tracking-[0.18em] text-tint-accent">Sala privada</p>
+          <h1 className="mt-2 text-2xl font-bold tracking-tight text-white">Únete a esta sala</h1>
+          <p className="mt-2 text-sm leading-relaxed">
+            Necesitas un link de invitación o ser el host para ver el contenido y chatear.
+          </p>
+          <form onSubmit={handleGateJoin} className="mt-6 space-y-4">
+            <Field label="Link de invitación" htmlFor="gate-invite" error={undefined}>
+              <input
+                id="gate-invite"
+                className="w-full rounded-xl border border-white/10 bg-tint-bg px-4 py-2.5 text-white placeholder:text-tint-muted/50 focus:border-tint-accent focus:outline-none"
+                value={invite}
+                onChange={(e) => setInvite(e.target.value)}
+                placeholder="Pega el link o el código"
+                autoComplete="off"
+              />
+            </Field>
+            {inviteHint && <p className="text-[13px] text-red-300">{inviteHint}</p>}
+            <Button type="submit" disabled={invite.trim().length === 0} className="w-full">
+              Continuar
+            </Button>
+          </form>
+          <p className="mt-6 border-t border-white/10 pt-4 text-[13px]">
+            ¿Eres el host?{' '}
+            <Link
+              to={`/login?next=${encodeURIComponent(`/watch/${roomId ?? ''}`)}`}
+              className="text-tint-accent underline-offset-4 hover:underline"
+            >
+              Inicia sesión
+            </Link>
+          </p>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-[100dvh] bg-tint-bg text-tint-muted">
       <header className="sticky top-0 z-30 border-b border-white/10 bg-tint-bg/90 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-[1400px] items-center justify-between gap-4 px-4">
           <div className="flex min-w-0 items-center gap-3">
+            <BrandMark />
             <BackLink />
             <h1 className="truncate text-[15px] font-semibold tracking-tight text-white" title={heading}>
               {heading}

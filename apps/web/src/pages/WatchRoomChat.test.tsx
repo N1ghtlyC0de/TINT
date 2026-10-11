@@ -55,6 +55,8 @@ describe('WatchRoom chat en vivo', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
+    // El chat se prueba como invitado con sesión (sin token sale la puerta).
+    localStorage.setItem('tint_guest_token', 'guest-tok');
   });
 
   it('muestra el historial del socket y envía por el canal social', async () => {
