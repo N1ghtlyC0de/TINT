@@ -1,5 +1,9 @@
 import json
 import logging
+import subprocess
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from fakes import FakeBlobStore, FakePopen, FakeRepository, fake_run, solid_frame
@@ -28,45 +32,95 @@ def upload(tmp_path):
     return path
 
 
+def pipeline_runner(ffmpeg_returncode=0, ffmpeg_error=None):
+    """Runner que atiende ffprobe (duración) y ffmpeg (escribe el MP4 normalizado)."""
+    seen = []
+
+    def run(cmd, **kwargs):
+        if cmd[0] == "ffprobe":
+            return SimpleNamespace(returncode=0, stdout=PROBE_2S, stderr="")
+        if ffmpeg_error:
+            raise ffmpeg_error
+        dest = Path(cmd[-1])
+        seen.append((Path(cmd[cmd.index("-i") + 1]), dest))
+        dest.write_bytes(b"normalized-bytes")
+        return SimpleNamespace(returncode=ffmpeg_returncode, stdout="", stderr="boom")
+
+    runner = Mock(side_effect=run)
+    runner.seen = seen
+    return runner
+
+
 def setup():
     return FakeRepository({"v1"}), FakeBlobStore()
 
 
-def test_process_video_uploads_preprocessed_video_and_ambilight_then_marks_ready(upload):
+def test_process_video_uploads_normalized_video_and_ambilight_then_marks_ready(upload):
     repo, blobs = setup()
-    status = process_video("v1", upload, repo, blobs, fake_run(stdout=PROBE_2S), two_red_frames())
+    runner = pipeline_runner()
+    status = process_video("v1", upload, repo, blobs, runner, two_red_frames())
     assert status is VideoStatus.READY
     assert repo.history == [("v1", "processing"), ("v1", "ready")]
     assert repo.durations["v1"] == 2000
     assert repo.storage_keys["v1"] == "v1/source.mp4"
-    assert blobs.objects["v1/source.mp4"] == b"video-bytes"
+    assert blobs.objects["v1/source.mp4"] == b"normalized-bytes"
     palette = json.loads(blobs.objects[ambilight_key("v1")])
     assert [entry["t_ms"] for entry in palette] == [0, 1000]
     assert palette[0]["top"] == "#ff0000"
 
 
-def test_process_video_preprocesses_the_local_file(upload):
+def test_process_video_validates_then_normalizes_then_extracts_ambilight_from_the_normalized(
+    upload,
+):
     repo, blobs = setup()
-    runner = fake_run(stdout=PROBE_2S)
+    runner = pipeline_runner()
     popen = two_red_frames()
     process_video("v1", upload, repo, blobs, runner, popen)
-    assert runner.call_args.args[0][-1] == str(upload)
+    assert [call.args[0][0] for call in runner.call_args_list] == ["ffprobe", "ffmpeg"]
+    assert runner.call_args_list[0].args[0][-1] == str(upload)
+    ((src, normalized),) = runner.seen
+    assert src == upload
     cmd = popen.calls[0][0]
-    assert cmd[cmd.index("-i") + 1] == str(upload)
+    assert cmd[cmd.index("-i") + 1] == str(normalized) != str(upload)
 
 
 def test_process_video_leaves_the_local_file_to_the_caller(upload):
     repo, blobs = setup()
-    process_video("v1", upload, repo, blobs, fake_run(stdout=PROBE_2S), two_red_frames())
+    process_video("v1", upload, repo, blobs, pipeline_runner(), two_red_frames())
     assert upload.read_bytes() == b"video-bytes"
 
 
-def test_process_video_normalizes_extension_in_storage_key(tmp_path):
+def test_process_video_publishes_source_mp4_whatever_the_input_extension(tmp_path):
     upload = tmp_path / "clip.MP4"
     upload.write_bytes(b"x")
     repo, blobs = setup()
-    process_video("v1", upload, repo, blobs, fake_run(stdout=PROBE_2S), two_red_frames())
+    process_video("v1", upload, repo, blobs, pipeline_runner(), two_red_frames())
     assert repo.storage_keys["v1"] == "v1/source.mp4"
+
+
+def test_normalized_temp_file_is_removed_on_success_and_on_failure(upload):
+    for runner in (pipeline_runner(), pipeline_runner(ffmpeg_returncode=1)):
+        repo, blobs = setup()
+        process_video("v1", upload, repo, blobs, runner, two_red_frames())
+        ((_, normalized),) = runner.seen
+        assert not normalized.exists() and not normalized.parent.exists()
+
+
+@pytest.mark.parametrize(
+    "runner",
+    [
+        pipeline_runner(ffmpeg_returncode=1),
+        pipeline_runner(ffmpeg_error=subprocess.TimeoutExpired("ffmpeg", 1)),
+    ],
+)
+def test_video_is_not_uploaded_when_normalization_fails(upload, runner):
+    repo, blobs = setup()
+    popen = FakePopen()
+    status = process_video("v1", upload, repo, blobs, runner, popen)
+    assert status is VideoStatus.FAILED
+    assert repo.history == [("v1", "processing"), ("v1", "failed")]
+    assert popen.calls == []
+    assert blobs.objects == {}
 
 
 def test_process_video_does_not_mark_ready_if_upload_fails(upload):
@@ -77,7 +131,7 @@ def test_process_video_does_not_mark_ready_if_upload_fails(upload):
 
     blobs.put_json = broken_put
     with pytest.raises(ConnectionError):
-        process_video("v1", upload, repo, blobs, fake_run(stdout=PROBE_2S), two_red_frames())
+        process_video("v1", upload, repo, blobs, pipeline_runner(), two_red_frames())
     assert repo.statuses["v1"] == "processing"
 
 
@@ -136,7 +190,7 @@ def test_video_is_not_uploaded_when_ambilight_fails(upload, caplog):
     repo, blobs = setup()
     popen = FakePopen(returncode=1, stderr=b"decode error")
     with caplog.at_level(logging.WARNING, logger="media_worker.pipeline"):
-        status = process_video("v1", upload, repo, blobs, fake_run(stdout=PROBE_2S), popen)
+        status = process_video("v1", upload, repo, blobs, pipeline_runner(), popen)
     assert status is VideoStatus.FAILED
     assert repo.statuses["v1"] == "failed"
     assert blobs.objects == {}
@@ -145,9 +199,9 @@ def test_video_is_not_uploaded_when_ambilight_fails(upload, caplog):
 
 def test_reprocessing_overwrites_the_same_artifacts(upload):
     repo, blobs = setup()
-    process_video("v1", upload, repo, blobs, fake_run(stdout=PROBE_2S), two_red_frames())
+    process_video("v1", upload, repo, blobs, pipeline_runner(), two_red_frames())
     first = dict(blobs.objects)
-    process_video("v1", upload, repo, blobs, fake_run(stdout=PROBE_2S), two_red_frames())
+    process_video("v1", upload, repo, blobs, pipeline_runner(), two_red_frames())
     assert blobs.objects == first
     assert sorted(blobs.objects) == ["v1/ambilight.json", "v1/source.mp4"]
     assert repo.statuses["v1"] == "ready"
@@ -156,5 +210,5 @@ def test_reprocessing_overwrites_the_same_artifacts(upload):
 def test_failed_video_is_reprocessed_when_requested_again(upload):
     repo, blobs = setup()
     process_video("v1", upload, repo, blobs, fake_run(returncode=1), FakePopen())
-    process_video("v1", upload, repo, blobs, fake_run(stdout=PROBE_2S), two_red_frames())
+    process_video("v1", upload, repo, blobs, pipeline_runner(), two_red_frames())
     assert [status for _, status in repo.history] == ["processing", "failed", "processing", "ready"]

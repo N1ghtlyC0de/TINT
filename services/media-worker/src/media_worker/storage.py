@@ -14,9 +14,9 @@ class BlobNotFoundError(Exception):
     """La clave pedida no existe en el bucket."""
 
 
-def source_key(video_id: str, suffix: str) -> str:
-    """Clave determinista del vídeo preprocesado (extensión en minúsculas)."""
-    return f"{video_id}/source{suffix.lower()}"
+def source_key(video_id: str) -> str:
+    """Clave determinista del vídeo normalizado (siempre MP4)."""
+    return f"{video_id}/source.mp4"
 
 
 def ambilight_key(video_id: str) -> str:

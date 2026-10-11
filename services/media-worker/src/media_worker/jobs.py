@@ -3,8 +3,9 @@
 identity-api firma un PUT a `incoming/{video_id}/original.<ext>` (zona de staging, nunca la clave
 publicada) y guarda esa clave en `videos.storage_key`. Aquí se descarga a un archivo temporal y se
 pasa a `pipeline.process_video` sin modificarlo: solo si el vídeo es válido se publica en
-`{video_id}/source.<ext>` y `mark_ready` actualiza `storage_key`. El staging lo limpia la regla de
-ciclo de vida del bucket (`minio-init`), así no se corta a quien ya lo está reproduciendo.
+`{video_id}/source.mp4` (ya normalizado) y `mark_ready` actualiza `storage_key`. El staging lo
+limpia la regla de ciclo de vida del bucket (`minio-init`), así no se corta a quien ya lo está
+reproduciendo.
 """
 
 from __future__ import annotations

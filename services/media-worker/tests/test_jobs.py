@@ -33,7 +33,7 @@ def test_incoming_prefix_is_the_staging_area():
     assert INCOMING_PREFIX == "incoming/"
 
 
-def test_downloads_the_staged_upload_and_runs_the_pipeline_with_its_extension():
+def test_downloads_the_staged_upload_and_runs_the_pipeline_with_its_original_name():
     blobs = Blobs({STAGED: b"bytes del navegador"})
     repo = repo_with(("processing", STAGED))
     seen = {}
@@ -44,7 +44,6 @@ def test_downloads_the_staged_upload_and_runs_the_pipeline_with_its_extension():
         return VideoStatus.READY
 
     assert handle_upload(VIDEO_ID, repo, blobs, process=process) is VideoStatus.READY
-    # La extensión del original decide la clave publicada ({id}/source.<ext>).
     assert seen == {
         "video_id": VIDEO_ID,
         "name": "original.MP4",

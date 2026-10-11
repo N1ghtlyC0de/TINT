@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 from media_worker.ambilight import AmbilightError, extract_ambilight
+from media_worker.normalize import NormalizeError, normalize_video
 from media_worker.probe import VideoStatus, inspect_status
 from media_worker.storage import ambilight_key, source_key
 
@@ -40,11 +42,11 @@ def process_video(
     runner=subprocess.run,
     popen=subprocess.Popen,
 ) -> VideoStatus:
-    """Preprocesa el archivo local `source` y solo entonces lo publica en el bucket.
+    """Normaliza a MP4 y extrae el Ambilight de `source`; solo entonces publica en el bucket.
 
-    El vídeo recibido nunca se sube sin preprocesar: si es inválido o falla la extracción
-    Ambilight queda en `failed` y no se publica nada. `source` pertenece a quien llama (la API),
-    que lo borra cuando quiera.
+    El vídeo recibido nunca se sube sin preprocesar: si es inválido o falla la normalización
+    o la extracción Ambilight queda en `failed` y no se publica nada. `source` pertenece a quien
+    llama (la API), que lo borra cuando quiera.
 
     Los errores de entrada se lanzan antes de tocar SQL o el bucket: `InvalidVideoIdError` si el
     id no es válido y `VideoNotFoundError` si la fila no existe. Los errores de infraestructura
@@ -59,17 +61,20 @@ def process_video(
         repo.mark_failed(video_id)
         return VideoStatus.FAILED
 
-    # Pendiente: normalizar aquí el vídeo a un formato estándar para los demás servicios. El
-    # Ambilight se extraerá del vídeo normalizado y será ese el que se suba (no el original).
-    try:
-        palette = extract_ambilight(str(source), duration_ms, popen)
-    except AmbilightError as exc:
-        return _fail(repo, video_id, f"extracción ambilight: {exc}")
+    with tempfile.TemporaryDirectory(prefix="media-worker-") as workdir:
+        normalized = Path(workdir) / "source.mp4"
+        try:
+            normalize_video(source, normalized, runner)
+            palette = extract_ambilight(str(normalized), duration_ms, popen)
+        except NormalizeError as exc:
+            return _fail(repo, video_id, f"normalización: {exc}")
+        except AmbilightError as exc:
+            return _fail(repo, video_id, f"extracción ambilight: {exc}")
 
-    # Se publica todo antes de marcar `ready`: `ready` implica que vídeo y ambilight.json existen.
-    storage_key = source_key(video_id, source.suffix)
-    blobs.upload_file(source, storage_key)
-    blobs.put_json(ambilight_key(video_id), palette)
+        # Se publica todo antes de marcar `ready`: `ready` implica que existen vídeo y ambilight.
+        storage_key = source_key(video_id)
+        blobs.upload_file(normalized, storage_key)
+        blobs.put_json(ambilight_key(video_id), palette)
     repo.mark_ready(video_id, duration_ms, storage_key)
     logger.info("vídeo %s listo (%d ms, %d muestras)", video_id, duration_ms, len(palette))
     return VideoStatus.READY
