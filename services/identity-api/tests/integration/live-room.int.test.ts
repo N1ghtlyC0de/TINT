@@ -166,7 +166,8 @@ describe.skipIf(!RUN)('sala en vivo de punta a punta', () => {
     const del = await request(app).delete(`/api/v1/rooms/${roomId}`);
     if (del.status !== 200 && del.status !== 204) note(`delete → ${del.status}`);
     const pbDel = await request(app).get(`/api/v1/rooms/${roomId}/playback`).set('Authorization', `Bearer ${g2.token}`);
-    if (pbDel.status !== 410) note(`playback tras borrar → ${pbDel.status}`);
+    // Borrar revoca a los invitados: 401 (token revocado) o 410 (sala borrada).
+    if (![401, 410].includes(pbDel.status)) note(`playback tras borrar → ${pbDel.status}`);
     const lateClosed = await late.closed(3000);
     if (lateClosed === null) note('sync: tras borrar la sala los invitados siguen conectados');
     const reopen = await tryOpen(`${SYNC}?room_id=${roomId}&token=${g2.token}`);
