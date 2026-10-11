@@ -32,10 +32,23 @@ describe('validate', () => {
 });
 
 describe('errorHandler', () => {
-  it('responde 500 con el mensaje', () => {
+  it('responde 500 genérico sin filtrar el mensaje interno y lo registra en el servidor', () => {
     const res = mockRes();
-    errorHandler(new Error('boom'), {} as any, res, (() => {}) as any);
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const err = new Error('value too long for type character varying(150)');
+    errorHandler(err, {} as any, res, (() => {}) as any);
     expect(res.status).toHaveBeenCalledWith(500);
-    expect(res.json).toHaveBeenCalledWith({ error: 'boom' });
+    expect(res.json).toHaveBeenCalledWith({ error: 'Internal error' });
+    expect(log).toHaveBeenCalled();
+    expect(String(log.mock.calls[0].join(' '))).toContain('character varying(150)');
+    log.mockRestore();
+  });
+
+  it('respeta los errores 4xx expuestos de express (p. ej. JSON mal formado)', () => {
+    const res = mockRes();
+    const err = Object.assign(new Error('Unexpected token } in JSON'), { status: 400, expose: true });
+    errorHandler(err, {} as any, res, (() => {}) as any);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Unexpected token } in JSON' });
   });
 });

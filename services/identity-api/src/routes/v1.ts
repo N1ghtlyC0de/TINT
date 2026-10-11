@@ -46,7 +46,7 @@ router.post('/auth/verify', requireAuthHost, validate(verifySchema), async (req,
 });
 
 const createRoomSchema = z.object({
-  title: z.string().trim().min(1),
+  title: z.string().trim().min(1).max(150),
 });
 router.post('/rooms', requireAuthHost, validate(createRoomSchema), async (req, res) => {
   const { title } = req.body;

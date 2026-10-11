@@ -90,6 +90,21 @@ describe('rutas v1', () => {
     expect(res.status).toBe(400);
   });
 
+  it('POST /rooms 400 si el título supera 150 caracteres (varchar(150) en la BD)', async () => {
+    const res = await request(app).post('/api/v1/rooms').send({ title: 'a'.repeat(151) });
+    expect(res.status).toBe(400);
+    expect(createRoom).not.toHaveBeenCalled();
+  });
+
+  it('POST /rooms 500 genérico si la BD falla (no filtra el error de Postgres)', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.mocked(createRoom).mockRejectedValueOnce(new Error('value too long for type character varying(150)'));
+    const res = await request(app).post('/api/v1/rooms').send({ title: 'Sala' });
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({ error: 'Internal error' });
+    log.mockRestore();
+  });
+
   it('POST /rooms crea sala + invitación inicial con link relativo', async () => {
     vi.mocked(createRoom).mockResolvedValueOnce(room as any);
     vi.mocked(createInvitation).mockResolvedValueOnce(invitation as any);
