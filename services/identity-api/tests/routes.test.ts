@@ -1,9 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import request from 'supertest';
+import jwt from 'jsonwebtoken';
+
+const authUser = vi.hoisted(() => ({
+  override: null as Record<string, unknown> | null,
+}));
 
 vi.mock('../src/middlewares/auth.js', () => ({
   requireAuthHost: (req: any, _res: any, next: any) => {
-    req.user = { id: 'host-1', providerSub: 'sub-1', email: 'h@t.c', displayName: 'Host' };
+    req.user = { id: 'host-1', providerSub: 'sub-1', email: 'h@t.c', displayName: 'Host', ...authUser.override };
     next();
   },
 }));
@@ -25,7 +30,16 @@ vi.mock('../src/modules/invitations/invitations.repo.js', () => ({
   listLatestActiveByRooms: vi.fn(),
 }));
 
+vi.mock('../src/modules/guests/guestSessions.repo.js', () => ({
+  create: vi.fn(async (s: unknown) => s),
+  findByJti: vi.fn(),
+  listByRoom: vi.fn(),
+  setRevoked: vi.fn(),
+}));
+
 import app from '../src/app.js';
+import { env } from '../src/config/env.js';
+import { create as createGuestSession } from '../src/modules/guests/guestSessions.repo.js';
 import { create as createRoom, listByHost, findById, isOwner, softRemoveById, updateTitle } from '../src/modules/rooms/rooms.repo.js';
 import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../src/modules/invitations/invitations.repo.js';
 
@@ -42,6 +56,9 @@ const invitation = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Por defecto la sala existe y está activa (requireActiveRoom).
+  vi.mocked(findById).mockResolvedValue({ id: 'room-1', hostId: 'host-1', title: 'Sala', status: 'active', mediaId: null, mediaKey: null } as any);
+  authUser.override = null;
 });
 
 describe('rutas v1', () => {
@@ -110,6 +127,39 @@ describe('rutas v1', () => {
     const res = await request(app).post('/api/v1/rooms/room-1/invitations').send({ ttlHours: 6 });
     expect(res.status).toBe(200);
     expect(res.body.link).toBe('/invite/abc123def456');
+  });
+
+  it('POST /rooms/:id/sync-ticket 403 si no es dueño', async () => {
+    vi.mocked(isOwner).mockResolvedValueOnce(false);
+    const res = await request(app).post('/api/v1/rooms/room-1/sync-ticket').send({});
+    expect(res.status).toBe(403);
+  });
+
+  it('POST /rooms/:id/sync-ticket emite ticket HS256 de host si es dueño', async () => {
+    vi.mocked(isOwner).mockResolvedValueOnce(true);
+    const res = await request(app).post('/api/v1/rooms/room-1/sync-ticket').send({});
+    expect(res.status).toBe(200);
+    expect(isOwner).toHaveBeenCalledWith('room-1', 'host-1');
+    expect(typeof res.body.token).toBe('string');
+    expect(new Date(res.body.expiresAt).toISOString()).toBe(res.body.expiresAt);
+    const decoded = jwt.verify(res.body.token, env.JWT_SECRET, {
+      algorithms: ['HS256'],
+      issuer: env.JWT_ISSUER,
+      audience: env.JWT_AUDIENCE,
+    }) as any;
+    expect(decoded.sub).toBe('host-1');
+    expect(decoded.room_id).toBe('room-1');
+    expect(decoded.role).toBe('host');
+    expect(decoded.nick).toBe('Host');
+    expect(decoded.exp * 1000).toBe(new Date(res.body.expiresAt).getTime());
+  });
+
+  it('POST /rooms/:id/sync-ticket usa el email como nick si no hay displayName', async () => {
+    authUser.override = { displayName: null };
+    vi.mocked(isOwner).mockResolvedValueOnce(true);
+    const res = await request(app).post('/api/v1/rooms/room-1/sync-ticket').send({});
+    expect(res.status).toBe(200);
+    expect((jwt.decode(res.body.token) as any).nick).toBe('h@t.c');
   });
 
   it('POST /invitations/:code/revoke 404 si no existe', async () => {
@@ -312,5 +362,35 @@ describe('rutas v1', () => {
     const res = await request(app).post('/api/v1/invitations/claim').send({ code: 'abc', nick: 'Ana' });
     expect(res.status).toBe(200);
     expect(res.body.roomTitle).toBe('Noche de cine');
+  });
+
+  it('POST /invitations/claim 400 si el nick supera 64 caracteres', async () => {
+    const res = await request(app).post('/api/v1/invitations/claim').send({ code: 'abc', nick: 'a'.repeat(65) });
+    expect(res.status).toBe(400);
+    expect(findByCode).not.toHaveBeenCalled();
+  });
+
+  it('POST /invitations/claim registra la sesión del invitado con los datos del token', async () => {
+    vi.mocked(findByCode).mockResolvedValueOnce({ ...invitation } as any);
+    const res = await request(app).post('/api/v1/invitations/claim').send({ code: 'abc', nick: ' Ana ' });
+    expect(res.status).toBe(200);
+    const decoded = jwt.decode(res.body.token) as any;
+    expect(createGuestSession).toHaveBeenCalledTimes(1);
+    expect(createGuestSession).toHaveBeenCalledWith({
+      jti: decoded.jti,
+      roomId: 'room-1',
+      sub: decoded.sub,
+      nick: 'Ana',
+      joinedAt: new Date(decoded.iat * 1000),
+      expiresAt: new Date(decoded.exp * 1000),
+    });
+  });
+
+  it('POST /invitations/claim 500 (sin token) si no se puede registrar la sesión', async () => {
+    vi.mocked(findByCode).mockResolvedValueOnce({ ...invitation } as any);
+    vi.mocked(createGuestSession).mockRejectedValueOnce(new Error('db down'));
+    const res = await request(app).post('/api/v1/invitations/claim').send({ code: 'abc', nick: 'Ana' });
+    expect(res.status).toBe(500);
+    expect(res.body.token).toBeUndefined();
   });
 });

@@ -2,12 +2,19 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/server"
 )
 
 func main() {
-	log.Fatal(server.Run(os.Getenv))
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := server.Run(ctx, os.Getenv); err != nil {
+		log.Fatal(err)
+	}
 }

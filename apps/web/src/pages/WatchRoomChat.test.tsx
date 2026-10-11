@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { vi, beforeEach } from 'vitest';
 import WatchRoom from './WatchRoom';
+import { MockWebSocket } from '../test/mockWebSocket';
 import { formatChatTime } from '../lib/socialSocket';
 
 vi.mock('../lib/api', async (importOriginal) => {
@@ -69,6 +70,8 @@ function guestJwt(payload: Record<string, unknown>): string {
 
 describe('WatchRoom chat en vivo', () => {
   beforeEach(() => {
+  // El Canal Sync (/ws/sync) se prueba en WatchRoom.sync.test.tsx: aquí no abre sockets reales.
+  vi.stubGlobal('WebSocket', MockWebSocket);
     vi.clearAllMocks();
     localStorage.clear();
     // El chat se prueba como invitado con sesión (sin token sale la puerta).

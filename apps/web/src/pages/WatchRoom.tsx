@@ -1,7 +1,16 @@
+
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { useEffect, useRef, useState } from 'react';
+
+import { useParams, Link } from 'react-router-dom';
+import { useCallback, useEffect, useRef, useState } from 'react';
+
 import { ReactionBar } from '../components/ReactionBar';
 import { CopyButton } from '../components/CopyButton';
+import { SyncedPlayer } from '../components/SyncedPlayer';
+import { ChangeVideoPanel } from '../components/host/ChangeVideoPanel';
+import { ParticipantsPanel } from '../components/host/ParticipantsPanel';
+import { ReconnectStatus, SyncQualityIndicator } from '../components/sync/SyncStatus';
+import { ToastStack } from '../components/sync/SyncToasts';
 import { BackLink } from '../components/ui/BackLink';
 import { BrandMark } from '../components/layout/AppShell';
 import { Button } from '../components/ui/Button';
@@ -10,7 +19,23 @@ import { apiFetch } from '../lib/api';
 import { toAbsoluteInviteLink, pickLatestActiveInvitation, parseInviteCode } from '../lib/invite';
 import { formatChatTime, noticeText } from '../lib/socialSocket';
 import { getLocalIdentity } from '../lib/identity';
+import { useRoomPlayback, type MediaStatus } from '../hooks/useRoomPlayback';
+
 import { useSocialSocket } from '../hooks/useSocialSocket';
+import { useSyncSocket } from '../hooks/useSyncSocket';
+import { useSyncToasts } from '../hooks/useSyncToasts';
+
+/** Texto y color del indicador de procesamiento (media-worker) por estado del vídeo. */
+const MEDIA_STATUS_UI: Record<MediaStatus, { text: string; tone: string; dot: string }> = {
+  pending: { text: 'Procesando vídeo (Ambilight)…', tone: 'text-amber-200', dot: 'bg-amber-300 animate-pulse motion-reduce:animate-none' },
+  processing: { text: 'Procesando vídeo (Ambilight)…', tone: 'text-amber-200', dot: 'bg-amber-300 animate-pulse motion-reduce:animate-none' },
+  ready: { text: 'Ambilight listo', tone: 'text-emerald-300', dot: 'bg-emerald-400' },
+  failed: {
+    text: 'No se pudo procesar el vídeo; la reproducción sigue disponible',
+    tone: 'text-red-300',
+    dot: 'bg-red-400',
+  },
+};
 
 export default function WatchRoom() {
   const { roomId } = useParams();
@@ -28,6 +53,37 @@ export default function WatchRoom() {
   const isGuest = !localStorage.getItem('tint_token') && !!guestToken;
   // Identidad para display (chip + mensajes propios). Solo UI.
   const identity = getLocalIdentity();
+  const role = isGuest ? 'guest' : 'host';
+  // Respaldo solo si la sala no tiene vídeo asignado en identity-api.
+  const demoVideoUrl = import.meta.env.VITE_DEMO_VIDEO_URL || undefined;
+
+  // Canal Sync (/ws/sync): el Reloj Maestro vive en sync-core.
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const getPositionMs = useCallback(
+    () => (videoRef.current ? videoRef.current.currentTime * 1000 : null),
+    [],
+  );
+  const sync = useSyncSocket({ roomId: roomId ?? '', role, getPositionMs });
+  const playback = useRoomPlayback(roomId ?? '', sync.state ? sync.state.media_id : undefined, {
+    role,
+    enabled: !sync.revoked,
+  });
+  const toasts = useSyncToasts(sync.lastBroadcast);
+  // Los controles los habilita el servidor (STATE.can_control / CONTROL), no el rol local.
+  const canControl = sync.canControl;
+  const delegated = isGuest && canControl;
+  const videoSrc = playback.url ?? (!playback.loading && !playback.error && !playback.mediaId ? demoVideoUrl : undefined);
+  const emptyMessage = playback.url
+    ? undefined
+    : playback.loading
+      ? 'Cargando vídeo…'
+      : (playback.error ?? 'Sin video configurado');
+  const mediaStatusUi = playback.status ? MEDIA_STATUS_UI[playback.status] : null;
+  const { sendCommand } = sync;
+  const loadMedia = useCallback(
+    (mediaId: string) => sendCommand('LOAD', 0, { media_id: mediaId }) !== null,
+    [sendCommand],
+  );
   const [chat, setChat] = useState('');
   const [invite, setInvite] = useState('');
   const [inviteHint, setInviteHint] = useState('');
@@ -137,6 +193,22 @@ export default function WatchRoom() {
               Inicia sesión
             </Link>
           </p>
+  if (sync.revoked) {
+    return (
+      <div className="grid min-h-[100dvh] place-items-center bg-tint-bg px-4 text-tint-muted">
+        <Card className="max-w-md p-8 text-center">
+          <p role="alert" className="text-lg font-semibold tracking-tight text-white">
+            Fuiste retirado de la sala por el host
+          </p>
+          <p className="mt-2 text-sm leading-relaxed">
+            Tu invitación ya no es válida. Si crees que es un error, pide al host un nuevo enlace.
+          </p>
+          <Link
+            to="/"
+            className="mt-6 inline-flex rounded-full bg-tint-accent px-5 py-2.5 text-sm font-semibold text-tint-bg transition hover:bg-tint-accentHover"
+          >
+            Volver al inicio
+          </Link>
         </Card>
       </div>
     );
@@ -202,49 +274,40 @@ export default function WatchRoom() {
       <main className="mx-auto grid w-full max-w-[1400px] gap-4 px-4 py-6 lg:grid-cols-[2fr_360px]">
         <section aria-label="Reproductor">
           <Card className="overflow-hidden">
-            <div className="relative aspect-video bg-black">
-              <img
-                src={`https://picsum.photos/seed/tint-watch-${roomId}/1280/720`}
-                alt=""
-                className="absolute inset-0 h-full w-full object-cover opacity-40"
-                loading="eager"
-              />
-              <div className="absolute inset-0 grid place-items-center">
-                <div className="flex flex-col items-center gap-3">
-                  <button
-                    type="button"
-                    aria-label="Reproducir"
-                    className="grid h-16 w-16 place-items-center rounded-full bg-tint-accent text-tint-bg transition hover:bg-tint-accentHover active:scale-[0.98]"
-                  >
-                    <span aria-hidden="true" className="ml-1 text-xl">▶</span>
-                  </button>
-                  <p className="text-[13px]">Reproductor (simulado)</p>
-                </div>
-              </div>
-              <div className="absolute inset-x-0 bottom-0 p-4">
-                <div
-                  className="h-1 overflow-hidden rounded-full bg-white/15"
-                  role="progressbar"
-                  aria-label="Progreso"
-                  aria-valuenow={0}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                >
-                  <div className="h-full w-0 bg-tint-accent" />
-                </div>
-              </div>
-            </div>
+            <SyncedPlayer
+              src={videoSrc}
+              canControl={canControl}
+              delegated={delegated}
+              sync={sync}
+              videoRef={videoRef}
+              emptyMessage={emptyMessage}
+            />
             <div aria-hidden="true" className="h-1.5 bg-gradient-to-r from-tint-accentDark via-tint-accent to-tint-accentDark opacity-70 blur-[6px]" />
             <div className="flex flex-wrap items-center justify-between gap-4 p-4">
               <div>
                 <p className="text-sm font-medium text-white">Reproducción sincronizada</p>
                 <p className="mt-0.5 text-[13px]">
-                  Controles de host listos para /ws/sync
+                  {canControl ? 'Controlas la reproducción de la sala' : 'El host controla la reproducción'}
                 </p>
               </div>
               <ReactionBar onReact={() => {}} />
             </div>
           </Card>
+
+          {!isGuest && (
+            <div className="mt-4 grid gap-4 md:grid-cols-2">
+              <Card className="p-5">
+                <h2 className="text-[15px] font-semibold text-white">Vídeo de la sala</h2>
+                <p className="mb-4 mt-1 text-[13px] leading-relaxed">
+                  Sube un vídeo desde tu equipo; todos lo cargarán en pausa al inicio.
+                </p>
+                <ChangeVideoPanel roomId={roomId ?? ''} onMediaAssigned={loadMedia} />
+              </Card>
+              <Card className="p-5">
+                <ParticipantsPanel roomId={roomId ?? ''} />
+              </Card>
+            </div>
+          )}
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
             <Card className="p-5">
@@ -258,6 +321,19 @@ export default function WatchRoom() {
               <p className="mt-1 text-[13px] leading-relaxed">
                 Visualización lista para ambilight.json de media-worker.
               </p>
+              <p
+                role="status"
+                aria-live="polite"
+                aria-label="Estado del vídeo"
+                className={`mt-2 flex items-center gap-2 text-[13px] ${mediaStatusUi?.tone ?? ''}`}
+              >
+                {mediaStatusUi && (
+                  <>
+                    <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${mediaStatusUi.dot}`} />
+                    {mediaStatusUi.text}
+                  </>
+                )}
+              </p>
               <div aria-hidden="true" className="mt-3 flex gap-1.5">
                 {['#FF6B1A', '#C4520A', '#313338', '#B5BAC1', '#1E1F22'].map((c) => (
                   <span key={c} style={{ background: c }} className="h-6 flex-1 rounded-md border border-white/10" />
@@ -266,7 +342,6 @@ export default function WatchRoom() {
             </Card>
           </div>
 
-          {/* TODO: conectar a /ws/sync (sync-core) */}
         </section>
 
         <aside aria-label="Social" className="flex min-h-0 flex-col gap-4">
@@ -339,6 +414,8 @@ export default function WatchRoom() {
           </Card>
         </aside>
       </main>
+
+      <ToastStack toasts={toasts} className="fixed right-4 top-20 z-40" />
     </div>
   );
 }
