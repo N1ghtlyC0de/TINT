@@ -13,7 +13,7 @@ import { issueGuestToken, generateSyncTicket } from '../modules/auth/auth.servic
 import { getMediaSigner } from '../modules/media/media.signer.js';
 import { getMediaStore } from '../modules/media/media.store.js';
 import { enqueueMediaUpload } from '../modules/media/media.queue.js';
-import { create as createVideo, findById as findVideo } from '../modules/videos/videos.repo.js';
+import { create as createVideo, findById as findVideo, transitionStatus as transitionVideoStatus } from '../modules/videos/videos.repo.js';
 import {
   create as createGuestSession,
   findByJti as findGuestSession,
@@ -297,7 +297,9 @@ router.post('/rooms/:id/media/uploads', requireAuthHost, requireRoomOwner, valid
 });
 
 // 2) Confirma la subida: comprueba el objeto, encola el procesamiento
-//    (XADD media:uploads) y asigna el vídeo a la sala. Idempotente.
+//    (XADD media:uploads) y asigna el vídeo a la sala. Idempotente: solo el
+//    paso pending → processing encola y asigna; las repeticiones devuelven el
+//    estado actual sin volver a encolar.
 router.post('/rooms/:id/media/uploads/:videoId/complete', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
   const roomId = req.room!.id;
   const videoId = paramId(req.params.videoId);
@@ -305,20 +307,33 @@ router.post('/rooms/:id/media/uploads/:videoId/complete', requireAuthHost, requi
   if (!video || video.roomId !== roomId) {
     return res.status(404).json({ error: 'Not found' });
   }
+  const current = (v: { id: string; storageKey: string; status: string }) =>
+    res.json({ mediaId: v.id, mediaKey: v.storageKey, status: v.status });
+  if (video.status !== 'pending') {
+    return current(video);
+  }
   if (!(await getMediaStore().exists(video.storageKey))) {
     return res.status(409).json({ error: 'Upload missing' });
+  }
+  // Transición condicional: de dos confirmaciones concurrentes solo una encola.
+  const queued = await transitionVideoStatus(video.id, 'pending', 'processing');
+  if (!queued) {
+    const latest = await findVideo(video.id);
+    return current(latest ?? video);
   }
   try {
     await enqueueMediaUpload(video.id);
   } catch (err) {
     console.error('[uploads] no se pudo encolar media:uploads:', (err as Error).message);
+    // Vuelve a pending para que el reintento pueda encolar.
+    await transitionVideoStatus(video.id, 'processing', 'pending');
     return res.status(503).json({ error: 'Service unavailable' });
   }
   const room = await setMedia(roomId, { mediaId: video.id, mediaKey: video.storageKey });
   if (!room) {
     return res.status(404).json({ error: 'Not found' });
   }
-  res.json({ mediaId: video.id, mediaKey: video.storageKey, status: video.status });
+  current(queued);
 });
 
 router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, async (req, res) => {

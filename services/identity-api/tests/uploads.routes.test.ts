@@ -21,12 +21,13 @@ vi.mock('../src/modules/rooms/rooms.repo.js', () => ({
 vi.mock('../src/modules/videos/videos.repo.js', () => ({
   create: vi.fn(async (v: any) => v),
   findById: vi.fn(),
+  transitionStatus: vi.fn(),
 }));
 
 import app from '../src/app.js';
 import { env } from '../src/config/env.js';
 import { findById as findRoom, isOwner, setMedia } from '../src/modules/rooms/rooms.repo.js';
-import { create as createVideo, findById as findVideo } from '../src/modules/videos/videos.repo.js';
+import { create as createVideo, findById as findVideo, transitionStatus } from '../src/modules/videos/videos.repo.js';
 import { setMediaSigner } from '../src/modules/media/media.signer.js';
 import { setMediaStore } from '../src/modules/media/media.store.js';
 import { setRedisClient } from '../src/modules/tokens/revocation.js';
@@ -48,6 +49,7 @@ beforeEach(() => {
   setMediaSigner({ presignGet, presignPut });
   setMediaStore({ exists });
   setRedisClient({ xadd, exists: vi.fn(async () => 0) } as any);
+  vi.mocked(transitionStatus).mockImplementation(async (_id, _from, to) => ({ ...pending, status: to }) as any);
 });
 
 afterEach(() => {
@@ -118,8 +120,9 @@ describe('POST /rooms/:id/media/uploads/:videoId/complete', () => {
     vi.mocked(setMedia).mockResolvedValueOnce({ ...activeRoom, mediaId: VID } as any);
     const res = await complete();
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ mediaId: VID, mediaKey: pending.storageKey, status: 'pending' });
+    expect(res.body).toEqual({ mediaId: VID, mediaKey: pending.storageKey, status: 'processing' });
     expect(exists).toHaveBeenCalledWith(pending.storageKey);
+    expect(transitionStatus).toHaveBeenCalledWith(VID, 'pending', 'processing');
     expect(xadd).toHaveBeenCalledWith('media:uploads', '*', 'video_id', VID);
     expect(setMedia).toHaveBeenCalledWith('room-1', { mediaId: VID, mediaKey: pending.storageKey });
   });
@@ -147,6 +150,30 @@ describe('POST /rooms/:id/media/uploads/:videoId/complete', () => {
     xadd.mockRejectedValueOnce(new Error('redis down'));
     const res = await complete();
     expect(res.status).toBe(503);
+    expect(setMedia).not.toHaveBeenCalled();
+    // Vuelve a pending para que el reintento pueda encolar.
+    expect(transitionStatus).toHaveBeenLastCalledWith(VID, 'processing', 'pending');
+  });
+
+  it.each(['processing', 'ready', 'failed'])('es idempotente: si el vídeo ya está %s responde 200 sin re-encolar ni reasignar', async (status) => {
+    vi.mocked(findVideo).mockResolvedValueOnce({ ...pending, status } as any);
+    const res = await complete();
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ mediaId: VID, mediaKey: pending.storageKey, status });
+    expect(transitionStatus).not.toHaveBeenCalled();
+    expect(xadd).not.toHaveBeenCalled();
+    expect(setMedia).not.toHaveBeenCalled();
+  });
+
+  it('dos confirmaciones concurrentes: la que pierde la transición no re-encola', async () => {
+    vi.mocked(findVideo)
+      .mockResolvedValueOnce(pending as any)
+      .mockResolvedValueOnce({ ...pending, status: 'processing' } as any);
+    vi.mocked(transitionStatus).mockResolvedValueOnce(null as any);
+    const res = await complete();
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('processing');
+    expect(xadd).not.toHaveBeenCalled();
     expect(setMedia).not.toHaveBeenCalled();
   });
 
