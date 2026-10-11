@@ -23,7 +23,7 @@ import {
   type SyncState,
 } from '../lib/syncProtocol';
 
-export const DEFAULT_SYNC_WS_URL = 'ws://localhost:8082/ws/sync';
+export const DEFAULT_SYNC_WS_URL = 'ws://localhost:8083/ws/sync';
 
 /** Longitud máxima de `media_id` aceptada por sync-core (contrato v2 §2). */
 const MAX_MEDIA_ID = 128;

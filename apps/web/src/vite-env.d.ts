@@ -2,7 +2,7 @@
 
 interface ImportMetaEnv {
   readonly VITE_IDENTITY_API_URL?: string;
-  /** WebSocket del Canal Sync de sync-core (p. ej. ws://localhost:8082/ws/sync). */
+  /** WebSocket del Canal Sync de sync-core (p. ej. ws://localhost:8083/ws/sync). */
   readonly VITE_SYNC_WS_URL?: string;
   /** Codificación del Canal Sync: `json` (default) o `msgpack` (subprotocolo tint.sync.msgpack). */
   readonly VITE_SYNC_ENCODING?: string;
