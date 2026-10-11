@@ -63,7 +63,7 @@ Severidad: **A** alta (seguridad o flujo roto), **M** media, **B** baja.
 
 | Tema | Por qué no se arregla aquí |
 | :--- | :--- |
-| **Contrato identity-api → media-worker.** La rama `feat/media-worker-probe` (`c10d595`, 11-10-2026) retiró el consumidor de `media:uploads`: ahora una API llama a `process_video(video_id, archivo_local)` y el worker sube el archivo. Con `develop` + esa rama, los vídeos subidos quedarían en `pending` para siempre y sin Ambilight (la reproducción sí funciona) | Es un cambio de contrato entre dominios en una rama ajena sin fusionar. Hay que decidir entre (a) mantener el stream y que el worker descargue `storage_key` del bucket, o (b) que identity-api llame al worker. Ver [dominio-reproduccion §6.7](dominio-reproduccion.md#67-subida-y-cambio-de-vídeo) |
+| ~~**Contrato identity-api → media-worker.**~~ **Resuelto** en `fix/flujo-completo`: se integró `main` (el worker nuevo) en `develop` y un disparador dentro del worker consume `media:uploads`, descarga el original de la zona de staging `incoming/` y llama a `process_video` sin modificarlo. El navegador sigue subiendo directo al bucket y nada sin procesar se publica en `{id}/source.*` | Ver [dominio-reproduccion §6.7](dominio-reproduccion.md#67-subida-y-cambio-de-vídeo) y `services/media-worker/STATUS.md` |
 | `PUT /rooms/:id/media` acepta cualquier clave del bucket | Endpoint heredado del flujo manual; restringirlo a vídeos de la sala cambia la API pública de la web |
 | sync-core mantiene `Hub.mu` durante `Subscribe`/`Unsubscribe` de Redis | Refactor de concurrencia con riesgo; solo afecta mientras Redis reconecta |
 | Fallos de infraestructura que responden 401/403/500 en vez de 503 | Cambio transversal de semántica de errores |

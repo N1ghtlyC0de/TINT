@@ -8,6 +8,7 @@ requires-python = ">=3.11"
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["stress: pruebas de estrés del procesamiento (MED-TEST-01); `-m stress` para aislarlas"]
 
 [tool.coverage.run]
 branch = true

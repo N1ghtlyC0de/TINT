@@ -533,7 +533,7 @@ sequenceDiagram
     Host->>ID: POST /rooms/:id/media/uploads { filename, contentType, sizeBytes }
     ID->>PG: INSERT videos (pending)
     ID-->>Host: { videoId, uploadUrl, headers }
-    Host->>MI: PUT {videoId}/source.mp4 (progreso en la UI)
+    Host->>MI: PUT incoming/{videoId}/original.mp4 (staging, progreso en la UI)
     Host->>ID: POST /rooms/:id/media/uploads/:videoId/complete
     ID->>MI: HEAD (409 si no llegó, 413 y DELETE si supera sizeBytes o MAX_UPLOAD_BYTES)
     ID->>PG: UPDATE videos SET status = processing WHERE status = pending
@@ -544,11 +544,14 @@ sequenceDiagram
     SC-->>Inv: LOAD (pausa, rate 1, media_id)
     Inv->>ID: GET /rooms/:id/playback (guest token)
     ID-->>Inv: { url firmada, status, ambilightUrl }
-    Inv->>MI: GET vídeo
+    Inv->>MI: GET original (incoming/)
     R-->>MW: XREADGROUP media-workers
-    MW->>PG: processing → ready (duration_ms)
-    MW->>MI: PUT {videoId}/ambilight.json
-    Note over Inv: la web consulta playback cada ~5 s mientras status es<br/>pending/processing y renueva la URL antes de expiresAt
+    MW->>MI: descarga incoming/{videoId}/original.mp4
+    MW->>MW: ffprobe + Ambilight
+    MW->>MI: PUT {videoId}/source.mp4 + {videoId}/ambilight.json
+    MW->>PG: ready, duration_ms, storage_key = {videoId}/source.mp4
+    MW->>R: XACK
+    Note over Inv: la web consulta playback cada ~5 s mientras status es<br/>pending/processing. Al quedar ready la URL ya apunta a la versión publicada
 ```
 
 | Paso | Endpoint / evento | Errores |
@@ -556,10 +559,12 @@ sequenceDiagram
 | Reservar | `POST /rooms/:id/media/uploads` | 400 (no es `video/*`), 413 (> `MAX_UPLOAD_BYTES`, 2 GiB), 403, 410 |
 | Subir | `PUT uploadUrl` a MinIO (Content-Type firmado, 15 min) | CORS según `MINIO_CORS_ALLOW_ORIGIN` |
 | Confirmar | `POST /rooms/:id/media/uploads/:videoId/complete` | 409 `Upload missing`, 413 si el objeto real supera el `sizeBytes` declarado o `MAX_UPLOAD_BYTES` (se borra del bucket y el vídeo sigue en `pending`), 503 si Redis falla (el vídeo vuelve a `pending` y se puede reintentar), 404. **Idempotente:** solo la transición `pending → processing` encola y asigna; si el vídeo ya no está en `pending` responde 200 con el estado actual sin re-encolar. |
-| Procesar | `media:uploads` → media-worker | El vídeo queda en `failed` si ffprobe no lo acepta; la reproducción del original sigue |
-| Reproducir | `GET /rooms/:id/playback` | 401 si el token fue revocado, 410 si la sala se borró |
+| Procesar | `media:uploads` → media-worker (`python -m media_worker`, servicio de docker compose) | Si es válido publica `{videoId}/source.*` + `ambilight.json` y actualiza `storage_key`. Si ffprobe o el Ambilight fallan queda `failed` y **no se publica nada**. Un fallo de SQL/S3 no confirma el evento: se reintenta cada 5 s |
+| Reproducir | `GET /rooms/:id/playback` firma `videos.storage_key` (el original mientras se procesa, la versión publicada al quedar `ready`) | 401 si el token fue revocado, 410 si la sala se borró. Un vídeo `failed` responde `url: null` |
 
 Sigue existiendo `PUT /rooms/:id/media { mediaKey }`, para asignar un objeto que ya está en el bucket (sin fila en `videos`, `status: null`).
+
+**Staging `incoming/`.** El original del navegador nunca va a la clave publicada: el media-worker solo publica vídeos que validó (regla de su dominio). `minio-init` importa una regla de ciclo de vida que borra `incoming/` a los 2 días, así quien ya reproducía el original no se corta al publicarse la versión procesada.
 
 ### 6.8 Ciclo de vida de una conexión
 
@@ -784,7 +789,7 @@ cd apps/web && cp .env.example .env && npm run dev  # :5173
 Para probar el vídeo:
 1. Como Host, en la sala usa **"Subir vídeo"** y elige un archivo; se sube directo a MinIO con barra de progreso.
 2. Al terminar, todos los conectados reciben `LOAD` y lo reproducen desde MinIO.
-3. Con el media-worker corriendo (`python -m media_worker --consume`), el vídeo pasa a `ready` y aparece "Ambilight listo".
+3. El media-worker (servicio de `docker compose`) lo procesa: el vídeo pasa a `ready`, aparece "Ambilight listo" y la reproducción usa la versión publicada. Un archivo corrupto queda en `failed` con un aviso.
 
 | Variable | Servicio | Por defecto |
 | :--- | :--- | :--- |

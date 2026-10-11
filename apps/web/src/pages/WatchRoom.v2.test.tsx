@@ -157,7 +157,6 @@ describe('WatchRoom v2 — estado del procesamiento (Ambilight)', () => {
     ['pending', 'Procesando vídeo (Ambilight)…'],
     ['processing', 'Procesando vídeo (Ambilight)…'],
     ['ready', 'Ambilight listo'],
-    ['failed', 'No se pudo procesar el vídeo; la reproducción sigue disponible'],
   ])('status %s → "%s"', async (status, text) => {
     localStorage.setItem('tint_guest_token', testGuestToken());
     playbackByCall = [{ ...base, status, ambilightUrl: status === 'ready' ? 'https://a' : null }];
@@ -165,6 +164,18 @@ describe('WatchRoom v2 — estado del procesamiento (Ambilight)', () => {
     await flush();
     expect(screen.getByRole('status', { name: 'Estado del vídeo' })).toHaveTextContent(text);
     expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m1');
+  });
+
+  it('failed: avisa que el vídeo no se pudo procesar y el reproductor no lo carga', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    playbackByCall = [{ mediaId: 'm1', url: null, expiresAt: null, status: 'failed', ambilightUrl: null }];
+    renderWatch();
+    await flush();
+    expect(screen.getByRole('status', { name: 'Estado del vídeo' })).toHaveTextContent(
+      'No se pudo procesar el vídeo (archivo dañado o formato no soportado)',
+    );
+    expect(screen.getByText('Este vídeo no se pudo procesar. El host puede subir otro.')).toBeInTheDocument();
+    expect(screen.queryByText('Sin video configurado')).not.toBeInTheDocument();
   });
 
   it('sin fila de vídeo (status null) no muestra estado de procesamiento', async () => {

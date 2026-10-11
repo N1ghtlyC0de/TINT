@@ -1,1 +1,5 @@
 # Dependencias de runtime (FFmpeg/ffprobe se instalan en la imagen Docker).
+boto3==1.35.99
+psycopg[binary]==3.2.13
+# Disparador: consume media:uploads (Redis Streams) que publica identity-api.
+redis==5.2.1

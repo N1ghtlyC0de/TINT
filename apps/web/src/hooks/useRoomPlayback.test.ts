@@ -241,6 +241,19 @@ describe('useRoomPlayback', () => {
     expect(mockedApiFetch).toHaveBeenCalledTimes(3);
   });
 
+  it('si el procesamiento termina en failed deja de servir la URL del original', async () => {
+    mockedApiFetch
+      .mockResolvedValueOnce({ ...playback('m1', 'https://minio/incoming?sig=1'), status: 'processing', ambilightUrl: null })
+      .mockResolvedValueOnce({ mediaId: 'm1', url: null, expiresAt: null, status: 'failed', ambilightUrl: null });
+    const { result } = setup({ roomId: 'r1', mediaId: 'm1' });
+    await flush();
+    expect(result.current.url).toBe('https://minio/incoming?sig=1');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PLAYBACK_PROCESSING_POLL_MS);
+    });
+    expect(result.current).toMatchObject({ status: 'failed', url: null, expiresAt: null });
+  });
+
   it('deja de re-consultar al llegar a failed', async () => {
     mockedApiFetch
       .mockResolvedValueOnce({ ...playback('m1', 'u'), status: 'processing' })

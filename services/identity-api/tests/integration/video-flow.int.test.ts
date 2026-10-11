@@ -106,6 +106,9 @@ describe.skipIf(!RUN)('flujo completo: subida, reproducción y sala en vivo', ()
         body = (await request(app).get(`/api/v1/rooms/${roomId}/playback`).set('Authorization', `Bearer ${guestToken}`)).body;
       }
       expect(body.status).toBe('ready');
+      // Ya publicado: se sirve {id}/source.mp4 (no el original de incoming/), con los mismos bytes.
+      expect(new URL(body.url).pathname).toMatch(new RegExp(`/${videoId}/source\\.mp4$`));
+      expect(Buffer.from(await (await fetch(body.url)).arrayBuffer()).equals(video)).toBe(true);
       const palette = await (await fetch(body.ambilightUrl)).json();
       expect(Array.isArray(palette) && palette.length).toBeGreaterThan(0);
       expect(palette[0]).toHaveProperty('t_ms');
@@ -128,6 +131,22 @@ describe.skipIf(!RUN)('flujo completo: subida, reproducción y sala en vivo', ()
     expect((await guest.next('ERROR')).code).toBe('FORBIDDEN');
     host.close();
     guest.close();
+
+    // 7. (opcional) Un archivo corrupto queda failed y no se sirve.
+    if (process.env.WAIT_WORKER) {
+      const junk = Buffer.from('esto no es un vídeo');
+      const up = await request(app)
+        .post(`/api/v1/rooms/${roomId}/media/uploads`)
+        .send({ filename: 'roto.mp4', contentType: 'video/mp4', sizeBytes: junk.length });
+      expect((await fetch(up.body.uploadUrl, { method: 'PUT', headers: up.body.headers, body: junk })).status).toBe(200);
+      expect((await request(app).post(`/api/v1/rooms/${roomId}/media/uploads/${up.body.videoId}/complete`)).status).toBe(200);
+      let body: any = {};
+      for (let i = 0; i < 60 && body.status !== 'failed' && body.status !== 'ready'; i++) {
+        await new Promise((r) => setTimeout(r, 500));
+        body = (await request(app).get(`/api/v1/rooms/${roomId}/playback`).set('Authorization', `Bearer ${guestToken}`)).body;
+      }
+      expect(body).toMatchObject({ mediaId: up.body.videoId, status: 'failed', url: null });
+    }
   }, 120_000);
 });
 

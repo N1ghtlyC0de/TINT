@@ -275,7 +275,9 @@ router.post('/rooms/:id/media/uploads', requireAuthHost, requireRoomOwner, valid
     return res.status(413).json({ error: 'File too large' });
   }
   const videoId = uuidv4();
-  const storageKey = `${videoId}/source${videoExtension(filename, contentType)}`;
+  // Staging: el original va a incoming/ y el media-worker publica {id}/source.<ext>
+  // solo si el vídeo es válido (actualiza videos.storage_key al marcarlo ready).
+  const storageKey = `incoming/${videoId}/original${videoExtension(filename, contentType)}`;
   await createVideo({
     id: videoId,
     roomId: req.room!.id,
@@ -354,14 +356,18 @@ router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, asy
   if (!room.mediaId || !room.mediaKey) {
     return res.json({ mediaId: null, url: null, expiresAt: null, status: null, ambilightUrl: null });
   }
+  // Vídeos subidos por la API tienen fila en `videos` (estado del media-worker);
+  // los asignados por clave manual no (status null). Mientras se procesa se
+  // reproduce el original de incoming/; al quedar ready, la versión publicada
+  // (storage_key la actualiza el worker). Un vídeo failed no se sirve.
+  const video = await findVideo(room.mediaId);
+  if (video?.status === 'failed') {
+    return res.json({ mediaId: room.mediaId, url: null, expiresAt: null, status: 'failed', ambilightUrl: null });
+  }
   const ttl = env.PLAYBACK_URL_TTL_SECONDS;
   const expiresAt = new Date(Date.now() + ttl * 1000);
   const signer = getMediaSigner();
-  const url = await signer.presignGet(room.mediaKey, ttl);
-  // Vídeos subidos por la API tienen fila en `videos` (estado del media-worker);
-  // los asignados por clave manual no (status null). El original se reproduce
-  // aunque el procesamiento no haya terminado.
-  const video = await findVideo(room.mediaId);
+  const url = await signer.presignGet(video?.storageKey ?? room.mediaKey, ttl);
   const ambilightUrl = video?.status === 'ready' ? await signer.presignGet(`${video.id}/ambilight.json`, ttl) : null;
   res.json({
     mediaId: room.mediaId,

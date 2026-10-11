@@ -142,7 +142,13 @@ export function useRoomPlayback(
         if (id !== pollRequestRef.current) return;
         const next = toPlaybackData(res);
         if ((next.mediaId ?? '') === loadedRef.current) {
-          setData((prev) => ({ ...prev, status: next.status, ambilightUrl: next.ambilightUrl }));
+          // La URL no cambia mientras se procesa (no se corta la reproducción), salvo si
+          // el worker rechazó el vídeo: identity-api ya no lo sirve (url null).
+          setData((prev) =>
+            next.status === 'failed'
+              ? { ...prev, status: next.status, ambilightUrl: null, url: null, expiresAt: null }
+              : { ...prev, status: next.status, ambilightUrl: next.ambilightUrl },
+          );
         } else {
           // La sala cambió de vídeo entretanto: se adopta la respuesta completa.
           loadedRef.current = next.mediaId ?? '';
