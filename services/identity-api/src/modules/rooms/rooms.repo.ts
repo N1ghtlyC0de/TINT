@@ -50,3 +50,12 @@ export async function updateTitle(id: string, title: string) {
     .returning();
   return result[0] || null;
 }
+
+export async function setMedia(roomId: string, media: { mediaId: string; mediaKey: string }) {
+  const result = await db
+    .update(rooms)
+    .set({ ...media, updatedAt: new Date() })
+    .where(eq(rooms.id, roomId))
+    .returning();
+  return result[0] || null;
+}

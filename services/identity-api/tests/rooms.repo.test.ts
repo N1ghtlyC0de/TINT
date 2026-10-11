@@ -14,7 +14,7 @@ vi.mock('../src/db/client.js', () => ({
   pool: { end: () => Promise.resolve() },
 }));
 
-import { create, findById, listByHost, isOwner, softRemoveById, updateTitle } from '../src/modules/rooms/rooms.repo.js';
+import { create, findById, listByHost, isOwner, softRemoveById, updateTitle, setMedia } from '../src/modules/rooms/rooms.repo.js';
 
 const room = { id: 'r1', hostId: 'h1', title: 'Sala', status: 'active' };
 
@@ -67,5 +67,13 @@ describe('rooms.repo', () => {
   it('updateTitle retorna null si no existe', async () => {
     returningMock.mockResolvedValueOnce([]);
     await expect(updateTitle('missing', 'X')).resolves.toBeNull();
+  });
+
+  it('setMedia actualiza mediaId/mediaKey y retorna la sala o null', async () => {
+    const media = { mediaId: 'm1', mediaKey: 'videos/a.mp4' };
+    returningMock.mockResolvedValueOnce([{ ...room, ...media }]);
+    await expect(setMedia('r1', media)).resolves.toMatchObject(media);
+    returningMock.mockResolvedValueOnce([]);
+    await expect(setMedia('missing', media)).resolves.toBeNull();
   });
 });

@@ -1,8 +1,9 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { vi, beforeEach } from 'vitest';
 import WatchRoom from './WatchRoom';
+import { MockWebSocket } from '../test/mockWebSocket';
 import { formatChatTime } from '../lib/socialSocket';
 
 vi.mock('../lib/api', async (importOriginal) => {
@@ -37,6 +38,16 @@ vi.mock('../hooks/useSocialSocket', () => ({
         text: 'Pedro entró al chat',
         occurred_at: '2026-10-10T10:06:00Z',
       },
+      {
+        event_id: 'm2',
+        type: 'chat_message',
+        room_id: 'r1',
+        user_id: 'u3',
+        nick: 'Luis',
+        text: 'Buenas noches',
+        occurred_at: '2026-10-10T10:07:00Z',
+        received_at: '2026-10-10T10:07:01Z',
+      },
     ],
     reactions: [
       {
@@ -66,10 +77,20 @@ function renderWatch() {
   );
 }
 
+function guestJwt(payload: Record<string, unknown>): string {
+  const b64 = (v: unknown) =>
+    btoa(JSON.stringify(v)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return `${b64({ alg: 'HS256' })}.${b64(payload)}.firma`;
+}
+
 describe('WatchRoom chat en vivo', () => {
   beforeEach(() => {
+  // El Canal Sync (/ws/sync) se prueba en WatchRoom.sync.test.tsx: aquí no abre sockets reales.
+  vi.stubGlobal('WebSocket', MockWebSocket);
     vi.clearAllMocks();
     localStorage.clear();
+    // El chat se prueba como invitado con sesión (sin token sale la puerta).
+    localStorage.setItem('tint_guest_token', 'guest-tok');
   });
 
   it('muestra el historial del socket y envía por el canal social', async () => {
@@ -106,7 +127,7 @@ describe('WatchRoom chat en vivo', () => {
     // El ❤️ de Luis flota (overlay) y no aparece como mensaje del chat.
     const floats = screen.getAllByText('❤️');
     expect(floats.length).toBeGreaterThanOrEqual(1);
-    expect(screen.queryByText('Luis:')).not.toBeInTheDocument();
+    expect(within(screen.getByRole('list')).queryByText('❤️')).not.toBeInTheDocument();
   });
 
   it('envía la reacción al pulsar la barra', async () => {
@@ -126,5 +147,27 @@ describe('WatchRoom chat en vivo', () => {
     const card = list.closest('div');
     expect(card?.className).toContain('h-[560px]');
     expect(container.querySelector('aside')?.className).toContain('min-h-0');
+  });
+
+  it('muestra el nick propio en el header', async () => {
+    localStorage.setItem('tint_guest_token', guestJwt({ sub: 'u1', nick: 'Ana' }));
+    renderWatch();
+    expect(await screen.findByText('Hola grupo')).toBeInTheDocument();
+    const chip = screen.getByTitle(/conectado como ana/i);
+    expect(chip.textContent).toMatch(/ana/i);
+  });
+
+  it('alinea a la derecha los mensajes propios y a la izquierda los ajenos', async () => {
+    localStorage.setItem('tint_guest_token', guestJwt({ sub: 'u1', nick: 'Ana' }));
+    renderWatch();
+    expect(await screen.findByText('Hola grupo')).toBeInTheDocument();
+    const own = screen.getByText('Hola grupo').closest('li');
+    expect(own?.className).toContain('ml-auto');
+    expect(own?.className).toContain('w-fit');
+    expect(screen.queryByText('Ana:')).not.toBeInTheDocument();
+    const other = screen.getByText('Buenas noches').closest('li');
+    expect(other?.className).not.toContain('ml-auto');
+    expect(other?.className).toContain('w-fit');
+    expect(screen.getByText('Luis:')).toBeInTheDocument();
   });
 });

@@ -1,4 +1,4 @@
-# Entorno local de infraestructura para TINT: PostgreSQL, Redis y MinIO.
+# Entorno local de TINT: PostgreSQL, Redis, MinIO y el Canal Sync (sync-core).
 # Uso: cp .env.example .env && docker compose up -d
 
 services:
@@ -41,6 +41,8 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-tintadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-tintadmin123}
+      # El navegador sube y reproduce directo desde MinIO con URLs firmadas.
+      MINIO_API_CORS_ALLOW_ORIGIN: ${MINIO_CORS_ALLOW_ORIGIN:-http://localhost:5173}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -84,6 +86,23 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+
+  # Canal Sync (Go). JWT_SECRET debe ser el mismo que usa identity-api.
+  sync-core:
+    build: ./services/sync-core
+    container_name: tint-sync-core
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      SYNC_CORE_ADDR: ":8080"
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
+      JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
+      ALLOWED_ORIGINS: ${SYNC_ALLOWED_ORIGINS:-localhost:5173}
+    ports:
+      - "8083:8080"
 
 volumes:
   postgres-data:
