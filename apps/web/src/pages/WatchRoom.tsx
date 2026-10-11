@@ -30,7 +30,7 @@ const MEDIA_STATUS_UI: Record<MediaStatus, { text: string; tone: string; dot: st
   processing: { text: 'Procesando vídeo (Ambilight)…', tone: 'text-amber-200', dot: 'bg-amber-300 animate-pulse motion-reduce:animate-none' },
   ready: { text: 'Ambilight listo', tone: 'text-emerald-300', dot: 'bg-emerald-400' },
   failed: {
-    text: 'No se pudo procesar el vídeo; la reproducción sigue disponible',
+    text: 'No se pudo procesar el vídeo (archivo dañado o formato no soportado)',
     tone: 'text-red-300',
     dot: 'bg-red-400',
   },
@@ -110,7 +110,9 @@ export default function WatchRoom() {
     ? undefined
     : playback.loading
       ? 'Cargando vídeo…'
-      : (playback.error ?? 'Sin video configurado');
+      : playback.status === 'failed'
+        ? 'Este vídeo no se pudo procesar. El host puede subir otro.'
+        : (playback.error ?? 'Sin video configurado');
   const mediaStatusUi = playback.status ? MEDIA_STATUS_UI[playback.status] : null;
   const { sendCommand } = sync;
   const loadMedia = useCallback(
