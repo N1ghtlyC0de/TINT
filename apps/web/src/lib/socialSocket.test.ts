@@ -89,8 +89,8 @@ describe('formatChatTime', () => {
 });
 
 describe('reaction', () => {
-  it('set cerrado con los cinco emojis del documento', () => {
-    expect([...REACTION_EMOJIS].sort()).toEqual(['❤️', '👏', '😂', '😮', '😱'].sort());
+  it('set cerrado con los cinco del documento más tristeza', () => {
+    expect([...REACTION_EMOJIS].sort()).toEqual(['❤️', '👏', '😂', '😮', '😱', '😢'].sort());
   });
 
   it('arma reaction_send con emoji y posición', () => {

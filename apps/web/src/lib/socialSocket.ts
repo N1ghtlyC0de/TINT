@@ -39,8 +39,8 @@ export interface PresenceNotice {
   occurred_at: string;
 }
 
-/** Set cerrado de reacciones (REQ-20: risa, susto, sorpresa, aplauso, corazón). */
-export const REACTION_EMOJIS = ['👏', '😂', '😮', '😱', '❤️'] as const;
+/** Set de reacciones: REQ-20 (risa, susto, sorpresa, aplauso, corazón) más tristeza. */
+export const REACTION_EMOJIS = ['👏', '😂', '😮', '😱', '❤️', '😢'] as const;
 export type ReactionEmoji = (typeof REACTION_EMOJIS)[number];
 
 export function isReactionEmoji(value: string): value is ReactionEmoji {

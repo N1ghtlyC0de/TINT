@@ -1,7 +1,7 @@
 import { useThrottle } from '../hooks/useThrottle';
 import { REACTION_EMOJIS, type ReactionEmoji } from '../lib/socialSocket';
 
-// Set del documento (REQ-20): aplauso, risa, sorpresa, susto, corazón.
+// Set del documento (REQ-20) más tristeza por decisión de producto.
 export const REACTIONS: readonly ReactionEmoji[] = REACTION_EMOJIS;
 
 const REACTION_LABELS: Record<ReactionEmoji, string> = {
@@ -10,6 +10,7 @@ const REACTION_LABELS: Record<ReactionEmoji, string> = {
   '😮': 'sorpresa',
   '😱': 'susto',
   '❤️': 'corazón',
+  '😢': 'tristeza',
 };
 
 export type Reaction = ReactionEmoji;
