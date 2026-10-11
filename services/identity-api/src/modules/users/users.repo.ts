@@ -43,7 +43,7 @@ export async function upsertByProvider(userData: {
     email: userData.email,
     displayName: userData.displayName,
     avatarUrl: userData.avatarUrl,
-    role: userData.role || 'public_host',
+    role: userData.role || 'participant',
     roleId: userData.roleId || null,
   });
 }
