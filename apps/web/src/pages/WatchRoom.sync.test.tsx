@@ -8,9 +8,17 @@ import { apiFetch } from '../lib/api';
 vi.mock('../lib/api', () => ({ apiFetch: vi.fn() }));
 const mockedApiFetch = vi.mocked(apiFetch);
 
+const sendReactionMock = vi.hoisted(() => vi.fn(() => true));
+
 // El chat (/ws/social) se prueba en WatchRoomChat.test.tsx.
 vi.mock('../hooks/useSocialSocket', () => ({
-  useSocialSocket: () => ({ status: 'open' as const, messages: [], send: vi.fn(() => true) }),
+  useSocialSocket: () => ({
+    status: 'open' as const,
+    messages: [],
+    reactions: [],
+    send: vi.fn(() => true),
+    sendReaction: sendReactionMock,
+  }),
 }));
 
 function renderWatch() {
@@ -47,17 +55,13 @@ afterEach(() => {
 });
 
 describe('WatchRoom', () => {
-  it('muestra la sala y el rol host si no hay guest token', async () => {
+  // El chip de nick/rol se prueba en WatchRoom.test.tsx; aquí solo el Canal Sync.
+  it('con sesión de host muestra la sala y pide un sync-ticket', async () => {
+    localStorage.setItem('tint_token', 'firebase');
     renderWatch();
     await flush();
     expect(screen.getByText(/Sala r1/)).toBeInTheDocument();
-    expect(screen.getByText(/host \(registrado\)/)).toBeInTheDocument();
-  });
-
-  it('muestra el rol participante si hay guest token', () => {
-    localStorage.setItem('tint_guest_token', 'guest-tok');
-    renderWatch();
-    expect(screen.getByText(/participante \(invitado\)/)).toBeInTheDocument();
+    expect(mockedApiFetch).toHaveBeenCalledWith('/rooms/r1/sync-ticket', { method: 'POST' });
   });
 
   it('el token de host tiene prioridad sobre un guest token previo', async () => {
@@ -65,8 +69,8 @@ describe('WatchRoom', () => {
     localStorage.setItem('tint_guest_token', 'guest-tok');
     renderWatch();
     await flush();
-    expect(screen.getByText(/host \(registrado\)/)).toBeInTheDocument();
     expect(mockedApiFetch).toHaveBeenCalledWith('/rooms/r1/sync-ticket', { method: 'POST' });
+    expect(MockWebSocket.last().url).toContain('token=ticket');
   });
 
   it('guest se conecta a /ws/sync con su token y no puede controlar', () => {
@@ -79,6 +83,7 @@ describe('WatchRoom', () => {
   });
 
   it('host obtiene un ticket, conecta y habilita los controles', async () => {
+    localStorage.setItem('tint_token', 'firebase');
     renderWatch();
     await flush();
     expect(MockWebSocket.last().url).toContain('token=ticket');
@@ -109,5 +114,16 @@ describe('WatchRoom', () => {
     fireEvent.timeUpdate(video);
     act(() => ws.receive({ type: 'HEARTBEAT', server_time_ms: 123 }));
     expect(ws.sentJson()[0]).toMatchObject({ type: 'SYNC_CHECK', position_ms: 7_000, echo_server_ts: 123 });
+  });
+
+  it('la reacción viaja anclada a la posición actual del vídeo (REQ-21)', async () => {
+    vi.stubEnv('VITE_DEMO_VIDEO_URL', 'https://cdn.test/demo.mp4');
+    localStorage.setItem('tint_guest_token', 'g');
+    renderWatch();
+    await flush();
+    const video = screen.getByLabelText('Vídeo de la sala') as HTMLVideoElement;
+    video.currentTime = 12.34;
+    fireEvent.click(screen.getByRole('button', { name: /corazón/i }));
+    expect(sendReactionMock).toHaveBeenCalledWith('❤️', 12_340);
   });
 });

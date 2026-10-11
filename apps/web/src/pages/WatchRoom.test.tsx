@@ -173,11 +173,14 @@ describe('WatchRoom', () => {
   });
 
   it('sin ningún token muestra la puerta y no intenta nada (ni socket ni api)', () => {
+    MockWebSocket.reset();
     renderWatch();
     expect(screen.getByText(/únete a esta sala/i)).toBeInTheDocument();
     expect(screen.queryByPlaceholderText('Escribe un mensaje')).not.toBeInTheDocument();
     expect(createSocketSpy).not.toHaveBeenCalled();
+    // Ni sync-ticket/playback (identity-api) ni /ws/sync.
     expect(mockedApi).not.toHaveBeenCalled();
+    expect(MockWebSocket.instances).toHaveLength(0);
   });
 
   it('la puerta lleva a la invitación con un link válido', async () => {

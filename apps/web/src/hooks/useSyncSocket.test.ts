@@ -47,6 +47,18 @@ afterEach(() => {
 });
 
 describe('useSyncSocket — conexión', () => {
+  it('enabled=false no pide ticket ni abre socket; al habilitarse conecta', async () => {
+    mockedApiFetch.mockResolvedValue({ token: 'ticket-1', expiresAt: '' });
+    const { rerender } = setup({ role: 'host', enabled: false });
+    await flush();
+    expect(mockedApiFetch).not.toHaveBeenCalled();
+    expect(MockWebSocket.instances).toHaveLength(0);
+    rerender({ roomId: 'r1', role: 'host', url: WS, enabled: true });
+    await flush();
+    expect(mockedApiFetch).toHaveBeenCalledTimes(1);
+    expect(MockWebSocket.instances).toHaveLength(1);
+  });
+
   it('guest conecta con su guest token en la URL', () => {
     localStorage.setItem('tint_guest_token', 'guest-jwt');
     const { result } = setup();

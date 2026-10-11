@@ -33,6 +33,12 @@ type Deps struct {
 	Now       func() time.Time
 	NewID     func() string
 	ChatLimit *reactions.Limiter
+	// ReactionLimit frena el spam de reacciones (5/s por conexión, en memoria).
+	// Nil = limitador propio por conexión (igual que el chat).
+	ReactionLimit *reactions.Limiter
+	// ReactionBuckets acumula conteos por sala y ventana de 5s (base del
+	// heatmap). Nil = no se agregan (solo broadcast en vivo).
+	ReactionBuckets *reactions.Buckets
 	// Estado interno del relay compartido y dedup (ver relay.go).
 	mu     sync.Mutex
 	relays map[string]*roomRelay
@@ -276,11 +282,26 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 	if limiter == nil {
 		limiter = reactions.NewLimiter()
 	}
+	reactLimiter := d.ReactionLimit
+	if reactLimiter == nil {
+		reactLimiter = reactions.NewLimiter()
+	}
 
 	for {
 		_, raw, err := c.Read(ctx)
 		if err != nil {
 			break
+		}
+		var envelope struct {
+			Type socialevent.Type `json:"type"`
+		}
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			writeError(ctx, c, "INVALID_PAYLOAD", "")
+			continue
+		}
+		if envelope.Type == socialevent.TypeReactionSend {
+			d.handleReaction(ctx, c, roomID, claims, raw, reactLimiter)
+			continue
 		}
 		var in socialevent.ChatSend
 		if err := json.Unmarshal(raw, &in); err != nil {
@@ -334,6 +355,56 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 	// vuelve antes, se cancela.
 	d.Hub.Leave(roomID, connID)
 	d.presenceLeave(roomID, claims)
+}
+
+// handleReaction valida, limita (5/s en memoria), agrega al bucket de 5s y
+// emite la reacción en vivo. Efímera: sin historial ni analítica.
+func (d *Deps) handleReaction(ctx context.Context, c *websocket.Conn, roomID string, claims auth.Claims, raw []byte, limiter *reactions.Limiter) {
+	var in socialevent.ReactionSend
+	if err := json.Unmarshal(raw, &in); err != nil {
+		writeError(ctx, c, "INVALID_PAYLOAD", "")
+		return
+	}
+	if in.RoomID == "" {
+		in.RoomID = roomID
+	}
+	if err := in.Validate(); err != nil {
+		code := "INVALID_PAYLOAD"
+		if err == socialevent.ErrInvalidEmoji {
+			code = "INVALID_EMOJI"
+		}
+		writeError(ctx, c, code, in.EventID)
+		return
+	}
+	if in.RoomID != roomID {
+		writeError(ctx, c, "INVALID_PAYLOAD", in.EventID)
+		return
+	}
+	if !limiter.Allow(claims.Subject, d.now()) {
+		writeError(ctx, c, "RATE_LIMITED", in.EventID)
+		return
+	}
+	received := d.now()
+	out := socialevent.Reaction{
+		EventID: d.newID(), Type: socialevent.TypeReaction, RoomID: roomID,
+		UserID: claims.Subject, Nick: claims.Nick, Emoji: socialevent.TrimmedEmoji(in.Emoji),
+		PositionMS: in.PositionMS, OccurredAt: in.OccurredAt, ReceivedAt: received,
+	}
+	if err := out.Validate(); err != nil {
+		writeError(ctx, c, "INVALID_PAYLOAD", in.EventID)
+		return
+	}
+	if d.ReactionBuckets != nil {
+		d.ReactionBuckets.Add(roomID, reactions.BucketIndex(bucketPosition(out.PositionMS)), out.Emoji)
+	}
+	d.broadcastRawOnce(roomID, out.EventID, out)
+}
+
+func bucketPosition(ms int64) time.Duration {
+	if ms < 0 {
+		return 0
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 func trimText(s string) string {

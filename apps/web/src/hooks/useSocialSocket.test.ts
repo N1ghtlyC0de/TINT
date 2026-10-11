@@ -113,6 +113,32 @@ describe('useSocialSocket', () => {
     expect(payload).toMatchObject({ type: 'chat_send', room_id: 'r1', text: 'hola' });
   });
 
+  it('sendReaction envía reaction_send y acumula el broadcast aparte del chat', () => {
+    const { result } = renderHook(() =>
+      useSocialSocket('r1', {
+        createSocket: (url) => new FakeSocket(url) as unknown as WebSocket,
+      }),
+    );
+    expect(result.current.sendReaction('👏', 12000)).toBe(false); // aún CONNECTING
+    act(() => lastSocket().open());
+    expect(result.current.sendReaction('👏', 12000)).toBe(true);
+    expect(JSON.parse(lastSocket().sent[0])).toMatchObject({
+      type: 'reaction_send',
+      room_id: 'r1',
+      emoji: '👏',
+      position_ms: 12000,
+    });
+    expect(result.current.reactions).toHaveLength(0);
+    act(() => {
+      lastSocket().receive(
+        '{"type":"reaction","event_id":"e1","room_id":"r1","user_id":"u2","nick":"B","emoji":"👏","position_ms":12000,"occurred_at":"t","received_at":"t"}',
+      );
+    });
+    expect(result.current.reactions).toHaveLength(1);
+    expect(result.current.messages).toHaveLength(0);
+    expect(result.current.reactions[0]).toMatchObject({ type: 'reaction', emoji: '👏' });
+  });
+
   it('reconecta con backoff exponencial tras un corte', () => {
     renderHook(() =>
       useSocialSocket('r1', {

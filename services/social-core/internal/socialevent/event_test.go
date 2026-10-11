@@ -100,3 +100,64 @@ func TestNoticeRejects(t *testing.T) {
 		}
 	}
 }
+
+func baseReactionSend() ReactionSend {
+	return ReactionSend{
+		EventID: "r1", Type: TypeReactionSend, RoomID: "room1",
+		Emoji: "❤️", PositionMS: 12345, OccurredAt: time.Now().UTC(),
+	}
+}
+
+func TestReactionSendOK(t *testing.T) {
+	if err := baseReactionSend().Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+}
+
+func TestReactionSendRejects(t *testing.T) {
+	now := time.Now().UTC()
+	cases := map[string]ReactionSend{
+		"sin event_id":        {Type: TypeReactionSend, RoomID: "room1", Emoji: "❤️", OccurredAt: now},
+		"tipo incorrecto":     {EventID: "e", Type: "chat_send", RoomID: "room1", Emoji: "❤️", OccurredAt: now},
+		"sin sala":            {EventID: "e", Type: TypeReactionSend, Emoji: "❤️", OccurredAt: now},
+		"emoji fuera del set": {EventID: "e", Type: TypeReactionSend, RoomID: "room1", Emoji: "💩", OccurredAt: now},
+		"emoji vacío":         {EventID: "e", Type: TypeReactionSend, RoomID: "room1", Emoji: " ", OccurredAt: now},
+		"posición negativa":   {EventID: "e", Type: TypeReactionSend, RoomID: "room1", Emoji: "❤️", PositionMS: -1, OccurredAt: now},
+		"sin occurred":        {EventID: "e", Type: TypeReactionSend, RoomID: "room1", Emoji: "❤️"},
+	}
+	for name, m := range cases {
+		if err := m.Validate(); err == nil {
+			t.Errorf("%s: Validate() = nil, want error", name)
+		}
+	}
+}
+
+func TestReactionSetIncluyeTristezaExtraAlDocumento(t *testing.T) {
+	// REQ-20 fija 5; se suma 😢 (tristeza) por decisión de producto.
+	want := map[string]bool{"👏": true, "😂": true, "😮": true, "😱": true, "❤️": true, "😢": true}
+	if len(ReactionEmojis) != len(want) {
+		t.Fatalf("len(ReactionEmojis) = %d, want %d", len(ReactionEmojis), len(want))
+	}
+	for _, e := range ReactionEmojis {
+		if !want[e] {
+			t.Errorf("emoji %q no está en el set esperado", e)
+		}
+	}
+}
+
+func TestReactionBroadcastValidate(t *testing.T) {
+	now := time.Now().UTC()
+	m := Reaction{
+		EventID: "e", Type: TypeReaction, RoomID: "room1",
+		UserID: "u1", Nick: "Ana", Emoji: "👏", PositionMS: 1000,
+		OccurredAt: now, ReceivedAt: now,
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+	bad := m
+	bad.Emoji = "💩"
+	if err := bad.Validate(); err == nil {
+		t.Errorf("emoji fuera del set: Validate() = nil, want error")
+	}
+}

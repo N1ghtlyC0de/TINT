@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/codec"
+	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/master"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/syncevent"
 )
 
@@ -28,6 +29,52 @@ func TestStateCarriesCanControl(t *testing.T) {
 	}
 	if st := next(t, connect(t, h, guest)); st.CanControl == nil || *st.CanControl {
 		t.Errorf("participante: STATE = %+v", st)
+	}
+}
+
+// initHook simula un mensaje del bus que llega mientras Connect todavía no
+// encoló el STATE (carrera vista en CI: HOST_STATUS antes que STATE).
+type initHook struct {
+	StateStore
+	onInit func()
+}
+
+func (s initHook) Init(ctx context.Context, roomID, hostID string, nowMs int64) (master.State, error) {
+	s.onInit()
+	return s.StateStore.Init(ctx, roomID, hostID, nowMs)
+}
+
+// HU-SYNC-01: el STATE es siempre lo primero que recibe una conexión; lo que
+// llega antes por el bus se retiene y se entrega después, en orden.
+func TestStateFirstEvenIfBusDeliversDuringConnect(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	hs := mustJSON(baseEvent(syncevent.HostStatus, room, e.clock.now()))
+	h.store = initHook{StateStore: h.store, onInit: func() {
+		h.Deliver(room, hs)
+		h.beatAll()
+	}}
+	g := connect(t, h, guest)
+	if first := next(t, g); first.Type != syncevent.State {
+		t.Fatalf("primer mensaje = %s, want STATE", first.Type)
+	}
+	if second := next(t, g); second.Type != syncevent.HostStatus {
+		t.Fatalf("segundo mensaje = %s, want HOST_STATUS retenido", second.Type)
+	}
+}
+
+// La retención está acotada como la cola de salida: si se desborda durante
+// el Connect, el cliente se cierra (reconecta y recibe un STATE nuevo).
+func TestHeldOverflowClosesClient(t *testing.T) {
+	c := newClient(context.Background(), guest, 0)
+	for i := 0; i <= SendBuffer; i++ {
+		c.deliver([]byte("x"))
+	}
+	if !errors.Is(context.Cause(c.ctx), ErrSlowConsumer) {
+		t.Fatalf("causa = %v, want ErrSlowConsumer", context.Cause(c.ctx))
+	}
+	if len(c.held) != SendBuffer {
+		t.Errorf("retenidos = %d, want %d", len(c.held), SendBuffer)
 	}
 }
 

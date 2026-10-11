@@ -44,6 +44,8 @@ export interface UseSyncSocketOptions {
   now?: () => number;
   /** Codificación pedida al servidor; por defecto VITE_SYNC_ENCODING (json). */
   encoding?: SyncEncoding;
+  /** false → no pide ticket ni abre socket (p. ej. sin sesión). Por defecto true. */
+  enabled?: boolean;
 }
 
 export interface SyncCorrection extends Correction {
@@ -124,6 +126,7 @@ export function useSyncSocket({
   url,
   now,
   encoding,
+  enabled = true,
 }: UseSyncSocketOptions): SyncSocketApi {
   const [connected, setConnected] = useState(false);
   const [state, setState] = useState<SyncSnapshot | null>(null);
@@ -320,7 +323,7 @@ export function useSyncSocket({
       };
     };
 
-    connect();
+    if (enabled) connect();
 
     return () => {
       disposed = true;
@@ -333,7 +336,7 @@ export function useSyncSocket({
       }
       wsRef.current = null;
     };
-  }, [roomId, role, baseUrl, requested]);
+  }, [roomId, role, baseUrl, requested, enabled]);
 
   const sendCommand = useCallback(
     (type: CommandType, positionMs: number, extra: CommandExtra = {}): string | null => {

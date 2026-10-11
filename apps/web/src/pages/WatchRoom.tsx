@@ -1,10 +1,9 @@
 
 import { useParams, Link, useNavigate } from 'react-router-dom';
-
-import { useParams, Link } from 'react-router-dom';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { ReactionBar } from '../components/ReactionBar';
+import { ReactionOverlay } from '../components/ReactionOverlay';
 import { CopyButton } from '../components/CopyButton';
 import { SyncedPlayer } from '../components/SyncedPlayer';
 import { ChangeVideoPanel } from '../components/host/ChangeVideoPanel';
@@ -46,7 +45,7 @@ export default function WatchRoom() {
   // infinita): se muestra la puerta en vez de la sala.
   const hasAccess = !!hostToken || !!guestToken;
   // Canal Social (/ws/social): el estado maestro del chat vive en social-core.
-  const { messages, send, status } = useSocialSocket(hasAccess ? roomId : undefined);
+  const { messages, reactions, send, sendReaction, status } = useSocialSocket(hasAccess ? roomId : undefined);
   // Si hay sesión de host, manda el host aunque queden restos de invitado
   // (p. ej. guest token de una visita anterior al login). Coherente con
   // apiFetch, que prefiere el header de host.
@@ -63,10 +62,10 @@ export default function WatchRoom() {
     () => (videoRef.current ? videoRef.current.currentTime * 1000 : null),
     [],
   );
-  const sync = useSyncSocket({ roomId: roomId ?? '', role, getPositionMs });
+  const sync = useSyncSocket({ roomId: roomId ?? '', role, getPositionMs, enabled: hasAccess });
   const playback = useRoomPlayback(roomId ?? '', sync.state ? sync.state.media_id : undefined, {
     role,
-    enabled: !sync.revoked,
+    enabled: hasAccess && !sync.revoked,
   });
   const toasts = useSyncToasts(sync.lastBroadcast);
   // Los controles los habilita el servidor (STATE.can_control / CONTROL), no el rol local.
@@ -159,6 +158,28 @@ export default function WatchRoom() {
     navigate(`/invite/${code}`);
   };
 
+  // Antes que la puerta: al revocar se borra el guest token y hasAccess cae a false.
+  if (sync.revoked) {
+    return (
+      <div className="grid min-h-[100dvh] place-items-center bg-tint-bg px-4 text-tint-muted">
+        <Card className="max-w-md p-8 text-center">
+          <p role="alert" className="text-lg font-semibold tracking-tight text-white">
+            Fuiste retirado de la sala por el host
+          </p>
+          <p className="mt-2 text-sm leading-relaxed">
+            Tu invitación ya no es válida. Si crees que es un error, pide al host un nuevo enlace.
+          </p>
+          <Link
+            to="/"
+            className="mt-6 inline-flex rounded-full bg-tint-accent px-5 py-2.5 text-sm font-semibold text-tint-bg transition hover:bg-tint-accentHover"
+          >
+            Volver al inicio
+          </Link>
+        </Card>
+      </div>
+    );
+  }
+
   if (!hasAccess) {
     return (
       <div className="grid min-h-[100dvh] place-items-center bg-tint-bg px-4 text-tint-muted">
@@ -193,22 +214,6 @@ export default function WatchRoom() {
               Inicia sesión
             </Link>
           </p>
-  if (sync.revoked) {
-    return (
-      <div className="grid min-h-[100dvh] place-items-center bg-tint-bg px-4 text-tint-muted">
-        <Card className="max-w-md p-8 text-center">
-          <p role="alert" className="text-lg font-semibold tracking-tight text-white">
-            Fuiste retirado de la sala por el host
-          </p>
-          <p className="mt-2 text-sm leading-relaxed">
-            Tu invitación ya no es válida. Si crees que es un error, pide al host un nuevo enlace.
-          </p>
-          <Link
-            to="/"
-            className="mt-6 inline-flex rounded-full bg-tint-accent px-5 py-2.5 text-sm font-semibold text-tint-bg transition hover:bg-tint-accentHover"
-          >
-            Volver al inicio
-          </Link>
         </Card>
       </div>
     );
@@ -257,31 +262,32 @@ export default function WatchRoom() {
               </span>
             )}
           </div>
-          <div
-            className="flex shrink-0 items-center gap-2 text-[13px] text-white"
-            aria-label="Estado de sincronía"
-            title="Sincronizado"
-          >
-            <span aria-hidden="true" className="h-2 w-2 rounded-full bg-tint-success" />
-            <span className="hidden md:inline">Sincronizado</span>
+          <div className="flex shrink-0 items-center gap-3">
+            {sync.connected && <SyncQualityIndicator rttMs={sync.rttMs} driftMs={sync.driftMs} />}
+            <div role="status" aria-label="Estado de sincronía" aria-live="polite">
+              <ReconnectStatus connected={sync.connected} reconnect={sync.reconnect} />
+            </div>
+            <p className="text-[12px]" role="status" aria-live="polite">
+              {chatStatus}
+            </p>
           </div>
-          <p className="shrink-0 text-[12px]" role="status" aria-live="polite">
-            {chatStatus}
-          </p>
         </div>
       </header>
 
       <main className="mx-auto grid w-full max-w-[1400px] gap-4 px-4 py-6 lg:grid-cols-[2fr_360px]">
         <section aria-label="Reproductor">
           <Card className="overflow-hidden">
-            <SyncedPlayer
-              src={videoSrc}
-              canControl={canControl}
-              delegated={delegated}
-              sync={sync}
-              videoRef={videoRef}
-              emptyMessage={emptyMessage}
-            />
+            <div className="relative">
+              <SyncedPlayer
+                src={videoSrc}
+                canControl={canControl}
+                delegated={delegated}
+                sync={sync}
+                videoRef={videoRef}
+                emptyMessage={emptyMessage}
+              />
+              <ReactionOverlay reactions={reactions} />
+            </div>
             <div aria-hidden="true" className="h-1.5 bg-gradient-to-r from-tint-accentDark via-tint-accent to-tint-accentDark opacity-70 blur-[6px]" />
             <div className="flex flex-wrap items-center justify-between gap-4 p-4">
               <div>
@@ -290,7 +296,12 @@ export default function WatchRoom() {
                   {canControl ? 'Controlas la reproducción de la sala' : 'El host controla la reproducción'}
                 </p>
               </div>
-              <ReactionBar onReact={() => {}} />
+              <ReactionBar
+                onReact={(r) => {
+                  // La reacción se ancla al instante del vídeo (REQ-21).
+                  sendReaction(r, Math.round((videoRef.current?.currentTime ?? 0) * 1000));
+                }}
+              />
             </div>
           </Card>
 
@@ -401,7 +412,7 @@ export default function WatchRoom() {
                 onChange={(e) => setChat(e.target.value)}
                 placeholder="Escribe un mensaje"
                 maxLength={280}
-                autoComplete='off'
+                autoComplete="off"
                 className="min-w-0 flex-1 rounded-xl border border-white/10 bg-tint-bg px-3 py-2 text-sm text-white placeholder:text-tint-muted/50 focus:border-tint-accent focus:outline-none"
               />
               <button

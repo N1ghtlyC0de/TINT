@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/chat"
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/reactions"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/socialevent"
 )
 
@@ -46,6 +47,7 @@ func DefaultDeps(getenv func(string) string) *Deps {
 		History:           history,
 		JWTSecret:         getenv("JWT_SECRET"),
 		FirebaseProjectID: getenv("FIREBASE_PROJECT_ID"),
+		ReactionBuckets:   reactions.NewBuckets(),
 	}
 	if store != nil {
 		st := store

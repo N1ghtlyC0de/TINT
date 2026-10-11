@@ -15,7 +15,13 @@ const mockedApiFetch = vi.mocked(apiFetch);
 
 // El chat (/ws/social) se prueba en WatchRoomChat.test.tsx.
 vi.mock('../hooks/useSocialSocket', () => ({
-  useSocialSocket: () => ({ status: 'open' as const, messages: [], send: vi.fn(() => true) }),
+  useSocialSocket: () => ({
+    status: 'open' as const,
+    messages: [],
+    reactions: [],
+    send: vi.fn(() => true),
+    sendReaction: vi.fn(() => true),
+  }),
 }));
 
 const state = {
@@ -170,6 +176,8 @@ describe('WatchRoom v2 — estado del procesamiento (Ambilight)', () => {
 });
 
 describe('WatchRoom v2 — host', () => {
+  beforeEach(() => localStorage.setItem('tint_token', 'firebase'));
+
   it('sube un vídeo a MinIO, lo confirma y envía LOAD por el canal', async () => {
     MockXhr.reset();
     vi.stubGlobal('XMLHttpRequest', MockXhr);
@@ -285,6 +293,7 @@ describe('WatchRoom v2 — estado de conexión', () => {
   });
 
   it('los atajos no se disparan al escribir en el chat', async () => {
+    localStorage.setItem('tint_token', 'firebase');
     renderWatch();
     await flush();
     const ws = MockWebSocket.last();
