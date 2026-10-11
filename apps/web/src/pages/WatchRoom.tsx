@@ -1,6 +1,7 @@
 import { useParams } from 'react-router-dom';
 import { useEffect, useRef, useState } from 'react';
 import { ReactionBar } from '../components/ReactionBar';
+import { ReactionOverlay } from '../components/ReactionOverlay';
 import { CopyButton } from '../components/CopyButton';
 import { BackLink } from '../components/ui/BackLink';
 import { Card } from '../components/ui/Primitives';
@@ -12,7 +13,7 @@ import { useSocialSocket } from '../hooks/useSocialSocket';
 export default function WatchRoom() {
   const { roomId } = useParams();
   // Canal Social (/ws/social): el estado maestro del chat vive en social-core.
-  const { messages, send, status } = useSocialSocket(roomId);
+  const { messages, reactions, send, sendReaction, status } = useSocialSocket(roomId);
   const guestToken = localStorage.getItem('tint_guest_token');
   // Si hay sesión de host, manda el host aunque queden restos de invitado
   // (p. ej. guest token de una visita anterior al login). Coherente con
@@ -145,6 +146,7 @@ export default function WatchRoom() {
                   <div className="h-full w-0 bg-tint-accent" />
                 </div>
               </div>
+              <ReactionOverlay reactions={reactions} />
             </div>
             <div aria-hidden="true" className="h-1.5 bg-gradient-to-r from-tint-accentDark via-tint-accent to-tint-accentDark opacity-70 blur-[6px]" />
             <div className="flex flex-wrap items-center justify-between gap-4 p-4">
@@ -154,7 +156,12 @@ export default function WatchRoom() {
                   Controles de host listos para /ws/sync
                 </p>
               </div>
-              <ReactionBar onReact={() => {}} />
+              <ReactionBar
+                onReact={(r) => {
+                  // TODO(sync-core): pasar la posición real del reproductor.
+                  sendReaction(r, 0);
+                }}
+              />
             </div>
           </Card>
 

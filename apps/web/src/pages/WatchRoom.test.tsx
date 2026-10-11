@@ -12,7 +12,13 @@ vi.mock('../lib/api', async (importOriginal) => {
 const mockedApi = vi.mocked(apiFetch);
 
 vi.mock('../hooks/useSocialSocket', () => ({
-  useSocialSocket: () => ({ status: 'reconnecting' as const, messages: [], send: vi.fn(() => true) }),
+  useSocialSocket: () => ({
+    status: 'reconnecting' as const,
+    messages: [],
+    reactions: [],
+    send: vi.fn(() => true),
+    sendReaction: vi.fn(() => true),
+  }),
 }));
 
 function renderWatch() {

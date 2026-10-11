@@ -11,6 +11,7 @@ vi.mock('../lib/api', async (importOriginal) => {
 });
 
 const sendMock = vi.fn(() => true);
+const sendReactionMock = vi.fn(() => true);
 
 vi.mock('../hooks/useSocialSocket', () => ({
   useSocialSocket: () => ({
@@ -37,7 +38,21 @@ vi.mock('../hooks/useSocialSocket', () => ({
         occurred_at: '2026-10-10T10:06:00Z',
       },
     ],
+    reactions: [
+      {
+        event_id: 'e9',
+        type: 'reaction',
+        room_id: 'r1',
+        user_id: 'u3',
+        nick: 'Luis',
+        emoji: '❤️',
+        position_ms: 12000,
+        occurred_at: '2026-10-10T10:07:00Z',
+        received_at: '2026-10-10T10:07:00Z',
+      },
+    ],
     send: sendMock,
+    sendReaction: sendReactionMock,
   }),
 }));
 
@@ -83,6 +98,22 @@ describe('WatchRoom chat en vivo', () => {
     // El aviso no lleva el prefijo "Nick:" de un mensaje normal.
     expect(screen.queryByText('Pedro:')).not.toBeInTheDocument();
     expect(notice.closest('li')).not.toHaveClass('bg-white/5');
+  });
+
+  it('flota la reacción de otros usuarios sobre el reproductor', async () => {
+    renderWatch();
+    expect(await screen.findByText('Hola grupo')).toBeInTheDocument();
+    // El ❤️ de Luis flota (overlay) y no aparece como mensaje del chat.
+    const floats = screen.getAllByText('❤️');
+    expect(floats.length).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText('Luis:')).not.toBeInTheDocument();
+  });
+
+  it('envía la reacción al pulsar la barra', async () => {
+    renderWatch();
+    await screen.findByText('Hola grupo');
+    await userEvent.click(screen.getByRole('button', { name: /corazón/i }));
+    expect(sendReactionMock).toHaveBeenCalledWith('❤️', 0);
   });
 
   it('la lista de mensajes tiene altura acotada con scroll interno', async () => {

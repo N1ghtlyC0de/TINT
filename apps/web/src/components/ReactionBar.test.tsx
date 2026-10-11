@@ -8,6 +8,12 @@ describe('ReactionBar', () => {
     expect(screen.getAllByRole('button')).toHaveLength(REACTIONS.length);
   });
 
+  it('usa el set del documento (aplauso, risa, sorpresa, susto, corazón)', () => {
+    expect([...REACTIONS].sort()).toEqual(['❤️', '👏', '😂', '😮', '😱'].sort());
+    render(<ReactionBar onReact={vi.fn()} />);
+    expect(screen.getByRole('button', { name: /corazón/i })).toBeInTheDocument();
+  });
+
   it('limita los clics a 5 por segundo', async () => {
     const onReact = vi.fn();
     render(<ReactionBar onReact={onReact} />);

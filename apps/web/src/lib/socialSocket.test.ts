@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildChatSend,
+  buildReactionSend,
   buildSocialUrl,
   CHAT_MAX_LENGTH,
   formatChatTime,
   noticeText,
   parseSocialMessage,
+  REACTION_EMOJIS,
 } from './socialSocket';
 
 describe('socialSocket', () => {
@@ -83,5 +85,35 @@ describe('formatChatTime', () => {
   it('retorna vacío si la fecha es inválida o vacía', () => {
     expect(formatChatTime('')).toBe('');
     expect(formatChatTime('no-fecha')).toBe('');
+  });
+});
+
+describe('reaction', () => {
+  it('set cerrado con los cinco emojis del documento', () => {
+    expect([...REACTION_EMOJIS].sort()).toEqual(['❤️', '👏', '😂', '😮', '😱'].sort());
+  });
+
+  it('arma reaction_send con emoji y posición', () => {
+    const parsed = JSON.parse(buildReactionSend('r1', '👏', 12000));
+    expect(parsed).toMatchObject({
+      type: 'reaction_send',
+      room_id: 'r1',
+      emoji: '👏',
+      position_ms: 12000,
+    });
+    expect(typeof parsed.event_id).toBe('string');
+    expect(typeof parsed.occurred_at).toBe('string');
+  });
+
+  it('posición por defecto 0', () => {
+    expect(JSON.parse(buildReactionSend('r1', '❤️')).position_ms).toBe(0);
+  });
+
+  it('parsea el broadcast reaction', () => {
+    expect(
+      parseSocialMessage(
+        '{"type":"reaction","event_id":"e1","room_id":"r1","user_id":"u1","nick":"Ana","emoji":"👏","position_ms":12000,"occurred_at":"t","received_at":"t"}',
+      ),
+    ).toMatchObject({ type: 'reaction', emoji: '👏', nick: 'Ana' });
   });
 });

@@ -39,7 +39,27 @@ export interface PresenceNotice {
   occurred_at: string;
 }
 
-export type SocialIncoming = ChatMessage | HistoryEnvelope | PresenceNotice | SocialError;
+/** Set cerrado de reacciones (REQ-20: risa, susto, sorpresa, aplauso, corazón). */
+export const REACTION_EMOJIS = ['👏', '😂', '😮', '😱', '❤️'] as const;
+export type ReactionEmoji = (typeof REACTION_EMOJIS)[number];
+
+export function isReactionEmoji(value: string): value is ReactionEmoji {
+  return (REACTION_EMOJIS as readonly string[]).includes(value);
+}
+
+export interface ReactionBroadcast {
+  event_id: string;
+  type: 'reaction';
+  room_id: string;
+  user_id: string;
+  nick: string;
+  emoji: string;
+  position_ms: number;
+  occurred_at: string;
+  received_at: string;
+}
+
+export type SocialIncoming = ChatMessage | HistoryEnvelope | PresenceNotice | ReactionBroadcast | SocialError;
 
 export function buildSocialUrl(base: string, roomId: string, token: string): string {
   const sep = base.includes('?') ? '&' : '?';
@@ -71,10 +91,32 @@ export function parseSocialMessage(raw: string): SocialIncoming | null {
   }
   if (typeof data !== 'object' || data === null) return null;
   const type = (data as { type?: unknown }).type;
-  if (type === 'chat_message' || type === 'history' || type === 'error' || type === 'notice') {
+  if (
+    type === 'chat_message' ||
+    type === 'history' ||
+    type === 'error' ||
+    type === 'notice' ||
+    type === 'reaction'
+  ) {
     return data as SocialIncoming;
   }
   return null;
+}
+
+/** Arma un reaction_send con emoji y posición en ms (0 si se desconoce). */
+export function buildReactionSend(roomId: string, emoji: string, positionMs = 0): string {
+  const eventId =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : `c-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+  return JSON.stringify({
+    event_id: eventId,
+    type: 'reaction_send',
+    room_id: roomId,
+    emoji,
+    position_ms: Math.max(0, Math.floor(positionMs)),
+    occurred_at: new Date().toISOString(),
+  });
 }
 
 /** Texto del aviso de presencia según kind y nick (fallback al text del servidor). */
