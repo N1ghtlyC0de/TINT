@@ -221,6 +221,9 @@ export function backoffDelay(attempt: number): number {
 /** Código de cierre de sync-core cuando identity-api revoca el token (no reconectar). */
 export const CLOSE_REVOKED = 4001;
 
+/** Código de cierre de sync-core cuando el token (firma válida) ya caducó. */
+export const CLOSE_EXPIRED = 4003;
+
 /** Velocidades ofrecidas en la UI (el servidor acepta [0.25, 4]). */
 export const RATE_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2] as const;
 

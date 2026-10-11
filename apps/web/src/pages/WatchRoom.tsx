@@ -200,6 +200,23 @@ export default function WatchRoom() {
       />
     );
   }
+  // Cierre 4003: el token caducó (el host ya reintentó una vez con un ticket nuevo).
+  if (sync.expired) {
+    // Al invitado ya se le borró el guest token: sin sesión de host, es un invitado.
+    return !hostToken ? (
+      <RoomNotice
+        title="Tu invitación expiró"
+        body="El enlace con el que entraste ya caducó. Pide al host un nuevo enlace para volver a entrar."
+      />
+    ) : (
+      <RoomNotice
+        title="Tu sesión de sincronía caducó"
+        body="No pudimos renovar tu acceso a la sincronía. Vuelve a entrar a la sala desde el dashboard."
+        to="/dashboard"
+        linkLabel="Ir al dashboard"
+      />
+    );
+  }
   // GET /playback en 401/403: retirado o caducado mientras la pestaña estaba cerrada.
   if (playback.revoked) {
     return (

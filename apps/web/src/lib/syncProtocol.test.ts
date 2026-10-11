@@ -8,6 +8,7 @@ import {
   parseServerMessage,
   stepRate,
   toServerMessage,
+  CLOSE_EXPIRED,
   CLOSE_REVOKED,
   RATE_OPTIONS,
   type SyncState,
@@ -138,6 +139,7 @@ describe('protocolo v2', () => {
 
   it('expone el código de cierre por revocación y las velocidades', () => {
     expect(CLOSE_REVOKED).toBe(4001);
+    expect(CLOSE_EXPIRED).toBe(4003);
     expect(RATE_OPTIONS).toEqual([0.5, 0.75, 1, 1.25, 1.5, 2]);
   });
 

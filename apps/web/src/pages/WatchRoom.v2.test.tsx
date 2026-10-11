@@ -260,6 +260,30 @@ describe('WatchRoom v2 — invitado', () => {
     expect(screen.getByRole('link', { name: 'Volver al inicio' })).toHaveAttribute('href', '/');
   });
 
+  it('cierre 4003 del invitado: pantalla de invitación caducada, sin reconectar', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    renderWatch();
+    await flush();
+    act(() => MockWebSocket.last().open());
+    act(() => MockWebSocket.last().close(4003, 'token expirado'));
+    expect(screen.getByRole('alert')).toHaveTextContent(/tu invitación expiró/i);
+    expect(localStorage.getItem('tint_guest_token')).toBeNull();
+  });
+
+  it('cierre 4003 repetido del host: avisa que la sesión de sincronía caducó', async () => {
+    localStorage.setItem('tint_token', 'host');
+    renderWatch();
+    await flush();
+    act(() => MockWebSocket.last().open());
+    act(() => MockWebSocket.last().close(4003));
+    await flush();
+    act(() => MockWebSocket.last().open());
+    act(() => MockWebSocket.last().close(4003));
+    await flush();
+    expect(screen.getByRole('alert')).toHaveTextContent(/sesión de sincronía caducó/i);
+    expect(screen.getByRole('link', { name: 'Ir al dashboard' })).toHaveAttribute('href', '/dashboard');
+  });
+
   it('invitado con el playback en 401 (retirado con la pestaña cerrada): pantalla de invitación no válida', async () => {
     localStorage.setItem('tint_guest_token', testGuestToken());
     mockedApiFetch.mockImplementation(((path: string, init?: RequestInit) =>
