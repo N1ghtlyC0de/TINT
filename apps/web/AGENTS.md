@@ -51,6 +51,18 @@ Eres el agente especializado en la capa de presentación de **TINT**. Tu foco es
 
 El cálculo del drift es **autoritativo en sync-core**: el cliente solo aplica las `SYNC_CORRECTION` que recibe. Flujos y diagramas en [`docs/dominio-reproduccion.md`](../../docs/dominio-reproduccion.md).
 
+## Cuestionario oculto `/test-me`
+Ruta sin `ProtectedRoute` ni enlaces desde la UI (solo por URL) para aprender cómo funciona el monorepo. Se carga con `React.lazy` para que `framer-motion` no entre al bundle principal.
+
+| Pieza | Rol |
+| :--- | :--- |
+| `src/data/quizQuestions.ts` | Banco de 60 preguntas en 7 categorías; cada una cita sus archivos fuente. Su prueba verifica que las rutas existan en el repo, el conteo por categoría y que la respuesta correcta no se concentre en una posición. |
+| `src/lib/quiz.ts` | Lógica pura: baraja (rng inyectable), 100 pts por acierto con multiplicador de racha (x2 desde 3, x3 desde 5), rangos y reducer. |
+| `src/lib/quizSounds.ts` | Efectos sintetizados con Web Audio (sin archivos); silencio persistido en `localStorage.tint_quiz_muted`. |
+| `src/hooks/useQuiz.ts` · `src/components/quiz/*` · `src/pages/TestMe.tsx` | Estado + sonidos, tarjeta, panel inferior con respuesta y fuentes, marcador y resumen con confeti. |
+
+Si cambia un dato documentado (puertos, contratos, límites), actualiza la pregunta correspondiente. Al agregar preguntas, ajusta `expected` de la categoría y cita solo datos en los que la documentación no se contradiga.
+
 ## Reglas de Dominio
 1. **Canales Aislados:** Mantén el uso de dos hooks separados: `useSyncSocket` (vídeo/comandos) y `useSocialSocket` (chat, reacciones, ambilight). Nunca mezcles los sockets.
 2. **Auto-Alineación:** sync-core detecta el desfase (> 500 ms) y lo reporta a telemetría; el cliente aplica la corrección recibida con `src/lib/drift.ts` y nunca envía telemetría de sync por su cuenta.
