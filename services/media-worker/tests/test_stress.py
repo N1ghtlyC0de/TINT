@@ -1,16 +1,12 @@
-"""MED-TEST-01: pruebas de estrés del procesamiento (sin FFmpeg, Redis, S3 ni SQL reales)."""
+"""MED-TEST-01: pruebas de estrés de la extracción Ambilight (sin FFmpeg real)."""
 
-import json
 import time
 import tracemalloc
 
 import pytest
-from fakes import FakeBlobStore, FakePopen, FakeRedis, FakeRepository, fake_run, solid_frame
+from fakes import FakePopen, solid_frame
 
 from media_worker.ambilight import FRAME_HEIGHT, FRAME_WIDTH, extract_ambilight
-from media_worker.consumer import STREAM_KEY, StreamConsumer
-from media_worker.pipeline import process_video
-from media_worker.storage import ambilight_key
 
 pytestmark = pytest.mark.stress
 
@@ -72,54 +68,3 @@ def test_peak_memory_does_not_grow_with_buffered_frames():
     assert len(entries) == frames
     buffered = frames * FRAME_SIZE  # ~26 MB si se acumulara todo el stdout
     assert peak < buffered / 4, f"pico de memoria {peak / 1e6:.1f} MB"
-
-
-def test_burst_of_duplicate_events_produces_one_artifact_per_video():
-    videos = [f"video-{i:04d}" for i in range(300)]
-    redis = FakeRedis()
-    for _ in range(2):  # cada subida se encola dos veces (reintento del productor)
-        for video_id in videos:
-            redis.xadd(STREAM_KEY, {"video_id": video_id})
-    repo = FakeRepository({v: f"{v}/source.mp4" for v in videos})
-    blobs = FakeBlobStore({f"{v}/source.mp4": b"bytes" for v in videos})
-
-    def handler(video_id):
-        popen = FakePopen(stdout=solid_frame((len(video_id), 0, 0)) * 3)
-        process_video(video_id, repo, blobs, fake_run(stdout='{"format":{"duration":"3"}}'), popen)
-
-    consumer = StreamConsumer(redis, handler, consumer="w1", count=50)
-    while consumer.poll():
-        pass
-
-    assert len(redis.acks) == len(set(redis.acks)) == 2 * len(videos)
-    assert redis.pending == {}
-    assert all(repo.statuses[v] == "ready" for v in videos)
-    artifacts = [key for key in blobs.objects if key.endswith("ambilight.json")]
-    assert sorted(artifacts) == sorted(ambilight_key(v) for v in videos)
-    assert len(json.loads(blobs.objects[ambilight_key(videos[0])])) == 3
-
-
-def test_mixed_burst_isolates_failures():
-    videos = [f"v{i}" for i in range(200)]
-    redis = FakeRedis()
-    for video_id in videos:
-        redis.xadd(STREAM_KEY, {"video_id": video_id})
-    redis.xadd(STREAM_KEY, {"video_id": "../evil"})
-    repo = FakeRepository({v: f"{v}/source.mp4" for v in videos})
-    blobs = FakeBlobStore({f"{v}/source.mp4": b"bytes" for v in videos})
-
-    def handler(video_id):
-        corrupt = int(video_id[1:]) % 3 == 0
-        runner = (
-            fake_run(returncode=1) if corrupt else fake_run(stdout='{"format":{"duration":"1"}}')
-        )
-        process_video(video_id, repo, blobs, runner, FakePopen(stdout=solid_frame((9, 9, 9))))
-
-    consumer = StreamConsumer(redis, handler, consumer="w1", count=25)
-    while consumer.poll():
-        pass
-
-    failed = {v for v, status in repo.statuses.items() if status == "failed"}
-    assert failed == {v for v in videos if int(v[1:]) % 3 == 0}
-    assert len(redis.acks) == len(videos) + 1
-    assert not any(key.startswith("..") for key in blobs.objects)

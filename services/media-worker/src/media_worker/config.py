@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import os
-import socket
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 OPTIONAL_VARS = {
-    "REDIS_URL": "redis_url",
     "S3_ENDPOINT_URL": "s3_endpoint_url",
     "MINIO_BUCKET": "bucket",
-    "MEDIA_WORKER_CONSUMER": "consumer_name",
 }
 
 
@@ -24,10 +21,8 @@ class Settings:
     database_url: str
     s3_access_key: str
     s3_secret_key: str = field(repr=False)
-    redis_url: str = "redis://localhost:6379/0"
     s3_endpoint_url: str = "http://localhost:9000"
     bucket: str = "tint-media"
-    consumer_name: str = field(default_factory=socket.gethostname)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> Settings:

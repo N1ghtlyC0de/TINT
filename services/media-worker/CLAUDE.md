@@ -4,7 +4,7 @@
 ## Estructura del proyecto (no hace falta re-explorarla)
 
 - Monorepo en `/home/camilo/Work/tint`: `apps/web`, `services/{sync-core,social-core,media-worker,analytics}`, `scripts/`, `.github/workflows/` (CI/CD), `Makefile` (`make test-python`), `docker-compose.yml`.
-- Este servicio (`services/media-worker`): `src/media_worker/` (`__main__.py` CLI y `--consume`, `probe.py`, `ambilight.py`, `pipeline.py`, `consumer.py`, `storage.py`, `repository.py`, `config.py`), `tests/` (dobles en `tests/fakes.py`), `videos/` (vídeos de prueba, fuera de `src/` para que el `Dockerfile`, que solo copia `src/`, no los incluya), `README.md` (uso), `STATUS.md`.
+- Este servicio (`services/media-worker`): `src/media_worker/` (sin CLI; `probe.py`, `ambilight.py`, `pipeline.py` (lo invoca la API), `storage.py`, `repository.py`, `config.py`), `tests/` (dobles en `tests/fakes.py`), `README.md` (uso), `STATUS.md`.
 
 ## Reglas de ramas (importante)
 
@@ -14,6 +14,6 @@
 
 ## Notas para Claude Code
 
-- Uso del CLI: ver `README.md`.
+- Uso y flujo de procesamiento: ver `README.md`.
 - Estado actual del trabajo: ver `STATUS.md` (no se importa para no inflar el contexto).
 - No edites ni commitees `.coverage`, `.pytest_cache/` ni `.ruff_cache/`.

@@ -12,5 +12,3 @@ COPY src/ ./src/
 ENV PYTHONPATH=/app/src PYTHONUNBUFFERED=1
 RUN useradd --create-home worker
 USER worker
-
-CMD ["python", "-m", "media_worker", "--consume"]

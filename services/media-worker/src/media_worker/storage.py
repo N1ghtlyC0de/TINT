@@ -1,4 +1,4 @@
-"""Acceso al Blob Storage (MinIO/S3): descarga del original y publicación de artefactos."""
+"""Acceso al Blob Storage (MinIO/S3): publicación del vídeo preprocesado y de artefactos."""
 
 from __future__ import annotations
 
@@ -12,6 +12,11 @@ NOT_FOUND_CODES = {"404", "NoSuchKey", "NotFound"}
 
 class BlobNotFoundError(Exception):
     """La clave pedida no existe en el bucket."""
+
+
+def source_key(video_id: str, suffix: str) -> str:
+    """Clave determinista del vídeo preprocesado (extensión en minúsculas)."""
+    return f"{video_id}/source{suffix.lower()}"
 
 
 def ambilight_key(video_id: str) -> str:
@@ -31,6 +36,9 @@ class S3BlobStore:
             if exc.response.get("Error", {}).get("Code") in NOT_FOUND_CODES:
                 raise BlobNotFoundError(f"no existe {self.bucket}/{key}") from exc
             raise
+
+    def upload_file(self, path: Path, key: str) -> None:
+        self.client.upload_file(str(path), self.bucket, key)
 
     def put_json(self, key: str, data: object) -> None:
         body = json.dumps(data, separators=(",", ":")).encode()

@@ -1,5 +1,3 @@
-import socket
-
 import pytest
 
 from media_worker.config import ConfigError, Settings
@@ -14,26 +12,21 @@ BASE_ENV = {
 def test_from_env_uses_local_defaults():
     settings = Settings.from_env(BASE_ENV)
     assert settings.database_url == BASE_ENV["DATABASE_URL"]
-    assert settings.redis_url == "redis://localhost:6379/0"
     assert settings.s3_endpoint_url == "http://localhost:9000"
     assert settings.bucket == "tint-media"
-    assert settings.consumer_name == socket.gethostname()
 
 
 def test_from_env_reads_overrides():
-    env = {
-        **BASE_ENV,
-        "REDIS_URL": "redis://redis:6379/1",
-        "S3_ENDPOINT_URL": "http://minio:9000",
-        "MINIO_BUCKET": "otro",
-        "MEDIA_WORKER_CONSUMER": "worker-a",
-    }
+    env = {**BASE_ENV, "S3_ENDPOINT_URL": "http://minio:9000", "MINIO_BUCKET": "otro"}
     settings = Settings.from_env(env)
-    assert (settings.redis_url, settings.s3_endpoint_url) == (
-        "redis://redis:6379/1",
-        "http://minio:9000",
-    )
-    assert (settings.bucket, settings.consumer_name) == ("otro", "worker-a")
+    assert (settings.s3_endpoint_url, settings.bucket) == ("http://minio:9000", "otro")
+
+
+def test_settings_have_no_redis_configuration():
+    env = {**BASE_ENV, "REDIS_URL": "redis://redis:6379/1", "MEDIA_WORKER_CONSUMER": "worker-a"}
+    settings = Settings.from_env(env)
+    assert not hasattr(settings, "redis_url")
+    assert not hasattr(settings, "consumer_name")
 
 
 def test_from_env_falls_back_to_minio_root_credentials():

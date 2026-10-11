@@ -1,14 +1,10 @@
-"""Dobles de prueba compartidos: nunca se ejecutan FFmpeg, Redis, S3 ni PostgreSQL reales."""
+"""Dobles de prueba compartidos: nunca se ejecutan FFmpeg, S3 ni PostgreSQL reales."""
 
 import io
 import json
 import threading
 from types import SimpleNamespace
 from unittest.mock import Mock
-
-from redis.exceptions import ResponseError
-
-from media_worker.storage import BlobNotFoundError
 
 
 def fake_run(returncode=0, stdout="", stderr=""):
@@ -55,20 +51,22 @@ class FakePopen:
 
 
 class FakeRepository:
-    def __init__(self, storage_keys):
-        self.storage_keys = dict(storage_keys)
+    def __init__(self, video_ids):
+        self.video_ids = set(video_ids)
         self.statuses = {}
         self.durations = {}
+        self.storage_keys = {}
         self.history = []
 
     def start_processing(self, video_id):
-        if video_id not in self.storage_keys:
-            return None
+        if video_id not in self.video_ids:
+            return False
         self._set(video_id, "processing")
-        return self.storage_keys[video_id]
+        return True
 
-    def mark_ready(self, video_id, duration_ms):
+    def mark_ready(self, video_id, duration_ms, storage_key):
         self.durations[video_id] = duration_ms
+        self.storage_keys[video_id] = storage_key
         self._set(video_id, "ready")
 
     def mark_failed(self, video_id):
@@ -84,49 +82,10 @@ class FakeBlobStore:
         self.objects = dict(objects or {})
         self.puts = []
 
-    def download(self, key, dest):
-        if key not in self.objects:
-            raise BlobNotFoundError(key)
-        dest.write_bytes(self.objects[key])
+    def upload_file(self, path, key):
+        self.objects[key] = path.read_bytes()
+        self.puts.append(key)
 
     def put_json(self, key, data):
         self.objects[key] = json.dumps(data, separators=(",", ":"))
         self.puts.append(key)
-
-
-class FakeRedis:
-    """Subconjunto de Redis Streams con un solo stream y grupo de consumidores."""
-
-    def __init__(self):
-        self.groups = set()
-        self.entries = []
-        self.delivered = 0
-        self.pending = {}
-        self.acks = []
-
-    def xgroup_create(self, name, groupname, id="$", mkstream=False):
-        if (name, groupname) in self.groups:
-            raise ResponseError("BUSYGROUP Consumer Group name already exists")
-        self.groups.add((name, groupname))
-
-    def xadd(self, name, fields):
-        message_id = f"{len(self.entries) + 1}-0"
-        self.entries.append((message_id, fields))
-        return message_id
-
-    def xreadgroup(self, groupname, consumername, streams, count=None, block=None):
-        ((stream, last_id),) = streams.items()
-        if last_id == "0":
-            batch = [(mid, fields) for mid, (_c, fields) in self.pending.items()][:count]
-        else:
-            batch = self.entries[self.delivered : self.delivered + count]
-            self.delivered += len(batch)
-            for mid, fields in batch:
-                self.pending[mid] = (consumername, fields)
-        return [[stream, batch]] if batch else []
-
-    def xack(self, name, groupname, *ids):
-        for mid in ids:
-            self.pending.pop(mid, None)
-            self.acks.append(mid)
-        return len(ids)

@@ -8,13 +8,14 @@ Eres el agente responsable del procesamiento multimedia asíncrono de **TINT**. 
 
 - Python 3.11
 - FFmpeg / ffprobe (instalados en la imagen Docker)
-- MinIO / S3 (Blob Storage) y PostgreSQL (estado del vídeo)
+- MinIO (Blob Storage) y PostgreSQL (estado del vídeo)
 - pytest + pytest-cov, ruff
 
 ## Responsabilidades
 
 - Inspección de vídeos subidos (`src/media_worker/probe.py`).
 - Extracción de paleta Ambilight por bordes (`src/media_worker/ambilight.py`).
+- Preprocesamiento del vídeo recibido (validación, normalización y Ambilight) antes de publicarlo en el bucket.
 - Transición de estado del vídeo y publicación de artefactos en el bucket.
 
 ## Límites de Dominio
@@ -27,9 +28,8 @@ Eres el agente responsable del procesamiento multimedia asíncrono de **TINT**. 
 
 | Entidad | Almacén | Campos clave |
 | :--- | :--- | :--- |
-| `media:uploads` | Redis Stream (grupo `media-workers`) | `video_id` (disparador; el worker hace `XACK` tras procesar) |
-| `videos` | PostgreSQL | `id`, `storage_key`, `duration_ms`, `status` (`processing` → `ready` \| `failed`), `updated_at` |
-| `{video_id}/source.*` | MinIO (`tint-media`) | Archivo original |
+| `videos` | PostgreSQL | `id`, `storage_key` (lo escribe el worker al publicar), `duration_ms`, `status` (`processing` → `ready` \| `failed`), `updated_at` |
+| `{video_id}/source.*` | MinIO (`tint-media`) | Vídeo preprocesado (nunca el original sin preprocesar) |
 | `{video_id}/ambilight.json` | MinIO (`tint-media`) | `[{ "t_ms", "top", "bottom", "left", "right" }]` colores hex a 1 FPS |
 
 ## Reglas de Dominio
