@@ -100,7 +100,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
       JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
       JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
-      ALLOWED_ORIGINS: ${SYNC_ALLOWED_ORIGINS:-localhost:5173}
+      ALLOWED_ORIGINS: ${SYNC_ALLOWED_ORIGINS:-localhost:5173,127.0.0.1:5173}
     ports:
       - "8083:8080"
 

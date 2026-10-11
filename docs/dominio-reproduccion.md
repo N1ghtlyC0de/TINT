@@ -784,7 +784,7 @@ Para probar el vídeo:
 | Variable | Servicio | Por defecto |
 | :--- | :--- | :--- |
 | `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE` | sync-core, identity-api | `dev-secret-change-in-prod`, `tint-identity`, `tint:room` |
-| `ALLOWED_ORIGINS` (`SYNC_ALLOWED_ORIGINS` en compose) | sync-core | `localhost:5173` |
+| `ALLOWED_ORIGINS` (`SYNC_ALLOWED_ORIGINS` en compose) | sync-core | `localhost:5173,127.0.0.1:5173` |
 | `ROOM_TTL` / `CONTROL_HANDOFF_AFTER` | sync-core | `12h` / `5m` |
 | `SYNC_TICKET_TTL_SECONDS` | identity-api | `600` |
 | `MINIO_ENDPOINT` / `MINIO_PUBLIC_ENDPOINT` | identity-api | `http://localhost:9000` / igual a `MINIO_ENDPOINT` |
