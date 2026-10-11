@@ -312,8 +312,21 @@ router.post('/rooms/:id/media/uploads/:videoId/complete', requireAuthHost, requi
   if (video.status !== 'pending') {
     return current(video);
   }
-  if (!(await getMediaStore().exists(video.storageKey))) {
+  const store = getMediaStore();
+  const object = await store.stat(video.storageKey);
+  if (!object) {
     return res.status(409).json({ error: 'Upload missing' });
+  }
+  // La URL PUT firmada no acota el tamaño: se comprueba el objeto real contra lo
+  // declarado y contra MAX_UPLOAD_BYTES. Si se pasa, se borra (no se procesa ni se
+  // guarda) y el vídeo sigue en pending: el host puede volver a subir el archivo correcto.
+  if (object.size > video.sizeBytes || object.size > env.MAX_UPLOAD_BYTES) {
+    try {
+      await store.remove(video.storageKey);
+    } catch (err) {
+      console.error('[uploads] no se pudo borrar un objeto que supera el tamaño:', (err as Error).message);
+    }
+    return res.status(413).json({ error: 'File too large' });
   }
   // Transición condicional: de dos confirmaciones concurrentes solo una encola.
   const queued = await transitionVideoStatus(video.id, 'pending', 'processing');

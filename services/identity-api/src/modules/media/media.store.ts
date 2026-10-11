@@ -1,9 +1,12 @@
-import { S3Client, HeadObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, HeadObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { env } from '../../config/env.js';
 
 /** Consultas al bucket desde el servidor (endpoint interno, no el público). */
 export interface MediaStore {
-  exists(key: string): Promise<boolean>;
+  /** HEAD del objeto: su tamaño real en bytes, o null si no existe. */
+  stat(key: string): Promise<{ size: number } | null>;
+  /** Borra el objeto (DeleteObject es idempotente en S3/MinIO). */
+  remove(key: string): Promise<void>;
 }
 
 export interface S3StoreConfig {
@@ -26,15 +29,18 @@ export function createS3Store(config: S3StoreConfig): MediaStore {
       credentials: { accessKeyId: config.accessKey, secretAccessKey: config.secretKey },
     });
   return {
-    async exists(key) {
+    async stat(key) {
       try {
-        await client.send(new HeadObjectCommand({ Bucket: config.bucket, Key: key }));
-        return true;
+        const head = await client.send(new HeadObjectCommand({ Bucket: config.bucket, Key: key }));
+        return { size: head.ContentLength ?? 0 };
       } catch (err) {
         const e = err as { name?: string; $metadata?: { httpStatusCode?: number } };
-        if (e.name === 'NotFound' || e.name === 'NoSuchKey' || e.$metadata?.httpStatusCode === 404) return false;
+        if (e.name === 'NotFound' || e.name === 'NoSuchKey' || e.$metadata?.httpStatusCode === 404) return null;
         throw err;
       }
+    },
+    async remove(key) {
+      await client.send(new DeleteObjectCommand({ Bucket: config.bucket, Key: key }));
     },
   };
 }

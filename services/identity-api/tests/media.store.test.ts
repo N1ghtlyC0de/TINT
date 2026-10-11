@@ -18,26 +18,40 @@ describe('presignPut', () => {
 });
 
 describe('media.store', () => {
-  it('exists hace HEAD y devuelve true si el objeto está', async () => {
-    const send = vi.fn().mockResolvedValueOnce({});
+  it('stat hace HEAD y devuelve el tamaño real del objeto (ContentLength)', async () => {
+    const send = vi.fn().mockResolvedValueOnce({ ContentLength: 1234 });
     const store = createS3Store({ ...config, client: { send } as any });
-    await expect(store.exists('v1/source.mp4')).resolves.toBe(true);
+    await expect(store.stat('v1/source.mp4')).resolves.toEqual({ size: 1234 });
     expect(send.mock.calls[0][0].input).toEqual({ Bucket: 'tint-media', Key: 'v1/source.mp4' });
   });
 
-  it('exists devuelve false con 404 / NotFound y propaga otros errores', async () => {
+  it('stat sin ContentLength devuelve size 0', async () => {
+    const send = vi.fn().mockResolvedValueOnce({});
+    const store = createS3Store({ ...config, client: { send } as any });
+    await expect(store.stat('x')).resolves.toEqual({ size: 0 });
+  });
+
+  it('stat devuelve null con 404 / NotFound y propaga otros errores', async () => {
     const notFound = Object.assign(new Error('nf'), { name: 'NotFound', $metadata: { httpStatusCode: 404 } });
     const boom = Object.assign(new Error('down'), { name: 'TimeoutError', $metadata: {} });
     const send = vi.fn().mockRejectedValueOnce(notFound).mockRejectedValueOnce(boom);
     const store = createS3Store({ ...config, client: { send } as any });
-    await expect(store.exists('x')).resolves.toBe(false);
-    await expect(store.exists('x')).rejects.toThrow('down');
+    await expect(store.stat('x')).resolves.toBeNull();
+    await expect(store.stat('x')).rejects.toThrow('down');
+  });
+
+  it('remove hace DeleteObject de la clave', async () => {
+    const send = vi.fn().mockResolvedValueOnce({});
+    const store = createS3Store({ ...config, client: { send } as any });
+    await store.remove('v1/source.mp4');
+    expect(send.mock.calls[0][0].constructor.name).toBe('DeleteObjectCommand');
+    expect(send.mock.calls[0][0].input).toEqual({ Bucket: 'tint-media', Key: 'v1/source.mp4' });
   });
 
   it('getMediaStore usa un cliente S3 por defecto y es sustituible', () => {
     const def = getMediaStore();
     expect(getMediaStore()).toBe(def);
-    const fake = { exists: async () => true };
+    const fake = { stat: async () => ({ size: 1 }), remove: async () => {} };
     setMediaStore(fake);
     expect(getMediaStore()).toBe(fake);
   });
