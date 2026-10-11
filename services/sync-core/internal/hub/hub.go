@@ -557,9 +557,9 @@ func (h *Hub) Handle(ctx context.Context, c *Client, raw []byte) {
 		c.enqueueEvent(errorEvent(c.claims.RoomID, ev.EventID, syncevent.CodeInvalid, now))
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, ioTimeout)
-	defer cancel()
 	if ev.IsCommand() {
+		ctx, cancel := context.WithTimeout(ctx, ioTimeout)
+		defer cancel()
 		h.handleCommand(ctx, c, ev, now)
 		return
 	}
@@ -617,7 +617,11 @@ func (h *Hub) handleSyncCheck(ctx context.Context, c *Client, ev syncevent.Event
 	room := c.claims.RoomID
 	st, ok := h.fresh(room, nowMs)
 	if !ok {
-		loaded, err := h.store.Load(ctx, room)
+		// Solo un fallo de caché va a Redis: el temporizador del contexto
+		// se crea aquí y no en cada SYNC_CHECK (1/s por cliente).
+		lctx, cancel := context.WithTimeout(ctx, ioTimeout)
+		loaded, err := h.store.Load(lctx, room)
+		cancel()
 		if err != nil {
 			return // sin estado no hay referencia; el siguiente latido reintenta
 		}
