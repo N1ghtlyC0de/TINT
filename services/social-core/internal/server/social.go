@@ -62,6 +62,11 @@ type Deps struct {
 	// LeaveGrace retrasa el aviso de salida: si el usuario vuelve dentro de
 	// la ventana se considera el mismo de antes (cero = DefaultLeaveGrace).
 	LeaveGrace time.Duration
+	// PingInterval/PingTimeout detectan conexiones muertas (cero = defaults).
+	PingInterval time.Duration
+	PingTimeout  time.Duration
+	// WriteTimeout acota cada escritura al cliente (cero = DefaultWriteTimeout).
+	WriteTimeout time.Duration
 	// presence cuenta conexiones por sala y usuario para no spamear avisos
 	// con multipestaña, StrictMode (doble montaje) o flaps de red.
 	presence map[string]map[string]*presenceEntry
@@ -212,7 +217,7 @@ func NewRouterWithDeps(d *Deps) http.Handler {
 
 func writeError(ctx context.Context, c *websocket.Conn, code, ref string) {
 	raw, _ := json.Marshal(socialevent.ErrorEnvelope{Type: socialevent.TypeError, Code: code, EventIDRef: ref})
-	_ = c.Write(ctx, websocket.MessageText, raw)
+	_ = writeMsg(ctx, c, raw, DefaultWriteTimeout)
 }
 
 // authenticate elige el verificador por el alg del header: HS256 = guest
@@ -295,7 +300,7 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		recent = []socialevent.ChatMessage{}
 	}
 	histRaw, _ := json.Marshal(socialevent.HistoryEnvelope{Type: socialevent.TypeHistory, RoomID: roomID, Messages: recent})
-	_ = c.Write(ctx, websocket.MessageText, histRaw)
+	_ = writeMsg(ctx, c, histRaw, d.writeTimeout())
 
 	// Aviso de entrada (solo en vivo, tras el historial). Se perdona el
 	// reingreso dentro de la gracia (StrictMode, refresh, flap).
@@ -303,7 +308,9 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		d.emitNotice(roomID, claims, socialevent.NoticeJoined)
 	}
 
-	// Escritor hacia este cliente; termina cuando el handler retorna.
+	// Escritor hacia este cliente; termina cuando el handler retorna. Si una
+	// escritura falla o vence, se corta el socket: así el Read de abajo
+	// termina y se emite el aviso de salida (antes quedaba colgado).
 	done := make(chan struct{})
 	defer close(done)
 	go func() {
@@ -312,12 +319,14 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 			case <-done:
 				return
 			case msg := <-send:
-				if err := c.Write(ctx, websocket.MessageText, msg); err != nil {
+				if err := writeMsg(ctx, c, msg, d.writeTimeout()); err != nil {
+					c.CloseNow()
 					return
 				}
 			}
 		}
 	}()
+	go d.keepAlive(c, done)
 
 	limiter := d.ChatLimit
 	if limiter == nil {
