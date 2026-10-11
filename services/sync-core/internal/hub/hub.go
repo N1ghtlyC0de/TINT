@@ -231,8 +231,10 @@ func every(ctx context.Context, d time.Duration, fn func()) {
 // dejaron de responder. Un único temporizador por réplica en lugar de uno
 // por conexión.
 func (h *Hub) beatAll() {
+	now := h.now()
+	tmpls := map[string]heartbeatTmpl{} // una plantilla JSON por sala y tick
 	for _, c := range h.snapshotClients() {
-		raw, err := h.Tick(c)
+		raw, err := h.tick(c, now, tmpls)
 		if err != nil {
 			c.close(err)
 			continue
@@ -660,11 +662,27 @@ func (h *Hub) handleSyncCheck(ctx context.Context, c *Client, ev syncevent.Event
 // Tick genera el siguiente HEARTBEAT del cliente o ErrStale si dejó de
 // responder SYNC_CHECK durante MaxMissedChecks intervalos.
 func (h *Hub) Tick(c *Client) ([]byte, error) {
-	now := h.now()
+	return h.tick(c, h.now(), nil)
+}
+
+// tick reutiliza la plantilla JSON de la sala en tmpls (si no es nil) para
+// no serializar por reflexión lo que comparten todos los clientes.
+func (h *Hub) tick(c *Client, now time.Time, tmpls map[string]heartbeatTmpl) ([]byte, error) {
 	if now.UnixMilli()-c.lastCheckMs.Load() > (h.heartbeat * MaxMissedChecks).Milliseconds() {
 		return nil, ErrStale
 	}
-	ev := baseEvent(syncevent.Heartbeat, c.claims.RoomID, now)
+	room := c.claims.RoomID
+	if c.codec == codec.JSON {
+		tmpl, ok := tmpls[room]
+		if !ok {
+			tmpl = newHeartbeatTmpl(room, now)
+			if tmpls != nil {
+				tmpls[room] = tmpl
+			}
+		}
+		return tmpl.encode(uuid.New(), c.lastDriftMs.Load(), c.RTT()), nil
+	}
+	ev := baseEvent(syncevent.Heartbeat, room, now)
 	ev.ServerTimeMs = now.UnixMilli()
 	ev.RTTMs = c.RTT()
 	ev.DriftMs = c.lastDriftMs.Load()
