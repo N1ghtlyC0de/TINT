@@ -12,10 +12,22 @@ import { Card } from '../components/ui/Primitives';
 import { apiFetch } from '../lib/api';
 import { toAbsoluteInviteLink, pickLatestActiveInvitation } from '../lib/invite';
 import { formatChatTime, noticeText } from '../lib/socialSocket';
-import { useRoomPlayback } from '../hooks/useRoomPlayback';
+import { useRoomPlayback, type MediaStatus } from '../hooks/useRoomPlayback';
 import { useSocialSocket } from '../hooks/useSocialSocket';
 import { useSyncSocket } from '../hooks/useSyncSocket';
 import { useSyncToasts } from '../hooks/useSyncToasts';
+
+/** Texto y color del indicador de procesamiento (media-worker) por estado del vídeo. */
+const MEDIA_STATUS_UI: Record<MediaStatus, { text: string; tone: string; dot: string }> = {
+  pending: { text: 'Procesando vídeo (Ambilight)…', tone: 'text-amber-200', dot: 'bg-amber-300 animate-pulse motion-reduce:animate-none' },
+  processing: { text: 'Procesando vídeo (Ambilight)…', tone: 'text-amber-200', dot: 'bg-amber-300 animate-pulse motion-reduce:animate-none' },
+  ready: { text: 'Ambilight listo', tone: 'text-emerald-300', dot: 'bg-emerald-400' },
+  failed: {
+    text: 'No se pudo procesar el vídeo; la reproducción sigue disponible',
+    tone: 'text-red-300',
+    dot: 'bg-red-400',
+  },
+};
 
 export default function WatchRoom() {
   const { roomId } = useParams();
@@ -51,6 +63,7 @@ export default function WatchRoom() {
     : playback.loading
       ? 'Cargando vídeo…'
       : (playback.error ?? 'Sin video configurado');
+  const mediaStatusUi = playback.status ? MEDIA_STATUS_UI[playback.status] : null;
   const { sendCommand } = sync;
   const loadMedia = useCallback(
     (mediaId: string) => sendCommand('LOAD', 0, { media_id: mediaId }) !== null,
@@ -221,6 +234,19 @@ export default function WatchRoom() {
               <h2 className="text-[15px] font-semibold text-white">Ambilight</h2>
               <p className="mt-1 text-[13px] leading-relaxed">
                 Visualización lista para ambilight.json de media-worker.
+              </p>
+              <p
+                role="status"
+                aria-live="polite"
+                aria-label="Estado del vídeo"
+                className={`mt-2 flex items-center gap-2 text-[13px] ${mediaStatusUi?.tone ?? ''}`}
+              >
+                {mediaStatusUi && (
+                  <>
+                    <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${mediaStatusUi.dot}`} />
+                    {mediaStatusUi.text}
+                  </>
+                )}
               </p>
               <div aria-hidden="true" className="mt-3 flex gap-1.5">
                 {['#FF6B1A', '#C4520A', '#313338', '#B5BAC1', '#1E1F22'].map((c) => (

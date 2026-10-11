@@ -25,7 +25,8 @@ Eres el agente especializado en la capa de presentación de **TINT**. Tu foco es
 | :--- | :--- | :--- |
 | `SyncEvent` | sync-core (`/ws/sync`) | `event_id`, `type` (`PLAY`/`PAUSE`/`SEEK`/`RATE`/`LOAD`/`STATE`/`HEARTBEAT`/`SYNC_CHECK`/`SYNC_CORRECTION`/`HOST_STATUS`/`CONTROL`/`ACK`/`ERROR`), `room_id`, `position_ms`, `version`, `occurred_at`, `received_at` + ancla (`status`, `rate`, `updated_at_ms`, `server_time_ms`) + v2: `media_id`, `can_control`, `rtt_ms`/`drift_ms` (HEARTBEAT). Contrato completo en [`services/sync-core/AGENTS.md`](../../services/sync-core/AGENTS.md) |
 | `SyncTicket` | identity-api (`POST /rooms/:id/sync-ticket`) | `token` (HS256, `role: host`), `expiresAt` |
-| `RoomPlayback` | identity-api (`GET /rooms/:id/playback`, host o guest token) | `mediaId`, `url` (GET prefirmado de MinIO), `expiresAt` |
+| `RoomPlayback` | identity-api (`GET /rooms/:id/playback`, host o guest token) | `mediaId`, `url` (GET prefirmado de MinIO), `expiresAt`, `status` (`pending`/`processing`/`ready`/`failed`/null), `ambilightUrl` (solo `ready`) |
+| `UploadTicket` | identity-api (`POST /rooms/:id/media/uploads`, host) | `videoId`, `uploadUrl` (PUT prefirmado), `storageKey`, `expiresAt`, `headers`; se confirma con `POST …/uploads/:videoId/complete` → `mediaId` |
 | `RoomGuest` | identity-api (`GET /rooms/:id/guests`, `POST /rooms/:id/guests/:jti/revoke`) | `jti`, `nick`, `joinedAt`, `expiresAt`, `revoked` |
 | `Reaction` | social-core | `user_id`, `emoji`, `position_ms` (bucket de 5 s) |
 | `AmbilightFrame` | media-worker (`ambilight.json`) | `t_ms`, `top`, `bottom`, `left`, `right` (hex) |
@@ -39,12 +40,13 @@ Eres el agente especializado en la capa de presentación de **TINT**. Tu foco es
 | `src/lib/drift.ts` | `computeDrift`, `correctionAction`, `applyCorrection` (seek o `playbackRate` 1.05/0.95) y `shouldRestoreRate` (< 100 ms o 5 s). |
 | `src/lib/syncQuality.ts` | Semáforo: verde RTT < 150 y \|drift\| < 200; amarillo RTT < 400 y \|drift\| ≤ 500; rojo el resto. |
 | `src/hooks/useSyncSocket.ts` | Conexión y reconexión (`reconnect: { attempt, nextRetryAt }`); el host pide un sync-ticket en cada intento y el invitado usa `tint_guest_token`. Responde `HEARTBEAT` con `SYNC_CHECK`, descarta mensajes con `version` vieja, expone `canControl` (`STATE.can_control`/`CONTROL`; host → true antes del 1.er STATE), `rttMs`/`driftMs`, `lastBroadcast` (con `own` por `event_id`) y `revoked` (cierre 4001: no reconecta y borra `tint_guest_token`). `sendCommand` admite PLAY/PAUSE/SEEK/RATE/LOAD. |
-| `src/hooks/useRoomPlayback.ts` | `GET /rooms/:id/playback` al montar, cuando cambia el `media_id` del estado sync y ~1 min antes de `expiresAt`. |
+| `src/hooks/useRoomPlayback.ts` | `GET /rooms/:id/playback` al montar, cuando cambia el `media_id` del estado sync y ~1 min antes de `expiresAt`. Expone `status`/`ambilightUrl` y, mientras el vídeo está `pending`/`processing`, re-consulta cada 5 s (máx. 120) sin cambiar el `src`. |
+| `src/lib/upload.ts` | Subida directa al Blob Storage: `requestUpload` → `uploadToBlob` (XHR `PUT` con progreso, cabeceras exactas, sin `Authorization`, `AbortSignal`) → `completeUpload`; `uploadErrorMessage` (413/409/403/404/410). |
 | `src/hooks/useSyncToasts.ts` · `src/components/sync/*` | Avisos de comandos ajenos (3 s, máx. 3, `aria-live`), semáforo de sincronía y "Reconectando… intento N · S s". |
 | `src/hooks/usePlayerShortcuts.ts` | Atajos para quien controla: Espacio/K, ←/→ y J/L (±10 s), `[`/`]` (velocidad), `?` (ayuda); ignorados en campos de texto. |
 | `src/components/player/SeekBar.tsx` | Barra de cine `role="slider"` (teclado y puntero), búfer, tiempo bajo el cursor y marcadores de saltos del host. |
 | `src/components/SyncedPlayer.tsx` | `<video>` gobernado por el estado maestro; controles habilitados por `canControl`; velocidad; aviso "Host desconectado" y de control temporal delegado; botón de autoplay; fundido al corregir con seek (sin él con `prefers-reduced-motion`); re-aplica el estado al cambiar el `src`. |
-| `src/components/host/*` | Paneles del host: "Cambiar vídeo" (`PUT /rooms/:id/media` → `LOAD{media_id}`) y "Participantes" (listar y retirar invitados con confirmación). |
+| `src/components/host/*` | Paneles del host: "Cambiar vídeo" (subida desde el navegador con progreso y cancelar → `LOAD{media_id}`; secundaria: clave del bucket con `PUT /rooms/:id/media`) y "Participantes" (listar y retirar invitados con confirmación). |
 
 El cálculo del drift es **autoritativo en sync-core**: el cliente solo aplica las `SYNC_CORRECTION` que recibe. Flujos y diagramas en [`docs/dominio-reproduccion.md`](../../docs/dominio-reproduccion.md).
 

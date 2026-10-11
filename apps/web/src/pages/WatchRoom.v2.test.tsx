@@ -30,7 +30,13 @@ const state = {
   media_id: 'm1',
 };
 
-let playbackByCall: Array<{ mediaId: string | null; url: string | null; expiresAt: string | null }>;
+let playbackByCall: Array<{
+  mediaId: string | null;
+  url: string | null;
+  expiresAt: string | null;
+  status?: string | null;
+  ambilightUrl?: string | null;
+}>;
 
 function routeApi(path: string, init?: RequestInit) {
   if (path.endsWith('/sync-ticket')) return Promise.resolve({ token: 'ticket', expiresAt: 'x' });
@@ -134,6 +140,32 @@ describe('WatchRoom v2 — vídeo de la sala (F3)', () => {
     renderWatch();
     await flush();
     expect(screen.getByText('No se pudo cargar el vídeo de la sala.')).toBeInTheDocument();
+  });
+});
+
+describe('WatchRoom v2 — estado del procesamiento (Ambilight)', () => {
+  const base = { mediaId: 'm1', url: 'https://minio/m1', expiresAt: null };
+
+  it.each([
+    ['pending', 'Procesando vídeo (Ambilight)…'],
+    ['processing', 'Procesando vídeo (Ambilight)…'],
+    ['ready', 'Ambilight listo'],
+    ['failed', 'No se pudo procesar el vídeo; la reproducción sigue disponible'],
+  ])('status %s → "%s"', async (status, text) => {
+    localStorage.setItem('tint_guest_token', 'g');
+    playbackByCall = [{ ...base, status, ambilightUrl: status === 'ready' ? 'https://a' : null }];
+    renderWatch();
+    await flush();
+    expect(screen.getByRole('status', { name: 'Estado del vídeo' })).toHaveTextContent(text);
+    expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m1');
+  });
+
+  it('sin fila de vídeo (status null) no muestra estado de procesamiento', async () => {
+    localStorage.setItem('tint_guest_token', 'g');
+    playbackByCall = [{ ...base, status: null }];
+    renderWatch();
+    await flush();
+    expect(screen.getByRole('status', { name: 'Estado del vídeo' })).toHaveTextContent('');
   });
 });
 
