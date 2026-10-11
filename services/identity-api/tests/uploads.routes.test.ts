@@ -35,7 +35,7 @@ import { setRedisClient } from '../src/modules/tokens/revocation.js';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const VID = '66666666-6666-4666-8666-666666666666';
 const activeRoom = { id: 'room-1', hostId: 'host-1', title: 'Sala', status: 'active', mediaId: null, mediaKey: null };
-const pending = { id: VID, roomId: 'room-1', uploadedBy: 'host-1', storageKey: `${VID}/source.mp4`, contentType: 'video/mp4', sizeBytes: 10, status: 'pending' };
+const pending = { id: VID, roomId: 'room-1', uploadedBy: 'host-1', storageKey: `incoming/${VID}/original.mp4`, contentType: 'video/mp4', sizeBytes: 10, status: 'pending' };
 
 const presignPut = vi.fn(async (key: string, ct: string, ttl: number) => `http://minio.test/tint-media/${key}?put&ct=${ct}&ttl=${ttl}`);
 const presignGet = vi.fn(async (key: string, ttl: number) => `http://minio.test/tint-media/${key}?ttl=${ttl}`);
@@ -67,7 +67,9 @@ describe('POST /rooms/:id/media/uploads', () => {
     expect(res.status).toBe(200);
     const { videoId, storageKey, uploadUrl, expiresAt, headers } = res.body;
     expect(videoId).toMatch(UUID_RE);
-    expect(storageKey).toBe(`${videoId}/source.mp4`);
+    // Staging: el original nunca va a la clave publicada; el media-worker publica
+    // {id}/source.<ext> solo si el vídeo es válido (y actualiza storage_key).
+    expect(storageKey).toBe(`incoming/${videoId}/original.mp4`);
     expect(uploadUrl).toBe(`http://minio.test/tint-media/${storageKey}?put&ct=video/mp4&ttl=${env.UPLOAD_URL_TTL_SECONDS}`);
     expect(headers).toEqual({ 'Content-Type': 'video/mp4' });
     expect(new Date(expiresAt).getTime()).toBeGreaterThan(Date.now());
@@ -89,7 +91,7 @@ describe('POST /rooms/:id/media/uploads', () => {
     ['otro', 'video/x-desconocido', ''],
   ])('extensión segura para %s (%s)', async (filename, contentType, ext) => {
     const res = await start({ filename, contentType, sizeBytes: 1 });
-    expect(res.body.storageKey).toBe(`${res.body.videoId}/source${ext}`);
+    expect(res.body.storageKey).toBe(`incoming/${res.body.videoId}/original${ext}`);
   });
 
   it('400 si no es vídeo o faltan campos', async () => {
@@ -235,6 +237,21 @@ describe('GET /rooms/:id/playback con estado del procesamiento', () => {
     vi.mocked(findVideo).mockResolvedValueOnce(pending as any);
     const res = await play();
     expect(res.body).toMatchObject({ status: 'pending', ambilightUrl: null });
+  });
+
+  it('firma la clave vigente del vídeo (la publicada por el worker), no la copiada en la sala', async () => {
+    vi.mocked(findRoom).mockResolvedValue({ ...activeRoom, mediaId: VID, mediaKey: pending.storageKey } as any);
+    vi.mocked(findVideo).mockResolvedValueOnce({ ...pending, status: 'ready', storageKey: `${VID}/source.mp4` } as any);
+    const res = await play();
+    expect(res.body.url).toBe(`http://minio.test/tint-media/${VID}/source.mp4?ttl=${env.PLAYBACK_URL_TTL_SECONDS}`);
+  });
+
+  it('un vídeo failed no se sirve: url null y status failed', async () => {
+    vi.mocked(findRoom).mockResolvedValue({ ...activeRoom, mediaId: VID, mediaKey: pending.storageKey } as any);
+    vi.mocked(findVideo).mockResolvedValueOnce({ ...pending, status: 'failed' } as any);
+    const res = await play();
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ mediaId: VID, url: null, expiresAt: null, status: 'failed', ambilightUrl: null });
   });
 
   it('status null si el vídeo se asignó por clave manual (sin fila en videos)', async () => {
