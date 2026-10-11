@@ -107,7 +107,7 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 6. El `SYNC_CHECK` no escribe en Redis: la presencia se renueva en lote en el barrido de cada réplica (1 s).
 
 ### Presencia y delegación de control
-- Cada réplica ejecuta un **barrido** por segundo: renueva `hosts_online` y `members` de sus clientes locales y reevalúa cada sala. Un script Lua guarda el último `HOST_STATUS` para publicar solo transiciones; así la caída de la réplica del host también se avisa (cuando su presencia expira a los 5 s).
+- Cada réplica ejecuta un **barrido** por segundo: renueva `hosts_online` y `members` de sus clientes locales y reevalúa cada sala. Un único script Lua por sala (`Store.Sweep`, 1 ida y vuelta) registra el latido, lee la presencia y guarda el último `HOST_STATUS` para publicar solo transiciones; así la caída de la réplica del host también se avisa (cuando su presencia expira a los 5 s).
 - Si una sala que tuvo host pasa `CONTROL_HANDOFF_AFTER` (5 min) sin host/cohost, el participante vivo de **menor `sub`** (determinista entre réplicas) recibe el control: `CONTROL{can_control:true}` a él y `false` al resto. Si el delegado se va se reasigna; cuando vuelve un host/cohost, la delegación se anula. Una sala a la que nunca entró el host no delega.
 
 ### Orden y versiones
@@ -134,7 +134,7 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 | `internal/master` | Reloj Maestro puro (sin I/O): ancla, `PositionAt`, `Apply`. |
 | `internal/drift` | EWMA del RTT y decisión de corrección (`rate`/`seek`). |
 | `internal/auth` | Verificación HS256 de tokens de identity-api y roles. |
-| `internal/store` | `sync_state` con compare-and-set (lectura en pipeline + script Lua que escribe y publica si la `version` no cambió), candado local por sala, dedupe, presencia, delegación y revocación. |
+| `internal/store` | `sync_state` con compare-and-set (lectura en pipeline —o el último estado escrito por la réplica, sin leer— + script Lua que escribe y publica si la `version` no cambió), candado local por sala, dedupe, presencia (barrido en un solo script por sala), delegación y revocación. |
 | `internal/codec` | JSON y MessagePack (subprotocolo). |
 | `internal/metrics` | Exposición Prometheus sin dependencias. |
 | `internal/bus` | Pub/Sub entre réplicas (una conexión por réplica, suscripción solo a salas con clientes locales). |
@@ -168,14 +168,25 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 ## Métricas (`GET /metrics`, formato Prometheus)
 `sync_connections`, `sync_rooms`, `sync_commands_total{result}`, `sync_messages_invalid_total`, `sync_messages_rate_limited_total`, `sync_disconnects_total{reason}`, `sync_corrections_total{strategy}`, `sync_command_apply_seconds`, `sync_broadcast_delivery_seconds`, `sync_store_conflicts_total`, `sync_telemetry_dropped_total`, `sync_telemetry_failed_total`. **No exponer públicamente**: debe quedar detrás del ingress.
 
+## Rendimiento (caminos calientes)
+Cada optimización se mide con `testing.B` + `benchstat` (n=6, binarios viejo/nuevo intercalados) y su commit lleva el antes/después. Para Redis la métrica estable es **rt/op** (idas y vueltas; la reporta un hook de go-redis en los benchmarks).
+
+| Camino | Costo actual | Cómo |
+| :--- | :--- | :--- |
+| `HEARTBEAT` (`beatAll`, 500 clientes JSON) | ~0,27 ms · 2 allocs/cliente | Plantilla JSON por sala y tick; por cliente solo `event_id`, `drift_ms`, `rtt_ms` (idéntico byte a byte a `json.Marshal`). |
+| `SYNC_CHECK` con caché vigente | 0 rt · 8 allocs | Sin Redis ni `context.WithTimeout` salvo que la caché haya expirado. |
+| Comando (`store.Apply`) | **1 rt** tras un comando propio; 2 si otra réplica escribió | Último estado escrito por franja del candado (máx. 1 min); el CAS por `version` detecta escrituras ajenas. |
+| Barrido por sala | **1 rt** | `sweep.lua`: latido en lote + presencia + transición de `HOST_STATUS`. |
+| Alta + baja de un participante | **5 rt** | `Init` con `HGETALL` en la misma `MULTI`; latido + presencia en un pipeline. |
+
 ## Comandos
 ```bash
 go vet ./...
 go test -race -coverprofile=coverage.out ./...
 ../../scripts/check-go-coverage.sh coverage.out 85
 
-# Benchmarks del store contra Redis real
-BENCH_REDIS_URL=redis://localhost:6379/15 go test ./internal/store -run '^$' -bench . -benchmem
+# Benchmarks (sin BENCH_REDIS_URL usan miniredis: rt/op y allocs/op valen, ns/op no)
+BENCH_REDIS_URL=redis://localhost:6379/15 go test ./internal/store ./internal/hub -run '^$' -bench . -benchmem -count 6
 
 # Prueba de carga SYNC-TEST-01 (500 conexiones; ver loadtest/README.md)
 k6 run -e ROOM_ID=sala-carga -e JWT_SECRET=$JWT_SECRET loadtest/sync.js

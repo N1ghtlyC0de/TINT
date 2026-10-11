@@ -353,9 +353,9 @@ sequenceDiagram
     else válido
         WS-->>C: 101 + subprotocolo elegido
         WS->>HUB: Connect(claims, códec)
-        HUB->>R: SUBSCRIBE (primer cliente local) · Init · presencia
+        HUB->>R: SUBSCRIBE (primer cliente local) · Init (MULTI + HGETALL) · latido + presencia (1 pipeline)
         HUB-->>C: STATE { ancla, media_id, online, can_control }
-        HUB->>R: barrido de la sala (puede publicar HOST_STATUS / CONTROL)
+        HUB->>R: barrido de la sala, sweep.lua (puede publicar HOST_STATUS / CONTROL)
     end
 ```
 
@@ -376,11 +376,17 @@ sequenceDiagram
     A->>A: rate limit, validación, ¿tiene control?
     A->>A: candado local de la sala
     loop hasta 50 intentos
-        A->>R: pipeline: EXISTS evt + HGETALL estado
+        alt último estado escrito por A en la sala (< 1 min)
+            A->>A: parte de ese estado (sin leer)
+        else
+            A->>R: pipeline: EXISTS evt + HGETALL estado
+        end
         A->>A: master.Apply → version+1
         A->>R: EVALSHA cas.lua(version esperada, estado, payload)
         alt OK
             R->>R: SET evt · HSET · PEXPIRE · PUBLISH
+        else CONFLICT tras partir de la caché
+            A->>A: olvida la caché y relee (sin espera)
         else CONFLICT (otra réplica escribió)
             A->>A: espera aleatoria 0–4 ms
         else DUP
@@ -395,6 +401,7 @@ sequenceDiagram
 ```
 
 - Dentro de una réplica, el candado por sala elimina los conflictos. Entre réplicas, el script solo escribe si la `version` no cambió.
+- Un comando tras otro de la misma réplica cuesta **una** ida y vuelta: el store recuerda (por franja del candado) el último estado que escribió y va directo al CAS. `version` no se repite mientras la clave viva, así que partir de ahí es tan seguro como leer; si otra réplica escribió, el CAS responde `CONFLICT` y se relee. El CAS no reescribe `host_id` (solo lo fija `Init`).
 - La réplica emisora no difunde localmente: todo pasa por Pub/Sub.
 - Los clientes filtran por `version`, porque el orden entre `ACK` y broadcast no está garantizado.
 
@@ -446,14 +453,14 @@ sequenceDiagram
     participant B as réplica B
     actor Inv as Invitados en B
 
-    loop barrido cada 1 s en cada réplica
+    loop barrido cada 1 s en cada réplica (sweep.lua: 1 ida y vuelta por sala)
         A->>R: ZADD hosts_online (conexiones del Host)
         B->>R: ZADD members (subs de invitados)
     end
     Note over A: SIGKILL: no hay HostGone
-    loop barrido de B
+    loop barrido de B (mismo sweep.lua)
         B->>R: ZCOUNT hosts_online (últimos 5 s)
-        B->>R: host_status.lua("0")
+        B->>R: transición de host_online a "0"
         alt transición 1 → 0
             R-->>B: 1 (y fija hostless_since)
             B->>R: PUBLISH HOST_STATUS online=false
@@ -638,10 +645,10 @@ erDiagram
 
 | Clave | Escrita por | Vida |
 | :--- | :--- | :--- |
-| `room:{id}:sync_state` | `store.Init`/`Apply`/`Touch`; `Beat` renueva el TTL en el barrido | 12 h desde la última actividad o desde que no quedan clientes conectados |
+| `room:{id}:sync_state` | `store.Init`/`Apply`/`Touch`; `Sweep` renueva el TTL en el barrido | 12 h desde la última actividad o desde que no quedan clientes conectados |
 | `room:{id}:evt:{event_id}` | `store.Apply` | 1 min |
-| `room:{id}:hosts_online`, `room:{id}:members` | `Beat` en el barrido; `HostSeen`/`HostGone`/`MemberGone` | 12 h; cuentan 5 s desde el último latido |
-| `room:{id}:host_online`, `room:{id}:hostless_since` | `SetHostStatus` (Lua) | 12 h |
+| `room:{id}:hosts_online`, `room:{id}:members` | `Sweep` en el barrido; `BeatPresence` al conectar; `HostGone`/`MemberGone` | 12 h; cuentan 5 s desde el último latido |
+| `room:{id}:host_online`, `room:{id}:hostless_since` | `Sweep` (Lua, en el barrido y al conectar/desconectar) | 12 h |
 | `room:{id}:delegate` | `SwapDelegate` | 12 h |
 | `token:revoked:{jti}` | identity-api | hasta la expiración del token |
 | `analytics:events` | `telemetry.Run` | `MAXLEN ~100000` |
@@ -812,7 +819,7 @@ Para probar el vídeo:
 
 | Suite | Resultado | Cobertura |
 | :--- | :--- | :--- |
-| sync-core (`gofmt`, `go vet`, `go test -race`) | ✅ todas pasan | **94,8 %** |
+| sync-core (`gofmt`, `go vet`, `go test -race`) | ✅ todas pasan | **95,7 %** |
 | identity-api (`npm ci`, `tsc`, Vitest) | ✅ 100 pruebas | **98,7 %** líneas · 91,7 % ramas |
 | web (lint, `tsc`, Vitest, build) | ✅ 309 pruebas | **98,9 %** líneas · 95,2 % ramas |
 
@@ -823,6 +830,18 @@ Para probar el vídeo:
 | Un host, en serie | 0,66–1,42 ms/op · 105 allocs | **0,24–0,49 ms/op** · 78 allocs |
 | 16 escritores en una réplica | 7,07 ms/op y **comandos perdidos** (se agotaban los 50 reintentos) | **0,27–0,32 ms/op**, sin pérdidas |
 | Dos réplicas compitiendo | — | 0,34–0,79 ms/op, sin pérdidas |
+
+**Ronda de optimización de caminos calientes** (2026-10, `go test -bench -benchmem -count 6` + `benchstat`, Ryzen 3 2200G con la máquina muy cargada; Redis 7 real en Docker con un Ping de 0,6–1,9 ms, por eso la métrica fiable para Redis es **rt/op**, idas y vueltas por operación, que cuenta un hook de go-redis):
+
+| Camino | Antes | Después |
+| :--- | :--- | :--- |
+| `beatAll`, 500 clientes JSON (HEARTBEAT con plantilla por sala y tick) | 1424 µs · 361 KiB · 3008 allocs | **268 µs** · 158 KiB · 1012 allocs |
+| `Handle` de `SYNC_CHECK` sin drift, JSON (sin timer de contexto si la caché vale) | 8,6 µs · 12 allocs | **7,6 µs** · 8 allocs |
+| `store.Apply` en serie (parte del último estado propio) | 2 rt/op · 75 allocs | **1 rt/op** · 40 allocs |
+| Barrido por sala, 1 host + 49 invitados (`sweep.lua`) | 3 rt/op · 6,4 ms · 182 allocs | **1 rt/op** · 2,5 ms · 81 allocs |
+| Alta + baja de un invitado (`Connect`/`Disconnect`) | 8 rt/op | **5 rt/op** |
+
+Descartado por no mejorar: buffer prereservado para MessagePack (mismo tiempo, más asignaciones) y tocar el fan-out de `Deliver` (el costo es el envío por canal a cada cliente, inherente). El HEARTBEAT MessagePack sigue por el códec.
 
 **MessagePack frente a JSON** (mensaje PLAY completo): 402 → 364 B (**−9,5 %**), ~5,6 → ~5,0 µs para codificar. La ganancia es pequeña porque el contrato exige claves y fechas de texto; por eso es opcional.
 
@@ -852,11 +871,11 @@ La cola restante sigue sin una causa demostrada, y el umbral **no se relajó**. 
 
 | Tema | Decisión | Motivo |
 | :--- | :--- | :--- |
-| Escritura atómica | CAS: lectura en pipeline + Lua condicionado a `version` + candado por sala | `master.Apply` sigue siendo la única fuente de verdad (no se duplica en Lua); con `WATCH` se perdían comandos bajo contención. |
+| Escritura atómica | CAS: lectura en pipeline (o el último estado propio) + Lua condicionado a `version` + candado por sala | `master.Apply` sigue siendo la única fuente de verdad (no se duplica en Lua); con `WATCH` se perdían comandos bajo contención. |
 | Presencia | ZSET con score = último latido, renovado en lote en el barrido | Expira a las conexiones de réplicas caídas; `SYNC_CHECK` ya no escribe en Redis. |
 | `HOST_STATUS` | Script que guarda el último valor publicado | Solo se publican transiciones, sin duplicados entre réplicas. |
 | Delegado | Menor `sub` vivo | Determinista entre réplicas, sin coordinación extra. |
-| Latidos | Un temporizador por réplica | 500 conexiones = 1 timer en lugar de 500. |
+| Latidos | Un temporizador por réplica; JSON con plantilla por sala y tick | 500 conexiones = 1 timer en lugar de 500, y un `json.Marshal` por sala en lugar de uno por cliente (idéntico byte a byte). |
 | Revocación | Marca en Redis + `REVOKED` por el canal de la sala | sync-core no depende de identity-api en tiempo real; falla cerrado. |
 | Métricas | Paquete propio | Evita `client_golang` y sus dependencias transitivas para un conjunto fijo de métricas. |
 | MessagePack | Opcional; el bus sigue en JSON | Ahorro medido de ~10 %; se transcodifica una vez por sala. |
