@@ -41,6 +41,9 @@ const (
 	lockStripes = 256
 	// maxBackoff limita la espera aleatoria tras un conflicto entre réplicas.
 	maxBackoff = 4 * time.Millisecond
+	// maxLastAge: edad máxima del último estado escrito por esta réplica
+	// para aplicar el siguiente comando sin releerlo (ver lastWrite).
+	maxLastAge = time.Minute
 )
 
 // casScript aplica el estado calculado en Go solo si nadie escribió antes.
@@ -69,6 +72,7 @@ type Store struct {
 	rdb   redis.UniversalClient
 	ttl   time.Duration
 	locks [lockStripes]sync.Mutex
+	last  [lockStripes]lastWrite // protegido por locks[i]
 
 	conflicts atomic.Int64 // reintentos por escrituras de otras réplicas
 }
@@ -83,6 +87,7 @@ func New(rdb redis.UniversalClient, ttl time.Duration) *Store {
 func (s *Store) Init(ctx context.Context, roomID, hostID string, nowMs int64) (master.State, error) {
 	key := syncevent.StateKey(roomID)
 	init := master.Initial(hostID, nowMs)
+	var raw *redis.MapStringStringCmd
 	_, err := s.rdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
 		for field, value := range fields(init) {
 			if field != "host_id" {
@@ -93,12 +98,13 @@ func (s *Store) Init(ctx context.Context, roomID, hostID string, nowMs int64) (m
 			p.HSet(ctx, key, "host_id", hostID)
 		}
 		p.PExpire(ctx, key, s.ttl)
+		raw = p.HGetAll(ctx, key) // en la misma transacción: sin otra ida y vuelta
 		return nil
 	})
 	if err != nil {
 		return master.State{}, fmt.Errorf("init sala %s: %w", roomID, err)
 	}
-	return s.Load(ctx, roomID)
+	return decode(raw.Val())
 }
 
 // Load lee el estado actual de la sala.
@@ -115,22 +121,26 @@ func (s *Store) Apply(ctx context.Context, roomID, eventID string, cmd master.Co
 
 	stateKey := syncevent.StateKey(roomID)
 	evtKey := syncevent.EventKey(roomID, eventID)
+	last := s.lastFor(roomID)
 	for i := 0; i < maxTxRetries; i++ {
-		var seen *redis.IntCmd
-		var raw *redis.MapStringStringCmd
-		if _, err := s.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
-			seen = p.Exists(ctx, evtKey)
-			raw = p.HGetAll(ctx, stateKey)
-			return nil
-		}); err != nil {
-			return master.State{}, false, err
-		}
-		cur, err := decode(raw.Val())
-		if err != nil {
-			return master.State{}, false, err
-		}
-		if seen.Val() > 0 {
-			return cur, true, nil
+		cur, ok := last.get(roomID, s.lastTTL())
+		if !ok {
+			var seen *redis.IntCmd
+			var raw *redis.MapStringStringCmd
+			if _, err := s.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
+				seen = p.Exists(ctx, evtKey)
+				raw = p.HGetAll(ctx, stateKey)
+				return nil
+			}); err != nil {
+				return master.State{}, false, err
+			}
+			var err error
+			if cur, err = decode(raw.Val()); err != nil {
+				return master.State{}, false, err
+			}
+			if seen.Val() > 0 {
+				return cur, true, nil
+			}
 		}
 		next, err := cur.Apply(cmd, receivedAtMs, rttMs)
 		if err != nil {
@@ -142,17 +152,26 @@ func (s *Store) Apply(ctx context.Context, roomID, eventID string, cmd master.Co
 		}
 		args := []any{cur.Version, dedupeWindow.Milliseconds(), s.ttl.Milliseconds(), syncevent.ChannelKey(roomID), payload}
 		for field, value := range fields(next) {
-			args = append(args, field, value)
+			if field != "host_id" { // lo fija Init; un comando nunca lo cambia
+				args = append(args, field, value)
+			}
 		}
 		res, err := casScript.Run(ctx, s.rdb, []string{stateKey, evtKey}, args...).Text()
 		if err != nil {
+			last.forget()
 			return master.State{}, false, err
 		}
 		switch res {
 		case "OK":
+			last.set(roomID, next)
 			return next, false, nil
 		case "DUP":
+			last.forget()
 			continue // el siguiente intento devuelve el estado con dup=true
+		}
+		last.forget()
+		if ok {
+			continue // la caché estaba vieja: releer sin esperar
 		}
 		// Otra réplica escribió primero: espera aleatoria para no chocar de nuevo.
 		s.conflicts.Add(1)
@@ -167,10 +186,48 @@ func (s *Store) Apply(ctx context.Context, roomID, eventID string, cmd master.Co
 func (s *Store) Conflicts() int64 { return s.conflicts.Load() }
 
 func (s *Store) lockFor(roomID string) *sync.Mutex {
+	return &s.locks[stripe(roomID)]
+}
+
+func (s *Store) lastFor(roomID string) *lastWrite {
+	return &s.last[stripe(roomID)]
+}
+
+func stripe(roomID string) uint32 {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(roomID))
-	return &s.locks[h.Sum32()%lockStripes]
+	return h.Sum32() % lockStripes
 }
+
+// lastTTL acota cuánto se confía en lastWrite. Mientras no pase el TTL de
+// la sala desde nuestra escritura, la clave no pudo expirar y recrearse con
+// la misma version; el minuto es margen adicional.
+func (s *Store) lastTTL() time.Duration { return min(s.ttl, maxLastAge) }
+
+// lastWrite es el último estado que esta réplica escribió en una sala de la
+// franja (lo protege el candado de la franja). Con él, un comando tras otro
+// de la misma sala se aplica con una sola ida y vuelta: el CAS por version
+// del script detecta si alguien escribió después (otra réplica) y entonces
+// se relee. version nunca se repite mientras la clave viva, así que partir
+// de la caché es tan seguro como partir de una lectura.
+type lastWrite struct {
+	room  string
+	state master.State
+	at    time.Time
+}
+
+func (l *lastWrite) get(room string, maxAge time.Duration) (master.State, bool) {
+	if l.room != room || time.Since(l.at) >= maxAge {
+		return master.State{}, false
+	}
+	return l.state, true
+}
+
+func (l *lastWrite) set(room string, st master.State) {
+	l.room, l.state, l.at = room, st, time.Now()
+}
+
+func (l *lastWrite) forget() { l.room = "" }
 
 func sleep(ctx context.Context, d time.Duration) error {
 	t := time.NewTimer(d)
@@ -191,23 +248,32 @@ func (s *Store) Touch(ctx context.Context, roomID string) error {
 // HostSeen registra/refresca una conexión de host y devuelve cuántas hay vivas.
 func (s *Store) HostSeen(ctx context.Context, roomID, connID string, nowMs int64) (int64, error) {
 	key := syncevent.HostsKey(roomID)
+	var online *redis.IntCmd
 	_, err := s.rdb.TxPipelined(ctx, func(p redis.Pipeliner) error {
 		p.ZAdd(ctx, key, redis.Z{Score: float64(nowMs), Member: connID})
 		p.PExpire(ctx, key, s.ttl)
+		online = p.ZCount(ctx, key, sinceArg(nowMs), "+inf")
 		return nil
 	})
 	if err != nil {
 		return 0, err
 	}
-	return s.OnlineHosts(ctx, roomID, nowMs)
+	return online.Val(), nil
 }
 
 // HostGone elimina una conexión de host y devuelve cuántas quedan vivas.
 func (s *Store) HostGone(ctx context.Context, roomID, connID string, nowMs int64) (int64, error) {
-	if err := s.rdb.ZRem(ctx, syncevent.HostsKey(roomID), connID).Err(); err != nil {
+	key := syncevent.HostsKey(roomID)
+	var online *redis.IntCmd
+	_, err := s.rdb.Pipelined(ctx, func(p redis.Pipeliner) error {
+		p.ZRem(ctx, key, connID)
+		online = p.ZCount(ctx, key, sinceArg(nowMs), "+inf")
+		return nil
+	})
+	if err != nil {
 		return 0, err
 	}
-	return s.OnlineHosts(ctx, roomID, nowMs)
+	return online.Val(), nil
 }
 
 // OnlineHosts cuenta las conexiones de host que latieron dentro del timeout.

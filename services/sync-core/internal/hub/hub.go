@@ -68,12 +68,10 @@ type StateStore interface {
 	Load(ctx context.Context, roomID string) (master.State, error)
 	Apply(ctx context.Context, roomID, eventID string, cmd master.Command, receivedAtMs, rttMs int64, encode store.Encoder) (master.State, bool, error)
 	Touch(ctx context.Context, roomID string) error
-	HostSeen(ctx context.Context, roomID, connID string, nowMs int64) (int64, error)
 	HostGone(ctx context.Context, roomID, connID string, nowMs int64) (int64, error)
-	Beat(ctx context.Context, roomID string, hostConns, memberSubs []string, nowMs int64) error
 	MemberGone(ctx context.Context, roomID, sub string) error
-	Presence(ctx context.Context, roomID string, nowMs int64) (store.Presence, error)
-	SetHostStatus(ctx context.Context, roomID string, online bool, nowMs int64) (bool, error)
+	BeatPresence(ctx context.Context, roomID string, hostConns, memberSubs []string, nowMs int64) (store.Presence, error)
+	Sweep(ctx context.Context, roomID string, hostConns, memberSubs []string, nowMs int64) (store.Presence, bool, error)
 	LiveMembers(ctx context.Context, roomID string, nowMs int64) ([]string, error)
 	SwapDelegate(ctx context.Context, roomID, sub string) (string, error)
 }
@@ -231,8 +229,10 @@ func every(ctx context.Context, d time.Duration, fn func()) {
 // dejaron de responder. Un único temporizador por réplica en lugar de uno
 // por conexión.
 func (h *Hub) beatAll() {
+	now := h.now()
+	tmpls := map[string]heartbeatTmpl{} // una plantilla JSON por sala y tick
 	for _, c := range h.snapshotClients() {
-		raw, err := h.Tick(c)
+		raw, err := h.tick(c, now, tmpls)
 		if err != nil {
 			c.close(err)
 			continue
@@ -279,10 +279,7 @@ func (h *Hub) sweepAll(ctx context.Context) {
 
 	for room, b := range beats {
 		rctx, cancel := context.WithTimeout(ctx, ioTimeout)
-		nowMs := h.now().UnixMilli()
-		if err := h.store.Beat(rctx, room, b.hosts, b.members, nowMs); err != nil {
-			log.Printf("hub: latido de presencia sala %s: %v", room, err)
-		} else if _, err := h.sweep(rctx, room, nowMs); err != nil {
+		if _, err := h.sweep(rctx, room, h.now().UnixMilli(), b.hosts, b.members); err != nil {
 			log.Printf("hub: barrido sala %s: %v", room, err)
 		}
 		cancel()
@@ -298,16 +295,14 @@ type presence struct {
 // sweep reconcilia el estado del host y la delegación de una sala. Varias
 // réplicas pueden ejecutarlo a la vez: el store solo informa transiciones
 // y el delegado elegido es determinista, así que no hay avisos duplicados.
-func (h *Hub) sweep(ctx context.Context, room string, nowMs int64) (presence, error) {
-	p, err := h.store.Presence(ctx, room, nowMs)
+// hosts y members son los latidos locales a registrar en la misma ida y
+// vuelta (nil fuera del barrido periódico).
+func (h *Hub) sweep(ctx context.Context, room string, nowMs int64, hosts, members []string) (presence, error) {
+	p, changed, err := h.store.Sweep(ctx, room, hosts, members, nowMs)
 	if err != nil {
 		return presence{}, err
 	}
 	online := p.Online > 0
-	changed, err := h.store.SetHostStatus(ctx, room, online, nowMs)
-	if err != nil {
-		return presence{}, err
-	}
 	if changed {
 		h.publishHostStatus(ctx, room, online)
 	}
@@ -433,16 +428,13 @@ func (h *Hub) Connect(parent context.Context, claims auth.Claims, opts ...ConnOp
 	}
 	h.cache(room, st, now.UnixMilli())
 	nowMs := now.UnixMilli()
+	var hosts, members []string
 	if claims.CanControl() {
-		_, err = h.store.HostSeen(ctx, room, c.id, nowMs)
+		hosts = []string{c.id}
 	} else {
-		err = h.store.Beat(ctx, room, nil, []string{claims.Sub}, nowMs)
+		members = []string{claims.Sub}
 	}
-	if err != nil {
-		h.Disconnect(c)
-		return nil, err
-	}
-	p, err := h.store.Presence(ctx, room, nowMs)
+	p, err := h.store.BeatPresence(ctx, room, hosts, members, nowMs)
 	if err != nil {
 		h.Disconnect(c)
 		return nil, err
@@ -455,7 +447,7 @@ func (h *Hub) Connect(parent context.Context, claims auth.Claims, opts ...ConnOp
 	ev.CanControl = syncevent.Bool(claims.CanControl() || (p.Delegate != "" && p.Delegate == claims.Sub))
 	c.enqueueEvent(ev)
 	h.release(c)
-	if _, err := h.sweep(ctx, room, nowMs); err != nil {
+	if _, err := h.sweep(ctx, room, nowMs, nil, nil); err != nil {
 		log.Printf("hub: barrido sala %s: %v", room, err)
 	}
 	return c, nil
@@ -487,7 +479,7 @@ func (h *Hub) Disconnect(c *Client) {
 		}
 	}
 	if reevaluate {
-		if _, err := h.sweep(ctx, room, nowMs); err != nil {
+		if _, err := h.sweep(ctx, room, nowMs, nil, nil); err != nil {
 			log.Printf("hub: barrido sala %s: %v", room, err)
 		}
 	}
@@ -565,9 +557,9 @@ func (h *Hub) Handle(ctx context.Context, c *Client, raw []byte) {
 		c.enqueueEvent(errorEvent(c.claims.RoomID, ev.EventID, syncevent.CodeInvalid, now))
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, ioTimeout)
-	defer cancel()
 	if ev.IsCommand() {
+		ctx, cancel := context.WithTimeout(ctx, ioTimeout)
+		defer cancel()
 		h.handleCommand(ctx, c, ev, now)
 		return
 	}
@@ -625,7 +617,11 @@ func (h *Hub) handleSyncCheck(ctx context.Context, c *Client, ev syncevent.Event
 	room := c.claims.RoomID
 	st, ok := h.fresh(room, nowMs)
 	if !ok {
-		loaded, err := h.store.Load(ctx, room)
+		// Solo un fallo de caché va a Redis: el temporizador del contexto
+		// se crea aquí y no en cada SYNC_CHECK (1/s por cliente).
+		lctx, cancel := context.WithTimeout(ctx, ioTimeout)
+		loaded, err := h.store.Load(lctx, room)
+		cancel()
 		if err != nil {
 			return // sin estado no hay referencia; el siguiente latido reintenta
 		}
@@ -660,11 +656,27 @@ func (h *Hub) handleSyncCheck(ctx context.Context, c *Client, ev syncevent.Event
 // Tick genera el siguiente HEARTBEAT del cliente o ErrStale si dejó de
 // responder SYNC_CHECK durante MaxMissedChecks intervalos.
 func (h *Hub) Tick(c *Client) ([]byte, error) {
-	now := h.now()
+	return h.tick(c, h.now(), nil)
+}
+
+// tick reutiliza la plantilla JSON de la sala en tmpls (si no es nil) para
+// no serializar por reflexión lo que comparten todos los clientes.
+func (h *Hub) tick(c *Client, now time.Time, tmpls map[string]heartbeatTmpl) ([]byte, error) {
 	if now.UnixMilli()-c.lastCheckMs.Load() > (h.heartbeat * MaxMissedChecks).Milliseconds() {
 		return nil, ErrStale
 	}
-	ev := baseEvent(syncevent.Heartbeat, c.claims.RoomID, now)
+	room := c.claims.RoomID
+	if c.codec == codec.JSON {
+		tmpl, ok := tmpls[room]
+		if !ok {
+			tmpl = newHeartbeatTmpl(room, now)
+			if tmpls != nil {
+				tmpls[room] = tmpl
+			}
+		}
+		return tmpl.encode(uuid.New(), c.lastDriftMs.Load(), c.RTT()), nil
+	}
+	ev := baseEvent(syncevent.Heartbeat, room, now)
 	ev.ServerTimeMs = now.UnixMilli()
 	ev.RTTMs = c.RTT()
 	ev.DriftMs = c.lastDriftMs.Load()

@@ -105,6 +105,42 @@ def test_frame_colors_reads_each_edge_band():
     }
 
 
+def naive_frame_colors(frame, width, height):
+    """Referencia píxel a píxel: lo que deben dar las sumas optimizadas, byte a byte."""
+
+    def pixel(x, y):
+        offset = (y * width + x) * 3
+        return tuple(frame[offset : offset + 3])
+
+    return {
+        edge: average_color(
+            [
+                pixel(x, y)
+                for y in range(region.y, region.y + region.height)
+                for x in range(region.x, region.x + region.width)
+            ]
+        )
+        for edge, region in edge_regions(width, height).items()
+    }
+
+
+@pytest.mark.parametrize(
+    ("width", "height"), [(FRAME_WIDTH, FRAME_HEIGHT), (7, 5), (1, 1), (33, 2)]
+)
+def test_frame_colors_matches_pixel_by_pixel_reference(width, height):
+    rng = random.Random(width * 1000 + height)
+    for _ in range(5):
+        frame = rng.randbytes(width * height * 3)
+        assert frame_colors(frame, width, height) == naive_frame_colors(frame, width, height)
+
+
+def test_frame_colors_accepts_bytearray_and_memoryview():
+    frame = random.Random(3).randbytes(FRAME_WIDTH * FRAME_HEIGHT * 3)
+    expected = frame_colors(frame, FRAME_WIDTH, FRAME_HEIGHT)
+    assert frame_colors(bytearray(frame), FRAME_WIDTH, FRAME_HEIGHT) == expected
+    assert frame_colors(memoryview(frame), FRAME_WIDTH, FRAME_HEIGHT) == expected
+
+
 def test_frame_colors_rejects_wrong_frame_size():
     with pytest.raises(AmbilightError, match="tamaño"):
         frame_colors(b"\x00" * 10, 10, 10)
