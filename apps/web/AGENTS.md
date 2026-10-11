@@ -48,6 +48,9 @@ Eres el agente especializado en la capa de presentación de **TINT**. Tu foco es
 | `src/components/SyncedPlayer.tsx` | `<video>` gobernado por el estado maestro; controles habilitados por `canControl`; velocidad; aviso "Host desconectado" y de control temporal delegado; botón de autoplay; fundido al corregir con seek (sin él con `prefers-reduced-motion`); re-aplica el estado al cambiar el `src`. |
 | `src/components/host/*` | Paneles del host: "Cambiar vídeo" (subida desde el navegador con progreso y cancelar → `LOAD{media_id}`; secundaria: clave del bucket con `PUT /rooms/:id/media`) y "Participantes" (listar y retirar invitados con confirmación). |
 
+## Sesión y credenciales
+- **Host:** `tint_token` guarda el ID token de Firebase (caduca a la hora). `src/lib/authSession.ts` (`startHostSession`, llamado en `main.tsx`) lo mantiene fresco con `onIdTokenChanged` y registra en `apiFetch` un proveedor que pide `auth.currentUser.getIdToken()`. Ante un 401 con credencial de host, `apiFetch` fuerza un refresco y reintenta una vez; si sigue en 401 borra `tint_token` y lleva a `/login?next=<ruta actual>`.
+
 El cálculo del drift es **autoritativo en sync-core**: el cliente solo aplica las `SYNC_CORRECTION` que recibe. Flujos y diagramas en [`docs/dominio-reproduccion.md`](../../docs/dominio-reproduccion.md).
 
 ## Reglas de Dominio
