@@ -14,7 +14,10 @@ export default function WatchRoom() {
   // Canal Social (/ws/social): el estado maestro del chat vive en social-core.
   const { messages, send, status } = useSocialSocket(roomId);
   const guestToken = localStorage.getItem('tint_guest_token');
-  const isGuest = !!guestToken;
+  // Si hay sesión de host, manda el host aunque queden restos de invitado
+  // (p. ej. guest token de una visita anterior al login). Coherente con
+  // apiFetch, que prefiere el header de host.
+  const isGuest = !localStorage.getItem('tint_token') && !!guestToken;
   const [chat, setChat] = useState('');
   const [roomTitle, setRoomTitle] = useState<string | null>(null);
   const [inviteLink, setInviteLink] = useState<string | null>(null);

@@ -44,6 +44,20 @@ describe('WatchRoom', () => {
     expect(screen.getByText(/participante \(invitado\)/)).toBeInTheDocument();
   });
 
+  it('el host manda aunque haya restos de invitado: pide el título fresco', async () => {
+    localStorage.setItem('tint_token', 'host-tok');
+    localStorage.setItem('tint_guest_token', 'guest-viejo');
+    localStorage.setItem('tint_room_title', 'Sala vieja');
+    mockedApi.mockImplementation((path: string) => {
+      if (path === '/rooms/r1') return Promise.resolve({ room: { id: 'r1', title: 'Testing' } });
+      return Promise.resolve({ invitations: [] });
+    });
+    renderWatch();
+    expect(await screen.findByText('Testing')).toBeInTheDocument();
+    expect(screen.getByText(/host \(registrado\)/)).toBeInTheDocument();
+    expect(screen.queryByText('Sala vieja')).not.toBeInTheDocument();
+  });
+
   it('tiene un único enlace Volver al dashboard', () => {
     localStorage.setItem('tint_guest_token', 'guest-tok');
     renderWatch();

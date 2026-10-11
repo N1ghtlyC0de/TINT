@@ -31,6 +31,11 @@ export default function Login() {
       const result = await signInWithPopup(auth, provider);
       const token = await result.user.getIdToken();
       localStorage.setItem('tint_token', token);
+      // La sesión de host manda: borrar restos de invitado para no
+      // entrar a las salas con identidad y título viejos (ver WatchRoom).
+      localStorage.removeItem('tint_guest_token');
+      localStorage.removeItem('tint_room_title');
+      localStorage.removeItem('tint_invite_link');
       await apiFetch('/auth/verify', { method: 'POST', body: JSON.stringify({}) });
       navigate('/dashboard');
     } catch (e) {
