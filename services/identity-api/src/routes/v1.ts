@@ -197,6 +197,17 @@ router.post('/rooms/:id/invitations', requireAuthHost, requireRoomOwner, validat
   });
 });
 
+/**
+ * Nick visible del host en el Canal Sync (lo ven todos los invitados): nunca el
+ * email completo. displayName → parte local del email → 'Host'.
+ */
+function hostNick(user: { displayName?: string | null; email?: string | null }) {
+  const displayName = user.displayName?.trim();
+  if (displayName) return displayName;
+  const localPart = user.email?.split('@')[0]?.trim();
+  return localPart || 'Host';
+}
+
 router.post('/rooms/:id/sync-ticket', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
   const rawId = req.params.id;
   const roomId = Array.isArray(rawId) ? rawId[0] : rawId;
@@ -204,7 +215,7 @@ router.post('/rooms/:id/sync-ticket', requireAuthHost, requireRoomOwner, require
   const { token, expiresAt } = generateSyncTicket({
     userId: user.id,
     roomId,
-    nick: user.displayName || user.email,
+    nick: hostNick(user),
   });
   res.json({ token, expiresAt: expiresAt.toISOString() });
 });

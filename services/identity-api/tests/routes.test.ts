@@ -164,12 +164,21 @@ describe('rutas v1', () => {
     expect(decoded.exp * 1000).toBe(new Date(res.body.expiresAt).getTime());
   });
 
-  it('POST /rooms/:id/sync-ticket usa el email como nick si no hay displayName', async () => {
-    authUser.override = { displayName: null };
+  it('POST /rooms/:id/sync-ticket sin displayName usa solo la parte local del email (nunca el email completo)', async () => {
+    authUser.override = { displayName: null, email: 'ana.perez@correo.com' };
     vi.mocked(isOwner).mockResolvedValueOnce(true);
     const res = await request(app).post('/api/v1/rooms/room-1/sync-ticket').send({});
     expect(res.status).toBe(200);
-    expect((jwt.decode(res.body.token) as any).nick).toBe('h@t.c');
+    const nick = (jwt.decode(res.body.token) as any).nick;
+    expect(nick).toBe('ana.perez');
+    expect(res.body.token).not.toContain('correo.com');
+  });
+
+  it('POST /rooms/:id/sync-ticket usa "Host" si no hay displayName ni email', async () => {
+    authUser.override = { displayName: '', email: null };
+    vi.mocked(isOwner).mockResolvedValueOnce(true);
+    const res = await request(app).post('/api/v1/rooms/room-1/sync-ticket').send({});
+    expect((jwt.decode(res.body.token) as any).nick).toBe('Host');
   });
 
   it('POST /invitations/:code/revoke 404 si no existe', async () => {
