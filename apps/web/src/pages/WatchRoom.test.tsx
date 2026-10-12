@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { beforeEach, vi } from 'vitest';
@@ -235,5 +235,79 @@ describe('WatchRoom', () => {
       'href',
       '/login?next=%2Fwatch%2Fr1',
     );
+  });
+
+  describe('cabecera móvil: popover Invitar', () => {
+    function setupGuest() {
+      localStorage.setItem('tint_guest_token', testGuestToken({ sub: 'guest:u9', nick: 'Pedro' }));
+      localStorage.setItem('tint_invite_link', '/invite/abc123');
+      renderWatch();
+      return screen.getByRole('button', { name: 'Invitar' });
+    }
+
+    const panelOf = (trigger: HTMLElement) => document.getElementById(trigger.getAttribute('aria-controls') ?? '');
+
+    it('abre un panel con la identidad y el link de invitación', async () => {
+      const trigger = setupGuest();
+      expect(trigger).toHaveAttribute('aria-expanded', 'false');
+      expect(trigger.className).toContain('sm:hidden');
+      expect(panelOf(trigger)).toBeNull();
+      await userEvent.click(trigger);
+      expect(trigger).toHaveAttribute('aria-expanded', 'true');
+      const panel = panelOf(trigger);
+      expect(panel).not.toBeNull();
+      expect(panel?.className).toContain('tint-glass-panel');
+      const scope = within(panel as HTMLElement);
+      expect(scope.getByText(/Pedro · participante/)).toBeInTheDocument();
+      expect(scope.getByText(`${window.location.origin}/invite/abc123`)).toBeInTheDocument();
+      expect(scope.getByRole('button', { name: 'Copiar' })).toBeInTheDocument();
+    });
+
+    it('se cierra con Escape y devuelve el foco al botón', async () => {
+      const trigger = setupGuest();
+      await userEvent.click(trigger);
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(trigger).toHaveAttribute('aria-expanded', 'false');
+      await waitFor(() => expect(panelOf(trigger)).toBeNull());
+      expect(trigger).toHaveFocus();
+    });
+
+    it('se cierra con un clic fuera y no con uno dentro', async () => {
+      const trigger = setupGuest();
+      await userEvent.click(trigger);
+      fireEvent.pointerDown(panelOf(trigger) as HTMLElement);
+      expect(trigger).toHaveAttribute('aria-expanded', 'true');
+      fireEvent.pointerDown(document.body);
+      expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    it('el botón alterna el panel', async () => {
+      const trigger = setupGuest();
+      await userEvent.click(trigger);
+      await userEvent.click(trigger);
+      expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    });
+
+    it('sin identidad ni link no hay botón Invitar', () => {
+      localStorage.setItem('tint_token', 'host-tok');
+      mockedApi.mockRejectedValue(new Error('offline'));
+      renderWatch();
+      expect(screen.queryByRole('button', { name: 'Invitar' })).not.toBeInTheDocument();
+    });
+  });
+
+  it('la sala lleva el fondo ambiental en una raíz aislada', () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    const { container } = renderWatch();
+    const root = container.firstElementChild as HTMLElement;
+    expect(root.className).toContain('isolate');
+    expect(root.querySelector('[data-orb]')).not.toBeNull();
+  });
+
+  it('la puerta también lleva el fondo ambiental', () => {
+    const { container } = renderWatch();
+    const root = container.firstElementChild as HTMLElement;
+    expect(root.className).toContain('isolate');
+    expect(root.querySelector('[data-orb]')).not.toBeNull();
   });
 });

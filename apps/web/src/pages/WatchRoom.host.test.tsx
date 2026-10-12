@@ -199,6 +199,57 @@ describe('WatchRoom — Watch Party Recap', () => {
   });
 });
 
+describe('WatchRoom — halo del reproductor', () => {
+  it('respira mientras el vídeo se reproduce y se atenúa en pausa o al terminar', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    const { container } = renderWatch();
+    await flush();
+    const halo = screen.getByTestId('player-halo');
+    expect(halo).toHaveAttribute('aria-hidden', 'true');
+    expect(halo).toHaveAttribute('data-playing', 'false');
+    const video = screen.getByLabelText('Vídeo de la sala');
+    fireEvent.play(video);
+    expect(halo).toHaveAttribute('data-playing', 'true');
+    fireEvent.pause(video);
+    expect(halo).toHaveAttribute('data-playing', 'false');
+    fireEvent.play(video);
+    fireEvent.ended(video);
+    expect(halo).toHaveAttribute('data-playing', 'false');
+    // La franja degradada difuminada bajo el vídeo ya no existe.
+    expect(container.querySelector('.blur-\\[6px\\]')).toBeNull();
+  });
+});
+
+describe('WatchRoom — chat', () => {
+  const msg = (id: string, text: string) => ({
+    event_id: id,
+    type: 'chat_message',
+    room_id: 'r1',
+    user_id: 'u1',
+    nick: 'Ana',
+    text,
+    occurred_at: '2026-10-10T10:05:00Z',
+  });
+
+  it('los mensajes del primer render no animan su entrada; los nuevos sí', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    social.current = baseSocial({ messages: [msg('m1', 'Hola')] });
+    const { rerender } = renderWatch();
+    await flush();
+    expect(screen.getByText('Hola').closest('li')).toHaveAttribute('data-enter', 'false');
+    social.current = { ...social.current, messages: [msg('m1', 'Hola'), msg('m2', 'Qué tal')] };
+    rerender(
+      <MemoryRouter initialEntries={['/watch/r1']}>
+        <Routes>
+          <Route path="/watch/:roomId" element={<WatchRoom />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('Qué tal').closest('li')).toHaveAttribute('data-enter', 'true');
+    expect(screen.getByText('Hola').closest('li')).toHaveAttribute('data-enter', 'false');
+  });
+});
+
 describe('WatchRoom — credencial del canal social', () => {
   it('el host abre /ws/social con rol host (sync-ticket) y el invitado con rol guest', async () => {
     localStorage.setItem('tint_token', 'host-token');
