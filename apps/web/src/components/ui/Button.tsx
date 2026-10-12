@@ -17,7 +17,8 @@ const styles: Record<Variant, string> = {
 
 const sizes: Record<Size, string> = {
   md: 'px-5 py-2.5 text-sm',
-  sm: 'px-3.5 py-1.5 text-[13px]',
+  // min-h-10 en móvil: objetivo táctil de 40 px; en sm+ vuelve a la píldora compacta.
+  sm: 'min-h-10 px-3.5 py-1.5 text-[13px] sm:min-h-0',
 };
 
 /** Clases compartidas por `Button` y `ButtonLink`. */

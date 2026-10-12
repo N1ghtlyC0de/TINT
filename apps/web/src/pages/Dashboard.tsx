@@ -141,7 +141,7 @@ export default function Dashboard() {
                       <p className="truncate text-[15px] font-semibold text-white" title={room.title}>
                         {room.title}
                       </p>
-                      <ButtonLink to={`/watch/${room.id}`} aria-label={`Abrir ${room.title}`} size="sm" className="min-h-10 shrink-0 sm:min-h-0">
+                      <ButtonLink to={`/watch/${room.id}`} aria-label={`Abrir ${room.title}`} size="sm" className="shrink-0">
                         Abrir
                       </ButtonLink>
                     </div>
@@ -174,7 +174,7 @@ export default function Dashboard() {
                         aria-label={`Gestionar ${room.title}`}
                         variant="quiet"
                         size="sm"
-                        className="min-h-10 font-normal sm:min-h-0"
+                        className="font-normal"
                       >
                         Gestionar
                       </ButtonLink>
@@ -183,7 +183,7 @@ export default function Dashboard() {
                         aria-label={`Análisis de ${room.title}`}
                         variant="quiet"
                         size="sm"
-                        className="min-h-10 font-normal sm:min-h-0"
+                        className="font-normal"
                       >
                         Análisis
                       </ButtonLink>
