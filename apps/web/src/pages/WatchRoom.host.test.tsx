@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import WatchRoom from './WatchRoom';
@@ -132,7 +132,8 @@ describe('WatchRoom — encuestas', () => {
     fireEvent.change(screen.getByLabelText('Opción 2'), { target: { value: 'No' } });
     fireEvent.click(screen.getByRole('button', { name: 'Lanzar encuesta' }));
     expect(social.current.createPoll).toHaveBeenCalledWith('¿Final?', ['Sí', 'No'], 60);
-    expect(screen.queryByLabelText('Pregunta')).not.toBeInTheDocument();
+    // El creador colapsa animado (AnimatePresence) antes de desmontarse.
+    await waitFor(() => expect(screen.queryByLabelText('Pregunta')).not.toBeInTheDocument());
   });
 
   it('el invitado vota en la encuesta activa y ve los errores del canal', async () => {
