@@ -606,4 +606,4 @@ npx vitest run --coverage   # umbral 85 % en líneas, funciones, ramas y sentenc
 - [Usuarios, identidad y permisos](../../docs/usuarios-e-identidad.md): tipos de usuario, matriz de permisos, ER y tokens.
 - [Dominio de Reproducción](../../docs/dominio-reproduccion.md): revocación (§6.6), subida y biblioteca (§6.7).
 - [Contrato de eventos de analítica](../../docs/contrato-eventos-analitica.md).
-- [Arquitectura](../../docs/arquitectura.md): vista de componentes y conectores (§2) y contratos entre dominios (§5).
+- [Arquitectura](../../docs/arquitectura.md): [vista de componentes y conectores (§4)](../../docs/arquitectura.md#vista-de-componentes-y-conectores) y contratos entre dominios (§5).
