@@ -97,7 +97,10 @@ la telemetría); en su lugar envía `role` (`host`, `cohost`, `participant`). `p
 | :--- | :--- | :--- | :--- |
 | `media_processed` | Termina de procesar un video, bien o mal | `media_id`, `status` (`ready`, `failed`), `duration_ms` (vacío o `0` si `failed`), `processing_ms` | Tasa de fallo y tiempo del worker |
 
-No lleva `room_id`. `user_id` es quien subió el video (`users.provider_sub` de `uploaded_by`; vacío si es nulo).
+No lleva `room_id`. `user_id` es quien subió el video (`users.provider_sub` de `videos.uploaded_by`;
+vacío si no tiene dueño). `duration_ms` va vacío si `status` es `failed`; `processing_ms` es el tiempo
+de proceso del worker (reloj monotónico). Se publica también cuando el original no está en el bucket
+o su extensión no se admite; no se publica para eventos duplicados ni descartados.
 
 ## Ejemplo
 
@@ -145,5 +148,5 @@ Para agregar un tipo o un campo: PR a este archivo.
 | `social-core` | `chat_message`, `presence` y `reaction` completos; `trivia_answer` no (aún no hay trivia en el servidor) |
 | `identity-api` | `user_login`, `room_created`, `room_closed` (`reason=deleted`, solo el primer borrado) e `invitation_claimed`, con todos los campos comunes. Además entrega el analytics-ticket (`POST /rooms/:id/analytics-ticket`) |
 | `sync-core` | `playback_command`, `drift_correction` (antes `sync_drift`) y `buffering`, con `source`, `role` y sin `user_id` |
-| `media-worker` | Nada |
+| `media-worker` | `media_processed` completo |
 | `analytics` (consumidor) | Consume `analytics:events` (grupo `analytics-workers`), persiste en `telemetry_events`, consolida `room_kpis` con `room_closed`, purga a los 90 días y sirve la API de lectura. `room_id` solo se exige fuera de `user_login` y `media_processed` |

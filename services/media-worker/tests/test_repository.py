@@ -61,12 +61,23 @@ def test_mark_failed_only_touches_status():
     assert params == (VideoStatus.FAILED.value, "v1")
 
 
-def test_get_video_returns_status_and_storage_key():
-    conn = conn_returning(("processing", "incoming/v1/original.mp4"))
-    assert VideoRepository(conn).get_video("v1") == ("processing", "incoming/v1/original.mp4")
+def test_get_video_returns_status_storage_key_and_uploader_sub():
+    conn = conn_returning(("processing", "incoming/v1/original.mp4", "firebase-uid"))
+    row = VideoRepository(conn).get_video("v1")
+    assert row == ("processing", "incoming/v1/original.mp4", "firebase-uid")
+    assert (row.status, row.storage_key, row.uploader_sub) == tuple(row)
     sql, params = conn.execute.call_args.args
-    assert sql == "SELECT status, storage_key FROM videos WHERE id = %s"
+    assert sql == (
+        "SELECT videos.status, videos.storage_key, users.provider_sub FROM videos "
+        "LEFT JOIN users ON users.id = videos.uploaded_by WHERE videos.id = %s"
+    )
     assert params == ("v1",)
+
+
+def test_get_video_without_uploader_has_no_sub():
+    # uploaded_by es ON DELETE SET NULL: el LEFT JOIN no pierde la fila.
+    row = VideoRepository(conn_returning(("processing", "k", None))).get_video("v1")
+    assert row.uploader_sub is None
 
 
 def test_get_video_returns_none_when_missing():
