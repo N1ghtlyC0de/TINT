@@ -166,6 +166,15 @@ export default function WatchRoom() {
     enabled: hasAccess && !sync.revoked,
   });
   const toasts = useSyncToasts(sync.lastBroadcast);
+  // Las URLs firmadas refrescadas se adoptan solo cuando el `src` cambia igualmente (otra
+  // calidad) o el vídeo falla (URL caducada): así el refresco no recarga el reproductor.
+  const { adoptFresh, recover: recoverPlayback } = playback;
+  const appliedQualityRef = useRef(sync.quality);
+  useEffect(() => {
+    if (appliedQualityRef.current === sync.quality) return;
+    appliedQualityRef.current = sync.quality;
+    adoptFresh();
+  }, [sync.quality, adoptFresh]);
   // Los controles los habilita el servidor (STATE.can_control / CONTROL), no el rol local.
   const canControl = sync.canControl;
   const delegated = isGuest && canControl;
@@ -472,6 +481,7 @@ export default function WatchRoom() {
                     onToggleLaser={isGuest ? undefined : () => setLaserOn((on) => !on)}
                     onOpenPoll={isGuest ? undefined : () => setPollCreatorOpen(true)}
                     onEnded={onVideoEnded}
+                    onMediaError={recoverPlayback}
                     overlay={<LaserOverlay points={laser} drawing={laserDrawing} onPoint={sendLaser} />}
                   />
                   <ReactionOverlay reactions={reactions} />

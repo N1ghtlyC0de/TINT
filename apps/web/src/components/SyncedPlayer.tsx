@@ -35,6 +35,12 @@ export interface SyncedPlayerProps {
   overlay?: ReactNode;
   /** El vídeo llegó al final (evento `ended`). */
   onEnded?: () => void;
+  /**
+   * El `<video>` no pudo cargar el `src` (MEDIA_ERR_NETWORK o MEDIA_ERR_SRC_NOT_SUPPORTED,
+   * p. ej. URL firmada caducada): quien lo use debe dar una URL nueva. Al cambiar el `src`
+   * se re-aplica el estado maestro (posición y play/pausa).
+   */
+  onMediaError?: () => void;
 }
 
 const RATE_CHECK_INTERVAL_MS = 200;
@@ -50,6 +56,8 @@ const FADE_JUMP_MS = 2_000;
 export const APPLY_SEEK_TOLERANCE_PLAYING_MS = 250;
 /** Igual, con la sala en pausa: el seek no interrumpe nada y se busca el fotograma exacto. */
 export const APPLY_SEEK_TOLERANCE_PAUSED_MS = 50;
+/** `MediaError.MEDIA_ERR_NETWORK` y `MEDIA_ERR_SRC_NOT_SUPPORTED`: se recuperan con otra URL. */
+const RECOVERABLE_MEDIA_ERRORS: readonly number[] = [2, 4];
 /** Marcadores de saltos del host que se conservan. */
 const MAX_SEEK_MARKS = 5;
 
@@ -96,6 +104,7 @@ export function SyncedPlayer({
   onOpenPoll,
   overlay,
   onEnded,
+  onMediaError,
 }: SyncedPlayerProps) {
   const { state, correction, connected, hostOnline, lastError, lastBroadcast, sendCommand, volume, quality, sendBuffering } = sync;
   const [needsGesture, setNeedsGesture] = useState(false);
@@ -332,6 +341,10 @@ export function SyncedPlayer({
             onLoadedMetadata={(e) => onLoadedMetadata(e.currentTarget)}
             onDurationChange={(e) => syncProgress(e.currentTarget)}
             onEnded={onEnded}
+            onError={(e) => {
+              const code = e.currentTarget.error?.code;
+              if (code !== undefined && RECOVERABLE_MEDIA_ERRORS.includes(code)) onMediaError?.();
+            }}
             onWaiting={() => stalls.waiting()}
             onPlaying={(e) => stalls.playing(e.currentTarget.currentTime * 1000)}
             onSeeking={() => stalls.seeking()}
