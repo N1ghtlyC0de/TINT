@@ -3,7 +3,7 @@
 ## Contexto & Responsabilidad
 Eres el agente encargado de la **identidad** de TINT. Te ocupas de los usuarios registrados (Host), las salas, las invitaciones, las sesiones de invitado y la emisión de los tokens HS256 que sync-core verifica. También asignas el vídeo de cada sala y firmas su URL de reproducción.
 
-Documentación de referencia: [Usuarios, identidad y permisos](../../docs/usuarios-e-identidad.md) · [Arquitectura](../../docs/arquitectura.md).
+Documentación de referencia: [README del servicio (cómo funciona por dentro)](README.md) · [Usuarios, identidad y permisos](../../docs/usuarios-e-identidad.md) · [Arquitectura](../../docs/arquitectura.md).
 
 ## Stack Técnico
 - Node.js 22 + TypeScript 5 (ESM) + Express 5. Validación con `zod`.
