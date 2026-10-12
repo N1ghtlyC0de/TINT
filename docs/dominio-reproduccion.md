@@ -425,9 +425,11 @@ sequenceDiagram
     loop cada 1 s
         L->>L: ¿3 latidos sin SYNC_CHECK? → cerrar con 1008
         L->>C: HEARTBEAT { server_time_ms, rtt_ms, drift_ms }
-        C->>H: SYNC_CHECK { echo_server_ts, position_ms }
-        H->>H: RTT EWMA con el reloj del servidor<br/>drift = pos − PositionAt(recv − RTT/2)
-        alt |drift| > 500 ms
+        C->>H: SYNC_CHECK { echo_server_ts, position_ms, version? }
+        H->>H: RTT EWMA con el reloj del servidor (muestra ≤ 2·RTT + 200)<br/>drift = pos − PositionAt(recv − RTT/2)
+        alt version del cliente < version de la sala
+            H->>H: se ignora (aún no aplicó el último broadcast)
+        else |drift| > 500 ms (y, si es seek, fuera del enfriamiento de 3 s)
             H-->>C: SYNC_CORRECTION { target_ms, strategy, version, status, rate, media_id }
             H-)T: drift_correction (no bloqueante)
         end
@@ -438,17 +440,34 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-    A["SYNC_CHECK"] --> B["drift = pos_cliente − PositionAt(recv − RTT/2)"]
+    A["SYNC_CHECK"] --> L{"¿más de 5 en este segundo?"}
+    L -- sí --> X["se descarta en silencio"]
+    L -- no --> R["RTT = EWMA(min(muestra, 2·RTT + 200))"]
+    R --> V{"version > 0 y < version de la sala?"}
+    V -- sí --> Y["se ignora: ni corrección ni drift"]
+    V -- no --> B["drift = pos_cliente − PositionAt(recv − RTT/2)"]
     B --> M["se guarda para el próximo HEARTBEAT (semáforo de la web)"]
     B --> C{"|drift| > 500 ms?"}
     C -- no --> D["sin corrección"]
     C -- sí --> E{"playing y |drift| ≤ 2000 ms?"}
     E -- sí --> F["rate: 1.05 si va atrasado, 0.95 si va adelantado"]
-    E -- no --> G["seek directo (la web hace un fundido)"]
+    E -- no --> K{"¿seek a este cliente hace < 3 s?"}
+    K -- sí --> Z["se suprime (sin telemetría)"]
+    K -- no --> G["seek directo (la web hace un fundido)"]
     F & G --> H["target_ms = PositionAt(ahora + RTT/2)"]
 ```
 
 El `SYNC_CHECK` **no** toca Redis: el estado sale de la caché por sala y la presencia se renueva en el barrido.
+
+**Protecciones contra tormentas de seek** (bug hunting de tirones, `fix/sync-core-correcciones-drift`):
+
+| Medida | Por qué |
+| :--- | :--- |
+| **Recorte del RTT:** tras la primera muestra se usa `min(muestra, 2·RTT_previo + 200)` antes de la EWMA. | Un `SYNC_CHECK` retrasado (pestaña en segundo plano, GC, cola tras un stall) inflaba el RTT a ~1 s con una sola muestra y `target_ms` quedaba adelantado varios latidos. |
+| **Enfriamiento de seek:** tras enviar un `seek` a un cliente no se le envía otro durante 3 s (`drift.SeekCooldownMs`); `rate` sigue permitido. El seek suprimido no emite `drift_correction`. | Un cliente en buffering reporta una posición congelada: cada latido producía otro seek, que volvía a provocar el stall (bucle seek→stall→seek). |
+| **`version` opcional en `SYNC_CHECK`:** si es > 0 y menor que la `version` del estado usado, el servidor no corrige ni cuenta drift. Sin el campo (o `0`) el comportamiento no cambia. | Tras un `SEEK`/`LOAD` del host, el `SYNC_CHECK` enviado antes de aplicar el broadcast producía un segundo seek duplicado. **La web debe enviar la última `version` aplicada** (PR aparte en `apps/web`). |
+| **Límite propio de `SYNC_CHECK`:** 5/s por conexión, fuera del límite general de 20 msg/s (el exceso se descarta en silencio). | Un host que hacía scrubbing al límite de comandos veía rechazados sus `SYNC_CHECK` y acababa cerrado por stale (`1008`). |
+| **`STATE` sellado al encolarlo:** `server_time_ms` se toma justo antes de enviarlo, no al inicio de `Connect`. | El cliente proyecta la posición desde `server_time_ms`; con el sello viejo arrancaba atrasado lo que tardaban las idas y vueltas a Redis. |
 
 ### 6.4 Presencia y caída de la réplica del Host (F4)
 
@@ -888,7 +907,7 @@ flowchart TD
 | Revocación | `token:revoked:{jti}` en el handshake (upgrade y cierre `4001`; 503 si Redis no responde) y `REVOKED` en vivo (cierre `4001`). Token expirado bien firmado: upgrade y cierre `4003`. |
 | Autorización | `host`/`cohost` siempre; un participante solo si es el delegado vigente. El resto recibe `FORBIDDEN`. |
 | Origen | `OriginPatterns` desde `ALLOWED_ORIGINS`. |
-| Tamaño y frecuencia | 4 KB por mensaje (`1009`) y 20 mensajes/s (`RATE_LIMITED`). |
+| Tamaño y frecuencia | 4 KB por mensaje (`1009`) y 20 mensajes/s (`RATE_LIMITED`); `SYNC_CHECK` no cuenta en ese límite y tiene el suyo de 5/s (el exceso se descarta en silencio). |
 | Argumentos | `rate` ∈ [0.25, 4], `media_id` de 1 a 128 caracteres y `duration_ms` de `BUFFERING` en [0, 120000]; fuera de rango → `INVALID`. `BUFFERING`: máximo 1 por segundo y conexión (el exceso se descarta). |
 | Vídeo | URL firmada con vida corta (`PLAYBACK_URL_TTL_SECONDS`); el bucket no es público. |
 | Privacidad | `drift_correction`, `playback_command` y `buffering` sin PII (solo `role`); `/guests` no expone `sub`; `/metrics` sin identificadores de usuario y detrás del ingress. |
