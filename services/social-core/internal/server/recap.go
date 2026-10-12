@@ -35,7 +35,7 @@ func (d *Deps) recordSync(roomID string, ev socialevent.SyncEvent) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), recapOpTimeout)
 	defer cancel()
-	kind, err := d.Recap.RecordSync(ctx, roomID, ev)
+	kind, err := d.Recap.RecordSyncAt(ctx, roomID, ev, d.now())
 	if err == nil && d.syncHook != nil {
 		d.syncHook(kind)
 	}
