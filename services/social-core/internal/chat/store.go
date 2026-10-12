@@ -85,4 +85,8 @@ type Inbound struct {
 	Type       socialevent.Type
 	Payload    []byte
 	RevokedJTI string
+	// Sync es un comando de reproducción de sync-core (PLAY, PAUSE, SEEK,
+	// RATE, LOAD) leído de room:{id}:sync para el recap; nunca llega a los
+	// clientes.
+	Sync *socialevent.SyncEvent
 }

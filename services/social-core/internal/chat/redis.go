@@ -115,7 +115,8 @@ func (s *RedisStore) IsRevoked(ctx context.Context, jti string) (bool, error) {
 }
 
 // Subscribe abre UNA suscripción por sala a room:{id}:social (eventos de
-// otras réplicas) y room:{id}:sync (solo para REVOKED de identity-api).
+// otras réplicas) y room:{id}:sync (REVOKED de identity-api y comandos de
+// reproducción de sync-core para el recap; solo lectura).
 func (s *RedisStore) Subscribe(ctx context.Context, roomID string) (<-chan Inbound, func()) {
 	out := make(chan Inbound, 64)
 	social, sync := ChannelKey(roomID), SyncChannelKey(roomID)
@@ -159,19 +160,26 @@ func (s *RedisStore) Subscribe(ctx context.Context, roomID string) (<-chan Inbou
 	return out, func() { close(done); _ = sub.Close() }
 }
 
-// decodeInbound traduce un payload de Pub/Sub. Del canal de sync solo
-// interesa REVOKED; del social, los chat_message y reaction de otras
+// decodeInbound traduce un payload de Pub/Sub. Del canal de sync interesan
+// REVOKED y los comandos de reproducción (recap); del social, los chat_message y reaction de otras
 // réplicas (se re-serializan por tipo: nunca se reenvía JSON arbitrario).
 func decodeInbound(fromSync bool, raw []byte) (Inbound, bool) {
 	if fromSync {
 		var ev struct {
-			Type string `json:"type"`
-			JTI  string `json:"jti"`
+			socialevent.SyncEvent
+			JTI string `json:"jti"`
 		}
-		if json.Unmarshal(raw, &ev) != nil || ev.Type != "REVOKED" || ev.JTI == "" {
+		if json.Unmarshal(raw, &ev) != nil {
 			return Inbound{}, false
 		}
-		return Inbound{RevokedJTI: ev.JTI}, true
+		if ev.Type == "REVOKED" && ev.JTI != "" {
+			return Inbound{RevokedJTI: ev.JTI}, true
+		}
+		if ev.Positional() && ev.EventID != "" && ev.PositionMS >= 0 {
+			sync := ev.SyncEvent
+			return Inbound{Sync: &sync}, true
+		}
+		return Inbound{}, false
 	}
 	var head struct {
 		Type    socialevent.Type `json:"type"`

@@ -92,6 +92,10 @@ func (d *Deps) acquireRelay(roomID string) (release func()) {
 				d.revokeLocal(roomID, in.RevokedJTI) // nunca llega a los clientes
 				continue
 			}
+			if in.Sync != nil {
+				d.recordSync(roomID, *in.Sync) // solo métricas del recap
+				continue
+			}
 			if in.EventID == "" || seen.seen(in.EventID) {
 				continue // eco propio o redelivery
 			}

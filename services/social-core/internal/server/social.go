@@ -18,6 +18,7 @@ import (
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/chat"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/polls"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/reactions"
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/recap"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/socialevent"
 )
 
@@ -70,6 +71,11 @@ type Deps struct {
 	// AfterFunc agenda timers (cierre de encuestas, flush de votos).
 	// Nil = time.AfterFunc; los tests inyectan uno manual.
 	AfterFunc func(d time.Duration, f func()) (stop func() bool)
+	// Recap acumula las métricas de la sala en Redis. Nil (modo memoria) =
+	// no se cuentan y recap_request responde UNAVAILABLE.
+	Recap *recap.Store
+	// syncHook observa cada evento de sync procesado (solo tests).
+	syncHook func(recap.Kind)
 	// pollTimers es el timer de cierre de la encuesta vigente por sala.
 	pollTimers map[string]*pollTimer
 	// Estado interno del relay compartido y dedup (ver relay.go).
@@ -413,6 +419,9 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		case socialevent.TypePollClose:
 			d.handlePollClose(ctx, c, roomID, claims, raw)
 			continue
+		case socialevent.TypeRecapRequest:
+			d.handleRecapRequest(ctx, c, roomID, raw, claims, actionLimiter)
+			continue
 		}
 		var in socialevent.ChatSend
 		if err := json.Unmarshal(raw, &in); err != nil {
@@ -508,6 +517,7 @@ func (d *Deps) handleReaction(ctx context.Context, c *websocket.Conn, roomID str
 	if d.ReactionBuckets != nil {
 		d.ReactionBuckets.Add(roomID, reactions.BucketIndex(bucketPosition(out.PositionMS)), out.Emoji)
 	}
+	d.recordReaction(ctx, out)
 	if d.PublishReaction != nil {
 		_ = d.PublishReaction(ctx, roomID, out)
 	}
