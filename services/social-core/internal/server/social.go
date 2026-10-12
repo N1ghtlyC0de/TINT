@@ -484,7 +484,7 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		received := d.now()
 		out := socialevent.ChatMessage{
 			EventID: d.newID(), Type: socialevent.TypeChatMessage, RoomID: roomID,
-			UserID: claims.Subject, Nick: claims.Nick, Text: text,
+			UserID: claims.Subject, Nick: claims.Nick, Text: text, Spoiler: in.Spoiler,
 			OccurredAt: socialevent.ClampOccurred(in.OccurredAt, received), ReceivedAt: received,
 		}
 		if err := out.Validate(); err != nil {
