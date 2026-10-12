@@ -345,6 +345,7 @@ export default function WatchRoom() {
             <div className="relative">
               <SyncedPlayer
                 src={videoSrc}
+                qualities={playback.qualities}
                 canControl={canControl}
                 delegated={delegated}
                 sync={sync}

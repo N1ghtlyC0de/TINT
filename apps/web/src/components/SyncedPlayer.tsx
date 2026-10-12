@@ -3,6 +3,7 @@ import type { SyncSocketApi } from '../hooks/useSyncSocket';
 import { PLAYER_SHORTCUTS, SHORTCUT_SEEK_MS, usePlayerShortcuts } from '../hooks/usePlayerShortcuts';
 import { useTransientFlag } from '../hooks/useTransientFlag';
 import { applyCorrection, shouldRestoreRate } from '../lib/drift';
+import { readNetworkHints, resolveQuality, type PlaybackQuality } from '../lib/quality';
 import { estimateServerNow, expectedPosition, RATE_OPTIONS, stepRate, type SyncSnapshot } from '../lib/syncProtocol';
 import { formatRate, formatTime } from '../lib/time';
 import { SeekBar } from './player/SeekBar';
@@ -11,6 +12,8 @@ import { Button } from './ui/Button';
 export interface SyncedPlayerProps {
   /** URL del vídeo; sin ella se muestra `emptyMessage`. */
   src?: string;
+  /** Versiones del vídeo (`playback.qualities`); sin ellas se usa `src`. */
+  qualities?: PlaybackQuality[];
   /** Si este cliente puede emitir comandos (de `sync.canControl`). */
   canControl: boolean;
   /** Participante con control delegado por ausencia del host (F7). */
@@ -62,6 +65,7 @@ function bufferedOf(video: HTMLVideoElement): Array<[number, number]> {
  */
 export function SyncedPlayer({
   src,
+  qualities,
   canControl,
   delegated = false,
   sync,
@@ -69,7 +73,7 @@ export function SyncedPlayer({
   emptyMessage = 'Sin video configurado',
   now = defaultNow,
 }: SyncedPlayerProps) {
-  const { state, correction, connected, hostOnline, lastError, lastBroadcast, sendCommand } = sync;
+  const { state, correction, connected, hostOnline, lastError, lastBroadcast, sendCommand, volume, quality } = sync;
   const [needsGesture, setNeedsGesture] = useState(false);
   const [currentMs, setCurrentMs] = useState(0);
   const [durationMs, setDurationMs] = useState(0);
@@ -77,6 +81,10 @@ export function SyncedPlayer({
   const [marks, setMarks] = useState<number[]>([]);
   const [showHelp, setShowHelp] = useState(false);
   const [fading, fade] = useTransientFlag(FADE_MS);
+  /** Silencio local del participante: no cambia el volumen maestro de la sala. */
+  const [localMuted, setLocalMuted] = useState(false);
+  // Pistas de red/pantalla al montar: no se cambia de calidad por redimensionar la ventana.
+  const [networkHints] = useState(readNetworkHints);
   const helpId = useId();
   const rateId = useId();
 
@@ -125,6 +133,19 @@ export function SyncedPlayer({
     },
     [cancelRateCorrection, fade, tryPlay],
   );
+
+  // `auto` → cada cliente elige; si la calidad pedida no existe, cae al original. Al cambiar
+  // el `src`, onLoadedMetadata re-aplica el estado maestro (posición y play/pausa).
+  const chosenQuality = src ? resolveQuality(quality, qualities ?? [], networkHints) : null;
+  const videoSrc = src ? (chosenQuality?.url ?? src) : undefined;
+
+  // Volumen maestro para todos; el participante puede silenciarse solo a sí mismo.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.volume = volume;
+    video.muted = !canControl && localMuted;
+  }, [volume, localMuted, canControl, videoSrc, videoRef]);
 
   // Aplica cada snapshot/broadcast aceptado por el hook.
   useEffect(() => {
@@ -234,10 +255,10 @@ export function SyncedPlayer({
   return (
     <div>
       <div className="relative aspect-video bg-black">
-        {src ? (
+        {videoSrc ? (
           <video
             ref={videoRef}
-            src={src}
+            src={videoSrc}
             aria-label="Vídeo de la sala"
             playsInline
             preload="auto"
@@ -380,14 +401,25 @@ export function SyncedPlayer({
                 </Button>
               </>
             ) : (
-              currentRate !== 1 && (
-                <span
-                  aria-label={`Velocidad ${formatRate(currentRate)}×`}
-                  className="rounded-full border border-white/15 px-2.5 py-0.5 text-[12px] tabular-nums text-white"
+              <>
+                {currentRate !== 1 && (
+                  <span
+                    aria-label={`Velocidad ${formatRate(currentRate)}×`}
+                    className="rounded-full border border-white/15 px-2.5 py-0.5 text-[12px] tabular-nums text-white"
+                  >
+                    {formatRate(currentRate)}×
+                  </span>
+                )}
+                <Button
+                  variant="quiet"
+                  className="px-3 py-1.5 text-[13px]"
+                  aria-label="Silenciar solo para mí"
+                  aria-pressed={localMuted}
+                  onClick={() => setLocalMuted((m) => !m)}
                 >
-                  {formatRate(currentRate)}×
-                </span>
-              )
+                  <span aria-hidden="true">{localMuted ? '🔇' : '🔊'}</span>
+                </Button>
+              </>
             )}
           </div>
         </div>
