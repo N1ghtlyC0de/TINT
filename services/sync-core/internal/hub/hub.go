@@ -450,8 +450,10 @@ func (h *Hub) Connect(parent context.Context, claims auth.Claims, opts ...ConnOp
 	}
 
 	// El STATE va primero (HU-SYNC-01); el barrido puede publicar
-	// HOST_STATUS/CONTROL, que llegan después por el bus.
-	ev := stateEvent(syncevent.State, room, st, now)
+	// HOST_STATUS/CONTROL, que llegan después por el bus. Se sella justo
+	// antes de encolarlo: el cliente proyecta la posición desde
+	// server_time_ms y `now` es anterior a las idas y vueltas a Redis.
+	ev := stateEvent(syncevent.State, room, st, h.now())
 	ev.Online = syncevent.Bool(p.Online > 0)
 	ev.CanControl = syncevent.Bool(claims.CanControl() || (p.Delegate != "" && p.Delegate == claims.Sub))
 	c.enqueueEvent(ev)

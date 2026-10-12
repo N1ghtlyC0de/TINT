@@ -7,6 +7,8 @@ import (
 
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/codec"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/drift"
+	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/master"
+	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/store"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/syncevent"
 )
 
@@ -212,6 +214,42 @@ func TestUndecodableMessagesAreRateLimited(t *testing.T) {
 	h.Handle(context.Background(), g, []byte("{basura"))
 	if ev := nextOf(t, g, syncevent.Error); ev.Code != syncevent.CodeRateLimited {
 		t.Errorf("ERROR = %+v, want RATE_LIMITED", ev)
+	}
+}
+
+// slowStore simula las idas y vueltas a Redis de Connect avanzando el reloj.
+type slowStore struct {
+	StateStore
+	clock *fakeClock
+	d     time.Duration
+}
+
+func (s *slowStore) Init(ctx context.Context, roomID, hostID string, nowMs int64) (master.State, error) {
+	s.clock.advance(s.d)
+	return s.StateStore.Init(ctx, roomID, hostID, nowMs)
+}
+
+func (s *slowStore) BeatPresence(ctx context.Context, roomID string, hosts, members []string, nowMs int64) (store.Presence, error) {
+	s.clock.advance(s.d)
+	return s.StateStore.BeatPresence(ctx, roomID, hosts, members, nowMs)
+}
+
+// El cliente proyecta la posición con server_time_ms del STATE: si se
+// sellaba al inicio de Connect (antes de Init y BeatPresence), el cliente
+// arrancaba atrasado lo que tardaron esas idas y vueltas.
+func TestInitialStateIsStampedWhenEnqueued(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	h.store = &slowStore{StateStore: h.store, clock: e.clock, d: 40 * time.Millisecond}
+
+	g := connect(t, h, guest)
+	st := next(t, g)
+	want := t0.Add(80 * time.Millisecond).UnixMilli()
+	if st.Type != syncevent.State || st.ServerTimeMs != want {
+		t.Errorf("STATE server_time_ms = %d, want %d (tras las idas y vueltas)", st.ServerTimeMs, want)
+	}
+	if st.ReceivedAt.UnixMilli() != want {
+		t.Errorf("STATE received_at = %v, want %d", st.ReceivedAt, want)
 	}
 }
 
