@@ -5,10 +5,18 @@ import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { apiFetch } from '../lib/api';
 import { parseInviteCode } from '../lib/invite';
 import { Button } from '../components/ui/Button';
-import { Field, ErrorAlert } from '../components/ui/Primitives';
+import { TintLogo } from '../components/brand/TintLogo';
+import { Field, ErrorAlert, Input } from '../components/ui/Primitives';
+import { AmbientBackground } from '../components/layout/AmbientBackground';
+import { m, useReducedMotion } from 'framer-motion';
+import { ease, fadeUp, stagger } from '../lib/motion';
+
+const HERO_SRC = 'https://picsum.photos/seed/tint-cinema/1200/1400';
+const HEADLINE = 'Mira junto, siente al mismo tiempo';
 
 export default function Login() {
   const navigate = useNavigate();
+  const reduced = useReducedMotion();
   const [searchParams] = useSearchParams();
   // Retorno tras login (p. ej. ?next=/watch/:id desde la puerta de la sala).
   // Solo rutas internas para evitar open-redirect.
@@ -51,34 +59,63 @@ export default function Login() {
     }
   };
   return (
-    <div className="grid min-h-[100dvh] bg-tint-bg text-tint-muted md:grid-cols-2">
+    <div className="relative isolate grid min-h-[100dvh] bg-tint-bg text-tint-muted md:grid-cols-2">
+      <AmbientBackground />
       <section className="relative hidden overflow-hidden md:block" aria-hidden="true">
-        <img
-          src="https://picsum.photos/seed/tint-cinema/1200/1400"
+        <m.img
+          src={HERO_SRC}
           alt=""
-          className="absolute inset-0 h-full w-full object-cover opacity-50"
+          className="absolute inset-0 h-full w-full object-cover"
           loading="eager"
+          initial={{ opacity: 0, scale: reduced ? 1 : 1.04 }}
+          animate={{ opacity: 0.5, scale: 1 }}
+          transition={{ duration: 1.6, ease }}
         />
         <div className="absolute inset-0 bg-gradient-to-t from-tint-bg via-tint-bg/60 to-tint-bg/20" />
-        <div className="absolute inset-x-0 bottom-0 p-10">
-          <p className="text-[11px] uppercase tracking-[0.18em] text-tint-accent">
+        <m.div
+          className="absolute inset-x-0 bottom-0 p-10"
+          variants={stagger(0.08, 0.25)}
+          initial="hidden"
+          animate="show"
+        >
+          <m.p variants={fadeUp} className="tint-eyebrow">
             Salas sincronizadas
-          </p>
-          <h1 className="mt-3 max-w-[16ch] text-4xl font-bold leading-[1.05] tracking-tighter text-white lg:text-5xl">
-            Mira junto, siente al mismo tiempo
-          </h1>
-          <p className="mt-3 max-w-[42ch] text-sm leading-relaxed text-tint-muted">
+          </m.p>
+          <m.h1
+            variants={fadeUp}
+            className="mt-3 max-w-[16ch] text-4xl font-bold leading-[1.05] tracking-tighter text-white lg:text-5xl"
+          >
+            {HEADLINE}
+          </m.h1>
+          <m.p variants={fadeUp} className="mt-3 max-w-[42ch] text-sm leading-relaxed text-tint-muted">
             Crea una sala, invita con un link y mantén a todos en el mismo segundo.
-          </p>
+          </m.p>
+        </m.div>
+      </section>
+
+      <section
+        data-testid="hero-mobile"
+        aria-hidden="true"
+        className="relative h-40 overflow-hidden md:hidden"
+      >
+        <img src={HERO_SRC} alt="" className="absolute inset-0 h-full w-full object-cover opacity-40" loading="eager" />
+        <div className="absolute inset-0 bg-gradient-to-b from-tint-bg/10 via-tint-bg/50 to-tint-bg" />
+        <div className="absolute -bottom-16 left-1/2 h-32 w-64 -translate-x-1/2 rounded-full bg-tint-accent/20 blur-3xl" />
+        <div className="absolute inset-x-0 bottom-0 px-4 pb-4">
+          <p className="tint-eyebrow">Salas sincronizadas</p>
+          <p className="mt-1.5 max-w-[22ch] text-2xl font-bold leading-[1.1] tracking-tighter text-white">{HEADLINE}</p>
         </div>
       </section>
 
       <section className="flex items-center justify-center px-4 py-10">
-        <div className="w-full max-w-md rounded-2xl border border-white/10 bg-tint-card/70 p-8">
+        <m.div
+          variants={fadeUp}
+          initial="hidden"
+          animate="show"
+          className="w-full max-w-md rounded-2xl border border-white/10 bg-tint-card/70 p-8 shadow-lift"
+        >
           <div className="flex items-center gap-3">
-            <span aria-hidden="true" className="grid h-10 w-10 place-items-center rounded-xl bg-tint-accent">
-              <span className="block h-4 w-4 rounded-[5px] bg-tint-bg" />
-            </span>
+            <TintLogo size={40} className="shrink-0" />
             <div className="leading-none">
               <p className="text-lg font-bold tracking-tight text-white">TINT</p>
               <p className="mt-1 text-[11px] tracking-[0.14em] text-tint-muted/80">WATCH PARTY</p>
@@ -107,7 +144,7 @@ export default function Login() {
 
           <div className="mt-6 flex items-center gap-3" aria-hidden="true">
             <span className="h-px flex-1 bg-white/10" />
-            <span className="text-[11px] uppercase tracking-[0.18em] text-tint-muted/70">
+            <span className="text-[11px] uppercase tracking-[0.18em] text-tint-muted/80">
               o entra como invitado
             </span>
             <span className="h-px flex-1 bg-white/10" />
@@ -117,9 +154,8 @@ export default function Login() {
           </p>
           <form onSubmit={handleInvite} className="mt-3 space-y-3">
             <Field label="Link de invitación" htmlFor="invite-link" error={undefined}>
-              <input
+              <Input
                 id="invite-link"
-                className="w-full rounded-xl border border-white/10 bg-tint-bg px-4 py-2.5 text-white placeholder:text-tint-muted/50 focus:border-tint-accent focus:outline-none"
                 value={invite}
                 onChange={(e) => setInvite(e.target.value)}
                 placeholder="Pega el link o el código"
@@ -134,7 +170,7 @@ export default function Login() {
           <Link to="/dashboard" className="sr-only">
             dashboard
           </Link>
-        </div>
+        </m.div>
       </section>
     </div>
   );

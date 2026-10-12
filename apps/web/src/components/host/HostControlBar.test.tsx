@@ -144,3 +144,54 @@ describe('HostControlBar — láser y encuestas', () => {
     expect(onOpenPoll).toHaveBeenCalled();
   });
 });
+
+describe('HostControlBar — atajo L del láser', () => {
+  it('L alterna el láser y anula el atajo de avance del reproductor', () => {
+    const onToggleLaser = vi.fn();
+    renderBar({ onToggleLaser });
+    expect(screen.getByRole('button', { name: 'Puntero láser' })).toHaveAttribute('aria-keyshortcuts', 'L');
+    const lower = new KeyboardEvent('keydown', { key: 'l', bubbles: true, cancelable: true });
+    act(() => {
+      window.dispatchEvent(lower);
+    });
+    expect(onToggleLaser).toHaveBeenCalledTimes(1);
+    // preventDefault: usePlayerShortcuts ignora la tecla ya atendida (no avanza 10 s).
+    expect(lower.defaultPrevented).toBe(true);
+    fireEvent.keyDown(document.body, { key: 'L' });
+    expect(onToggleLaser).toHaveBeenCalledTimes(2);
+  });
+
+  it('ignora L al escribir en un campo, con modificadores o si ya se atendió', () => {
+    const onToggleLaser = vi.fn();
+    renderBar({ onToggleLaser });
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    fireEvent.keyDown(input, { key: 'l' });
+    const editable = document.createElement('div');
+    editable.contentEditable = 'true';
+    document.body.appendChild(editable);
+    fireEvent.keyDown(editable, { key: 'L' });
+    fireEvent.keyDown(document.body, { key: 'l', ctrlKey: true });
+    fireEvent.keyDown(document.body, { key: 'l', metaKey: true });
+    fireEvent.keyDown(document.body, { key: 'l', altKey: true });
+    fireEvent.keyDown(document.body, { key: 'k' });
+    expect(onToggleLaser).not.toHaveBeenCalled();
+    input.remove();
+    editable.remove();
+  });
+
+  it('sin láser disponible no intercepta L', () => {
+    renderBar();
+    const event = new KeyboardEvent('keydown', { key: 'l', bubbles: true, cancelable: true });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(false);
+  });
+
+  it('desmontar quita el atajo', () => {
+    const onToggleLaser = vi.fn();
+    const { unmount } = renderBar({ onToggleLaser });
+    unmount();
+    fireEvent.keyDown(document.body, { key: 'l' });
+    expect(onToggleLaser).not.toHaveBeenCalled();
+  });
+});

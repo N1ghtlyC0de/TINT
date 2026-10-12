@@ -15,7 +15,8 @@ Este repositorio es un monorepo multi-lenguaje (Go, TypeScript y Python). **Ante
 
 ## Documentación
 La documentación de features vive en [`docs/`](docs/README.md), con diagramas Mermaid:
-- [Arquitectura](docs/arquitectura.md): servicios, almacenes, **contratos entre dominios**, puertos y CI.
+- [Arquitectura](docs/arquitectura.md): servicios, **contratos entre dominios**, vistas de componentes y conectores y de despliegue, almacenes, puertos y CI/CD.
+- [Decisiones de arquitectura (ADRs)](docs/adr/README.md): una decisión por archivo; una decisión nueva va como ADR en el mismo PR.
 - [Usuarios, identidad y permisos](docs/usuarios-e-identidad.md): tipos de usuario, permisos, esquema de BD y tokens.
 - [Dominio de Reproducción](docs/dominio-reproduccion.md): Canal Sync v2.
 
@@ -36,14 +37,17 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 
 | Contrato | Lados | Fuente de verdad |
 | :--- | :--- | :--- |
-| Claims JWT HS256 (`sub`, `room_id`, `role`, `nick`, `jti`, `iss`, `aud`, `exp`) | identity-api ↔ sync-core, social-core | [usuarios-e-identidad §4](docs/usuarios-e-identidad.md#4-esquemas-de-tokens) |
-| `JWT_SECRET` / `JWT_ISSUER` / `JWT_AUDIENCE` | identity-api ↔ sync-core, social-core | `.env.example` raíz |
-| Protocolo del Canal Sync v2 | sync-core ↔ web | [sync-core/AGENTS.md](services/sync-core/AGENTS.md#protocolo-del-canal-sync) |
-| Revocación `token:revoked:{jti}` + `REVOKED` (cierre `4001`; token caducado `4003`) | identity-api → sync-core, social-core, web | [dominio-reproduccion §6.6](docs/dominio-reproduccion.md#66-retirar-a-un-invitado-f5) |
-| Stream `media:uploads` + tabla `videos` (`id`, `storage_key`, `duration_ms`, `status`) + staging `incoming/{id}/original.*` (el worker publica `{id}/source.*` y reescribe `storage_key`) | identity-api → media-worker | [dominio-reproduccion §6.7](docs/dominio-reproduccion.md#67-subida-y-cambio-de-vídeo) |
-| Puertos locales: social-core 8082, sync-core 8083 | infra ↔ web | `docker-compose.yml`, `.env.example` de la web |
-| API REST `/api/v1` | identity-api → web | [identity-api/AGENTS.md](services/identity-api/AGENTS.md#api) |
-| Stream `analytics:events` (sin PII) | productores → analytics | [analytics/AGENTS.md](services/analytics/AGENTS.md) |
+| Claims JWT HS256 (`sub`, `room_id`, `role`, `nick`, `jti`, `iss`, `aud`, `exp`) | identity-api ↔ sync-core, social-core, analytics | [usuarios-e-identidad §4](docs/usuarios-e-identidad.md#4-esquemas-de-tokens) |
+| `JWT_SECRET` / `JWT_ISSUER` / `JWT_AUDIENCE` | identity-api ↔ sync-core, social-core, analytics | `.env.example` raíz |
+| Protocolo del Canal Sync v2 (incl. `VOLUME`/`QUALITY`) | sync-core ↔ web | [sync-core/AGENTS.md](services/sync-core/AGENTS.md#protocolo-del-canal-sync) |
+| Protocolo del Canal Social (chat con spoilers, reacciones, láser, encuestas, trivias, recap; moderación del chat —modo lento y silencio—, láser, encuestas y programación de trivias con sync-ticket del host) | social-core ↔ web | [social-core/AGENTS.md](services/social-core/AGENTS.md#protocolo-del-canal-social) |
+| Comandos de reproducción en `room:{id}:sync` (solo lectura, para el recap) | sync-core → social-core | [arquitectura §5](docs/arquitectura.md#5-contratos-compartidos-entre-dominios) |
+| Revocación `token:revoked:{jti}` + `REVOKED` (cierre `4001`; token caducado `4003`) | identity-api → sync-core, social-core, analytics, web | [dominio-reproduccion §6.6](docs/dominio-reproduccion.md#66-retirar-a-un-invitado-f5) |
+| Stream `media:uploads` + tabla `videos` (`id`, `storage_key`, `duration_ms`, `status`, `renditions`) + staging `incoming/{id}/original.*` (el worker publica `{id}/source.*` y reescribe `storage_key`; también `{id}/720p.mp4`/`{id}/360p.mp4` y sus alturas en `renditions`) | identity-api → media-worker | [dominio-reproduccion §6.7](docs/dominio-reproduccion.md#67-subida-y-cambio-de-vídeo) |
+| Puertos locales: social-core 8082, sync-core 8083, analytics 8084 | infra ↔ web | `docker-compose.yml`, `.env.example` de la web |
+| API REST `/api/v1` (incl. bloqueo por dispositivo `room_bans` + `deviceId` en el claim, y biblioteca `GET /videos`) | identity-api → web | [identity-api/AGENTS.md](services/identity-api/AGENTS.md#api) |
+| Stream `analytics:events` (sin PII) | identity-api, social-core, sync-core, media-worker → analytics | [docs/contrato-eventos-analitica.md](docs/contrato-eventos-analitica.md) |
+| API de lectura de analytics (`/api/v1/rooms/{id}/kpis`, `/reactions/heatmap`, `/timeline`) + `analytics-ticket` (`POST /api/v1/rooms/:id/analytics-ticket`) | identity-api → web → analytics | [analytics/AGENTS.md](services/analytics/AGENTS.md#api-solo-lectura-puerto-analytics_port-por-defecto-8084) |
 
 ## Flujo de trabajo recomendado (humanos y agentes)
 1. Lee este archivo, el `AGENTS.md` del dominio y el documento de `docs/` afectado.

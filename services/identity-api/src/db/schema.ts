@@ -56,7 +56,27 @@ export const guestSessions = pgTable('guest_sessions', {
   joinedAt: timestamp('joined_at', { withTimezone: true }).defaultNow().notNull(),
   expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
   revoked: boolean('revoked').default(false).notNull(),
+  // Identificador anónimo del navegador (UUID en localStorage) que envía la web al
+  // reclamar la invitación. Nullable: los clientes viejos no lo mandan (migración 0007).
+  deviceId: uuid('device_id'),
 });
+
+// Bloqueos de invitados por dispositivo (migración 0007). Un invitado bloqueado no
+// puede volver a reclamar una invitación de la sala desde el mismo navegador.
+// device_id es null si la sesión venía de un cliente sin deviceId: ese bloqueo
+// solo queda registrado por `sub` y no impide volver a entrar (ver usuarios-e-identidad §6.6).
+export const roomBans = pgTable('room_bans', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  roomId: uuid('room_id').notNull().references(() => rooms.id, { onDelete: 'cascade' }),
+  deviceId: uuid('device_id'),
+  sub: text('sub').notNull(),
+  nick: varchar('nick', { length: 64 }).notNull(),
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  createdBy: uuid('created_by').references(() => users.id, { onDelete: 'set null' }),
+}, (t) => [
+  // Varios null no chocan (NULLS DISTINCT): los bloqueos sin dispositivo se deduplican por sub.
+  uniqueIndex('room_bans_room_device_unique').on(t.roomId, t.deviceId),
+]);
 
 export const invitations = pgTable('invitations', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -80,6 +100,10 @@ export const videos = pgTable('videos', {
   sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
   durationMs: integer('duration_ms'),
   status: varchar('status', { length: 20 }).notNull().default('pending'),
+  // Nombre visible en la biblioteca: el filename sin extensión al reservar (migración 0007).
+  title: varchar('title', { length: 255 }),
+  // Alturas de las calidades publicadas por media-worker (`{id}/{h}p.mp4`), p. ej. [720, 360].
+  renditions: jsonb('renditions').$type<number[]>().notNull().default([]),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });

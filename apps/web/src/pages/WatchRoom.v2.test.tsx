@@ -31,6 +31,17 @@ vi.mock('../hooks/useSocialSocket', () => ({
     closePoll: vi.fn(() => true),
     recap: null,
     requestRecap: vi.fn(() => true),
+    chatSettings: { slow_mode_s: 0, muted_user_ids: [] },
+    chatCooldownUntil: null,
+    setSlowMode: vi.fn(() => true),
+    muteUser: vi.fn(() => true),
+    trivia: { question: null, receivedAt: null, ack: null, result: null, myOption: null },
+    triviaSchedule: [],
+    scheduleTrivia: vi.fn(() => true),
+    deleteTrivia: vi.fn(() => true),
+    listTrivia: vi.fn(() => true),
+    answerTrivia: vi.fn(() => true),
+    dismissTrivia: vi.fn(),
   }),
 }));
 
@@ -61,6 +72,12 @@ function routeApi(path: string, init?: RequestInit) {
     return Promise.resolve(next);
   }
   if (path.endsWith('/media') && init?.method === 'PUT') return Promise.resolve({ mediaId: 'm2', mediaKey: 'k' });
+  if (path === '/videos') {
+    return Promise.resolve({
+      videos: [{ id: 'm2', title: 'Otra peli', durationMs: 60_000, status: 'ready', createdAt: 'x', previewUrl: null }],
+    });
+  }
+  if (path.endsWith('/bans')) return Promise.resolve({ bans: [] });
   if (path.endsWith('/media/uploads')) {
     return Promise.resolve({
       videoId: 'v9',
@@ -103,7 +120,7 @@ beforeEach(() => {
   localStorage.clear();
   MockWebSocket.reset();
   vi.stubGlobal('WebSocket', MockWebSocket);
-  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
+  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addListener: vi.fn(), removeListener: vi.fn() })));
   vi.stubEnv('VITE_SYNC_ENCODING', 'json');
   playbackByCall = [{ mediaId: 'm1', url: 'https://minio/m1?sig=1', expiresAt: '2099-01-01T00:00:00Z' }];
   mockedApiFetch.mockReset();
@@ -149,6 +166,82 @@ describe('WatchRoom v2 — vídeo de la sala (F3)', () => {
     expect(screen.getByText('El host cargó un nuevo vídeo')).toBeInTheDocument();
   });
 
+  it('si el vídeo falla (URL caducada) pide una URL nueva y la aplica', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    playbackByCall = [
+      { mediaId: 'm1', url: 'https://minio/m1?sig=1', expiresAt: '2099-01-01T00:00:00Z' },
+      { mediaId: 'm1', url: 'https://minio/m1?sig=2', expiresAt: '2099-01-01T00:00:00Z' },
+    ];
+    renderWatch();
+    await flush();
+    const video = screen.getByLabelText('Vídeo de la sala');
+    expect(video).toHaveAttribute('src', 'https://minio/m1?sig=1');
+    Object.defineProperty(video, 'error', { configurable: true, value: { code: 2 } });
+    fireEvent.error(video);
+    await flush();
+    expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m1?sig=2');
+  });
+
+  it('el refresco de la URL no cambia el src; un cambio de calidad adopta la URL nueva', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    const soon = new Date(Date.now() + 70_000).toISOString();
+    const qualities = (sig: number) => [
+      { id: 'source', label: 'Original', url: `https://minio/m1?sig=${sig}` },
+      { id: '360p', label: '360p', url: `https://minio/m1/360p?sig=${sig}` },
+    ];
+    playbackByCall = [
+      { mediaId: 'm1', url: 'https://minio/m1?sig=1', expiresAt: soon, qualities: qualities(1) } as never,
+      { mediaId: 'm1', url: 'https://minio/m1?sig=2', expiresAt: '2099-01-01T00:00:00Z', qualities: qualities(2) } as never,
+    ];
+    renderWatch();
+    await flush();
+    const ws = MockWebSocket.last();
+    act(() => ws.open());
+    act(() => ws.receive({ ...state, quality: 'source' }));
+    await flush();
+    expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m1?sig=1');
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    expect(mockedApiFetch.mock.calls.filter(([p]) => String(p).endsWith('/playback'))).toHaveLength(2);
+    expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m1?sig=1');
+    act(() => ws.receive({ ...state, type: 'QUALITY', event_id: 'q', version: 2, quality: '360p' }));
+    await flush();
+    expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m1/360p?sig=2');
+  });
+
+  it('tras un LOAD, mientras llega la URL nueva, el heartbeat no reporta la posición del vídeo viejo', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    let playbackCalls = 0;
+    mockedApiFetch.mockImplementation(((path: string, init?: RequestInit) => {
+      if (path.endsWith('/playback')) {
+        playbackCalls += 1;
+        // La URL de m2 aún no llega.
+        return playbackCalls === 1 ? Promise.resolve(playbackByCall[0]) : new Promise(() => {});
+      }
+      return routeApi(path, init);
+    }) as typeof apiFetch);
+    renderWatch();
+    await flush();
+    const ws = MockWebSocket.last();
+    act(() => ws.open());
+    act(() => ws.receive(state));
+    await flush();
+    const video = screen.getByLabelText('Vídeo de la sala') as HTMLVideoElement;
+    video.currentTime = 42;
+    act(() => ws.receive({ type: 'HEARTBEAT', server_time_ms: 1_000 }));
+    expect(ws.sentJson().at(-1)).toMatchObject({ type: 'SYNC_CHECK', position_ms: 42_000 });
+    act(() => ws.receive({ ...state, type: 'LOAD', event_id: 'e', position_ms: 0, version: 2, media_id: 'm2' }));
+    await flush();
+    expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m1?sig=1');
+    // El <video> sigue con m1 (p. ej. siguió avanzando o no pudo buscar).
+    video.currentTime = 42;
+    act(() => ws.receive({ type: 'HEARTBEAT', server_time_ms: 2_000 }));
+    // Posición esperada del estado maestro (m2 en pausa en 0), no los 42 s de m1.
+    expect(ws.sentJson().at(-1)).toMatchObject({ type: 'SYNC_CHECK', position_ms: 0, version: 2 });
+  });
+
   it('si falla el playback muestra el error en el reproductor', async () => {
     localStorage.setItem('tint_guest_token', testGuestToken());
     mockedApiFetch.mockImplementation(((path: string) =>
@@ -162,10 +255,41 @@ describe('WatchRoom v2 — vídeo de la sala (F3)', () => {
 describe('WatchRoom v2 — estado del procesamiento (Ambilight)', () => {
   const base = { mediaId: 'm1', url: 'https://minio/m1', expiresAt: null };
 
+  beforeEach(() => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve([]) })),
+    );
+  });
+
+  it('listo: brillo con interruptor "Ambilight" y sin texto técnico ni tarjeta de relleno', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    playbackByCall = [{ ...base, status: 'ready', ambilightUrl: 'https://minio/m1/ambilight.json?sig=1' }];
+    const { container } = renderWatch();
+    await flush();
+    expect(screen.getByRole('switch', { name: 'Ambilight' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('ambilight-glow')).toBeInTheDocument();
+    // Con paleta, el brillo es el Ambilight: el halo cálido de respaldo no se apila.
+    expect(screen.queryByTestId('player-halo')).not.toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith('https://minio/m1/ambilight.json?sig=1', expect.anything());
+    expect(screen.queryByRole('heading', { name: 'Ambilight' })).not.toBeInTheDocument();
+    expect(container.textContent).not.toMatch(/ambilight\.json|media-worker/);
+  });
+
+  it('procesando: sin brillo ni interruptor', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    playbackByCall = [{ ...base, status: 'processing', ambilightUrl: null }];
+    renderWatch();
+    await flush();
+    expect(screen.queryByRole('switch', { name: 'Ambilight' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('ambilight-glow')).toHaveAttribute('data-visible', 'false');
+    expect(screen.getByTestId('player-halo')).toBeInTheDocument();
+  });
+
   it.each([
-    ['pending', 'Procesando vídeo (Ambilight)…'],
-    ['processing', 'Procesando vídeo (Ambilight)…'],
-    ['ready', 'Ambilight listo'],
+    ['pending', 'Preparando el vídeo…'],
+    ['processing', 'Preparando el vídeo…'],
+    ['ready', 'Vídeo listo'],
   ])('status %s → "%s"', async (status, text) => {
     localStorage.setItem('tint_guest_token', testGuestToken());
     playbackByCall = [{ ...base, status, ambilightUrl: status === 'ready' ? 'https://a' : null }];
@@ -207,6 +331,7 @@ describe('WatchRoom v2 — host', () => {
     const ws = MockWebSocket.last();
     act(() => ws.open());
     await userEvent.click(screen.getByRole('button', { name: 'Cambiar vídeo' }));
+    await userEvent.click(screen.getByRole('tab', { name: 'Subir nuevo' }));
     await userEvent.upload(
       screen.getByLabelText('Archivo de vídeo'),
       new File(['abc'], 'peli.mp4', { type: 'video/mp4' }),
@@ -219,20 +344,18 @@ describe('WatchRoom v2 — host', () => {
     expect(screen.getByText('Vídeo cargado para todos.')).toBeInTheDocument();
   });
 
-  it('cambia el vídeo por clave: PUT /media y LOAD por el canal', async () => {
+  it('elige un vídeo de "Mis vídeos": PUT /media {videoId} y LOAD por el canal', async () => {
     renderWatch();
     await flush();
     const ws = MockWebSocket.last();
     act(() => ws.open());
     await userEvent.click(screen.getByRole('button', { name: 'Cambiar vídeo' }));
-    await userEvent.click(screen.getByText('Usar un archivo ya subido (clave del bucket)'));
-    await userEvent.type(screen.getByLabelText('Clave del objeto en MinIO'), 'pelis/b.mp4');
-    await userEvent.click(screen.getByRole('button', { name: 'Asignar y cargar' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Ver «Otra peli» en la sala' }));
     await waitFor(() => expect(ws.sentJson().some((m) => m.type === 'LOAD')).toBe(true));
     expect(ws.sentJson().find((m) => m.type === 'LOAD')).toMatchObject({ media_id: 'm2', position_ms: 0, room_id: 'r1' });
     expect(mockedApiFetch).toHaveBeenCalledWith(
       '/rooms/r1/media',
-      { method: 'PUT', body: JSON.stringify({ mediaKey: 'pelis/b.mp4' }) },
+      { method: 'PUT', body: JSON.stringify({ videoId: 'm2' }) },
       'host',
     );
   });

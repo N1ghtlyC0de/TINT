@@ -425,30 +425,49 @@ sequenceDiagram
     loop cada 1 s
         L->>L: ¿3 latidos sin SYNC_CHECK? → cerrar con 1008
         L->>C: HEARTBEAT { server_time_ms, rtt_ms, drift_ms }
-        C->>H: SYNC_CHECK { echo_server_ts, position_ms }
-        H->>H: RTT EWMA con el reloj del servidor<br/>drift = pos − PositionAt(recv − RTT/2)
-        alt |drift| > 500 ms
+        C->>H: SYNC_CHECK { echo_server_ts, position_ms, version? }
+        H->>H: RTT EWMA con el reloj del servidor (muestra ≤ 2·RTT + 200)<br/>drift = pos − PositionAt(recv − RTT/2)
+        alt version del cliente < version de la sala
+            H->>H: se ignora (aún no aplicó el último broadcast)
+        else |drift| > 500 ms (y, si es seek, fuera del enfriamiento de 3 s)
             H-->>C: SYNC_CORRECTION { target_ms, strategy, version, status, rate, media_id }
             H-)T: drift_correction (no bloqueante)
         end
     end
 ```
 
-`SYNC_CORRECTION` incluye, además de `target_ms`, `strategy`, `drift_ms` y `version`, los campos opcionales `status`, `rate` (velocidad de la sala) y `media_id` del estado en esa `version`. Un cliente que perdió un broadcast (p. ej. por una reconexión del Pub/Sub) puede usarlos para reconciliar estado y vídeo; los clientes que no los conocen los ignoran. La web aún no los aplica.
+`SYNC_CORRECTION` incluye, además de `target_ms`, `strategy`, `drift_ms` y `version`, los campos opcionales `status`, `rate` (velocidad de la sala) y `media_id` del estado en esa `version`. Un cliente que perdió un broadcast (p. ej. por una reconexión del Pub/Sub) puede usarlos para reconciliar estado y vídeo; los clientes que no los conocen los ignoran. La web los aplica (ver §10, "Correcciones").
 
 ```mermaid
 flowchart TD
-    A["SYNC_CHECK"] --> B["drift = pos_cliente − PositionAt(recv − RTT/2)"]
+    A["SYNC_CHECK"] --> L{"¿más de 5 en este segundo?"}
+    L -- sí --> X["se descarta en silencio"]
+    L -- no --> R["RTT = EWMA(min(muestra, 2·RTT + 200))"]
+    R --> V{"version > 0 y < version de la sala?"}
+    V -- sí --> Y["se ignora: ni corrección ni drift"]
+    V -- no --> B["drift = pos_cliente − PositionAt(recv − RTT/2)"]
     B --> M["se guarda para el próximo HEARTBEAT (semáforo de la web)"]
     B --> C{"|drift| > 500 ms?"}
     C -- no --> D["sin corrección"]
     C -- sí --> E{"playing y |drift| ≤ 2000 ms?"}
     E -- sí --> F["rate: 1.05 si va atrasado, 0.95 si va adelantado"]
-    E -- no --> G["seek directo (la web hace un fundido)"]
+    E -- no --> K{"¿seek a este cliente hace < 3 s?"}
+    K -- sí --> Z["se suprime (sin telemetría)"]
+    K -- no --> G["seek directo (la web hace un fundido)"]
     F & G --> H["target_ms = PositionAt(ahora + RTT/2)"]
 ```
 
 El `SYNC_CHECK` **no** toca Redis: el estado sale de la caché por sala y la presencia se renueva en el barrido.
+
+**Protecciones contra tormentas de seek** (bug hunting de tirones, `fix/sync-core-correcciones-drift`):
+
+| Medida | Por qué |
+| :--- | :--- |
+| **Recorte del RTT:** tras la primera muestra se usa `min(muestra, 2·RTT_previo + 200)` antes de la EWMA. | Un `SYNC_CHECK` retrasado (pestaña en segundo plano, GC, cola tras un stall) inflaba el RTT a ~1 s con una sola muestra y `target_ms` quedaba adelantado varios latidos. |
+| **Enfriamiento de seek:** tras enviar un `seek` a un cliente no se le envía otro durante 3 s (`drift.SeekCooldownMs`); `rate` sigue permitido. El seek suprimido no emite `drift_correction`. | Un cliente en buffering reporta una posición congelada: cada latido producía otro seek, que volvía a provocar el stall (bucle seek→stall→seek). |
+| **`version` opcional en `SYNC_CHECK`:** si es > 0 y menor que la `version` del estado usado, el servidor no corrige ni cuenta drift. Sin el campo (o `0`) el comportamiento no cambia. | Tras un `SEEK`/`LOAD` del host, el `SYNC_CHECK` enviado antes de aplicar el broadcast producía un segundo seek duplicado. **La web debe enviar la última `version` aplicada** (PR aparte en `apps/web`). |
+| **Límite propio de `SYNC_CHECK`:** 5/s por conexión, fuera del límite general de 20 msg/s (el exceso se descarta en silencio). | Un host que hacía scrubbing al límite de comandos veía rechazados sus `SYNC_CHECK` y acababa cerrado por stale (`1008`). |
+| **`STATE` sellado al encolarlo:** `server_time_ms` se toma justo antes de enviarlo, no al inicio de `Connect`. | El cliente proyecta la posición desde `server_time_ms`; con el sello viejo arrancaba atrasado lo que tardaban las idas y vueltas a Redis. |
 
 ### 6.4 Presencia y caída de la réplica del Host (F4)
 
@@ -528,6 +547,20 @@ Un token revocado o expirado pero bien firmado **hace upgrade y se cierra** con 
 
 `DELETE /rooms/:id` aplica esta misma secuencia a **todas** las sesiones de invitado activas de la sala (no revocadas y no vencidas), así que borrar una sala corta a los invitados conectados. `guest_sessions.revoked` se marca después de Redis: si Redis falla, la respuesta es 503 (la sala ya quedó borrada) y repetir el `DELETE` vuelve a publicar los `REVOKED` pendientes (responde 410 cuando termina).
 
+#### Retirar vs. bloquear
+
+| | Retirar (`POST /rooms/:id/guests/:jti/revoke`) | Bloquear (`POST /rooms/:id/bans { jti } \| { sub }`) |
+| :--- | :--- | :--- |
+| Sesión actual | Revoca ese `jti` (cierre `4001`) | Revoca **todas** las sesiones vigentes del invitado (`sub`) en la sala (cierre `4001`) |
+| ¿Puede volver con el link? | Sí, con un claim nuevo | No desde el mismo navegador: el claim con su `deviceId` responde **403 `{ error: "BANNED" }`** |
+| Persistencia | `guest_sessions.revoked` | `guest_sessions.revoked` + fila en `room_bans` (`device_id`, `sub`, `nick`) |
+| Deshacer | — | `DELETE /rooms/:id/bans/:banId` (lista en `GET /rooms/:id/bans`) |
+| Si Redis falla | 500 | **503**; el ban ya quedó guardado y repetir el `POST` (idempotente) termina de revocar |
+
+sync-core y social-core no cambian: reciben el mismo `REVOKED{jti}` por cada sesión y cierran con `4001`. `{ sub }` sirve para bloquear desde el chat del Canal Social (donde la web conoce el `user_id` del invitado); `{ jti }`, desde el panel de invitados.
+
+> ⚠️ El bloqueo es **por navegador**, no por persona: los invitados son anónimos y el `deviceId` es un UUID que la web guarda en `localStorage`. Borrar los datos del navegador, una ventana privada u otro dispositivo lo evaden, y las sesiones de clientes viejos sin `deviceId` solo quedan registradas por `sub` (no impiden volver a entrar). Detalle en [usuarios-e-identidad §6.6](usuarios-e-identidad.md#66-bloquear-a-un-invitado-por-dispositivo).
+
 ### 6.7 Subida y cambio de vídeo
 
 El archivo **nunca pasa por identity-api**: el navegador lo sube directo a MinIO con una URL PUT firmada, y lo reproduce con una URL GET firmada.
@@ -561,8 +594,8 @@ sequenceDiagram
     Inv->>MI: GET original (incoming/)
     R-->>MW: XREADGROUP media-workers
     MW->>MI: descarga incoming/{videoId}/original.mp4
-    MW->>MW: ffprobe + Ambilight
-    MW->>MI: PUT {videoId}/source.mp4 + {videoId}/ambilight.json
+    MW->>MW: ffprobe + normalizar (remux +faststart si ya es MP4 H.264/AAC ≤ 12 Mbps;<br/>si no, re-codificar con keyframe cada 2 s y tope de bitrate) + Ambilight
+    MW->>MI: PUT {videoId}/source.mp4 (video/mp4) + {videoId}/ambilight.json
     MW->>PG: ready, duration_ms, storage_key = {videoId}/source.mp4
     MW->>R: XACK
     Note over Inv: la web consulta playback cada ~5 s mientras status es<br/>pending/processing. Al quedar ready la URL ya apunta a la versión publicada
@@ -573,10 +606,38 @@ sequenceDiagram
 | Reservar | `POST /rooms/:id/media/uploads` | 400 (no es `video/*`), 413 (> `MAX_UPLOAD_BYTES`, 2 GiB), 403, 410 |
 | Subir | `PUT uploadUrl` a MinIO (Content-Type firmado, 15 min) | CORS según `MINIO_CORS_ALLOW_ORIGIN` |
 | Confirmar | `POST /rooms/:id/media/uploads/:videoId/complete` | 409 `Upload missing`, 413 si el objeto real supera el `sizeBytes` declarado o `MAX_UPLOAD_BYTES` (se borra del bucket y el vídeo sigue en `pending`), 503 si Redis falla (el vídeo vuelve a `pending` y se puede reintentar), 404. **Idempotente:** solo la transición `pending → processing` encola y asigna; si el vídeo ya no está en `pending` responde 200 con el estado actual sin re-encolar. |
-| Procesar | `media:uploads` → media-worker (`python -m media_worker`, servicio de docker compose) | Si es válido publica `{videoId}/source.*` + `ambilight.json` y actualiza `storage_key`; después genera las calidades `{videoId}/720p.mp4` y `{videoId}/360p.mp4` menores que el original y escribe las publicadas en `videos.renditions` (una calidad que falle se omite sin marcar `failed`). Si ffprobe o el Ambilight fallan queda `failed` y **no se publica nada**. Un fallo de SQL/S3 no confirma el evento: se reintenta cada 5 s |
+| Procesar | `media:uploads` → media-worker (`python -m media_worker`, servicio de docker compose) | Si es válido lo normaliza (nunca publica el original: remux `-c copy` con `+faststart` si ya es MP4 H.264 + AAC de ≤ 12 Mbps, si no re-codificación H.264 con keyframe cada 2 s y tope VBV), publica `{videoId}/source.mp4` + `ambilight.json` (`Content-Type: video/mp4`, `Cache-Control: public, max-age=86400`) y actualiza `storage_key`; después genera las calidades `{videoId}/720p.mp4` y `{videoId}/360p.mp4` menores que el original y escribe las publicadas en `videos.renditions` (una calidad que falle se omite sin marcar `failed`). Si ffprobe o el Ambilight fallan queda `failed` y **no se publica nada**. Un fallo de SQL/S3 no confirma el evento: se reintenta cada 5 s |
 | Reproducir | `GET /rooms/:id/playback` firma `videos.storage_key` (el original mientras se procesa, la versión publicada al quedar `ready`) y devuelve `qualities`: `Original` (= `url`) y, si está `ready`, `720p`/`360p` según `videos.renditions` (`{id}/{h}p.mp4`) | 401 si el token fue revocado, 410 si la sala se borró. Un vídeo `failed` responde `url: null` y `qualities: []` |
 
+**Refresco de la URL en la web:** ~1 min antes de `expiresAt` la web pide `GET /playback` otra vez, pero si es el mismo vídeo **no** cambia el `src` del `<video>` (eso lo recargaba y dejaba un fotograma negro cada hora): guarda las URLs nuevas aparte —también las que aparecen al quedar `ready`— y las adopta solo si el `<video>` falla (`MEDIA_ERR_NETWORK`/`MEDIA_ERR_SRC_NOT_SUPPORTED`, p. ej. URL caducada o staging ya borrado; si no tiene URLs guardadas pide unas nuevas, como mucho cada 30 s) o cuando el `src` cambia igualmente (otra calidad u otro vídeo). Al cargar el `src` nuevo re-aplica la posición y el play/pausa del estado maestro.
+
 Sigue existiendo `PUT /rooms/:id/media { mediaKey }`, para asignar un objeto que ya está en el bucket (sin fila en `videos`, `status: null`).
+
+#### Biblioteca y reuso por `videoId`
+
+El host puede volver a poner en cualquiera de sus salas un vídeo que ya subió, sin escribir la clave del bucket:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Host
+    participant ID as identity-api
+    participant PG as PostgreSQL
+    participant SC as sync-core
+
+    Host->>ID: GET /videos (Firebase)
+    ID->>PG: videos WHERE uploaded_by = host AND status <> failed ORDER BY created_at DESC
+    ID-->>Host: { videos: [{ id, title, durationMs, status, createdAt, previewUrl }] }
+    Host->>ID: PUT /rooms/:id/media { videoId }
+    ID->>PG: el vídeo es del host y no está failed (si no, 404)
+    ID->>PG: rooms.media_id = videos.id, media_key = storage_key
+    ID-->>Host: { mediaId, mediaKey }
+    Host->>SC: LOAD { media_id: mediaId, position_ms: 0 }
+```
+
+- **`title`:** el `filename` sin extensión, guardado al reservar la subida (`videos.title`, migración `0007`). Se renombra con `PATCH /videos/:id { title }` (1–255, solo quien lo subió; responde `{ video }` con la misma forma de la tarjeta). Los vídeos anteriores a `0007` tienen `title: null`.
+- **`previewUrl`:** GET firmada (`PLAYBACK_URL_TTL_SECONDS`) para mostrar un fotograma en la tarjeta: `{id}/360p.mp4` si el vídeo está `ready` y `360` está en `renditions`; si no, `storage_key` (el original de `incoming/` mientras se procesa).
+- **Reuso:** como `media_id = videos.id` (no un uuid nuevo como con `mediaKey`), `GET /rooms/:id/playback` sigue resolviendo `status`, `qualities` y `ambilightUrl` del vídeo. Solo se reusan vídeos confirmados (`processing`/`ready`): uno `pending` (reservado sin confirmar, el objeto puede no existir), `failed`, inexistente o de otro host responde 404. La biblioteca lista los mismos estados.
 
 **Staging `incoming/`.** El original del navegador nunca va a la clave publicada: el media-worker solo publica vídeos que validó (regla de su dominio). `minio-init` importa una regla de ciclo de vida que borra `incoming/` a los 2 días, así quien ya reproducía el original no se corta al publicarse la versión procesada.
 
@@ -790,11 +851,16 @@ flowchart LR
 | `POST /rooms/:id/sync-ticket` | Host dueño (Firebase) | `{ token, expiresAt }` (HS256, `role: host`, 10 min) |
 | `POST /rooms/:id/media/uploads` | Host dueño | `{ videoId, uploadUrl, storageKey, expiresAt, headers }`: reserva el vídeo y firma el PUT a MinIO |
 | `POST /rooms/:id/media/uploads/:videoId/complete` | Host dueño | `{ mediaId, mediaKey, status }`: HEAD del objeto (tamaño real), `pending → processing`, `XADD media:uploads` y asignación a la sala. Idempotente |
-| `PUT /rooms/:id/media` | Host dueño | `{ mediaId, mediaKey }`: asigna un objeto que ya está en el bucket (nuevo `mediaId` en cada llamada) |
+| `PUT /rooms/:id/media` | Host dueño | `{ mediaId, mediaKey }`. Con `{ mediaKey }` asigna un objeto que ya está en el bucket (nuevo `mediaId` en cada llamada); con `{ videoId }` reusa un vídeo de su biblioteca (`mediaId = videoId`, `mediaKey = storage_key`; 404 si no es suyo o no está `processing`/`ready`) |
+| `GET /videos` | Host (Firebase) | `{ videos: [{ id, title, durationMs, status, createdAt, previewUrl }] }`: sus vídeos confirmados (`processing`/`ready`), recientes primero |
+| `PATCH /videos/:id` | Host que lo subió | `{ title }` (1–255) → `{ video }` (misma forma); 404 si no es suyo |
 | `GET /rooms/:id/playback` | Host dueño **o** guest token de la sala no revocado | `{ mediaId, url, expiresAt, status, ambilightUrl, qualities }` (`null`s y `qualities: []` si no hay vídeo) |
 | `GET /rooms/:id/guests` | Host dueño | `{ guests: [{ jti, nick, joinedAt, expiresAt, revoked }] }` (sin `sub`) |
 | `POST /rooms/:id/guests/:jti/revoke` | Host dueño | `{ success: true }`, idempotente; 404 si el `jti` no es de la sala |
-| `POST /invitations/claim` | — | Ahora registra la sesión en `guest_sessions`; `nick` ≤ 64 caracteres |
+| `POST /rooms/:id/bans` | Host dueño | `{ jti }` o `{ sub }` → `{ ban: { id, nick, createdAt } }`; bloquea el dispositivo y revoca todas las sesiones del invitado. Idempotente; 404 si no tiene sesiones en la sala; 503 si Redis falla |
+| `GET /rooms/:id/bans` | Host dueño | `{ bans: [{ id, nick, createdAt }] }` (sin `device_id` ni `sub`), recientes primero |
+| `DELETE /rooms/:id/bans/:banId` | Host dueño | `{ success: true }`; 404 si no existe en la sala |
+| `POST /invitations/claim` | — | Registra la sesión en `guest_sessions` (con `device_id`); `nick` ≤ 64 caracteres; `deviceId` opcional (UUID): **403 `{ error: "BANNED" }`** si ese dispositivo está bloqueado en la sala |
 
 - **Firmado:** se usa `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner`, con `forcePathStyle` para MinIO. La firma SigV4 se calcula en local, sin llamar a MinIO.
 - **Host de la URL firmada:** se firma contra `MINIO_PUBLIC_ENDPOINT`, el host que ve el navegador.
@@ -831,6 +897,11 @@ flowchart TD
 | Barra de cine | `role="slider"`: búfer, tiempo bajo el cursor, marcadores de los saltos del Host; flechas ±5 s y RePág/AvPág ±30 s. |
 | Atajos | Espacio/K reproducir o pausar · ←/→ o J/L ±10 s · `[`/`]` velocidad · `?` ayuda. Llevan `aria-keyshortcuts` y se ignoran dentro de campos de texto. |
 | Fundido | ~150–200 ms en correcciones por seek y en saltos de más de 2 s. Desactivado con `prefers-reduced-motion`. |
+| Aplicar estado | Cada `STATE`/broadcast aplica siempre la velocidad y el play/pausa, pero solo hace seek si la deriva supera 250 ms reproduciendo (50 ms en pausa): un `VOLUME`/`QUALITY`/`RATE` no hace saltar a nadie. En la misma conexión, un `STATE` con `version` menor a la aplicada se descarta; el primero de cada conexión siempre aplica (la sala pudo reiniciarse tras el TTL). |
+| `SYNC_CHECK` | Lleva la `version` del estado aplicado. Tras un `LOAD`, hasta que llega la URL nueva, informa la posición esperada del estado maestro en lugar de la del vídeo anterior. |
+| Correcciones | `rate`: velocidad de la sala × 1.05 (atrasado) o × 0.95 (adelantado) y vuelta a la velocidad de la sala. `seek`: se omite si el vídeo está en buffering (reproduce con `readyState` < `HAVE_FUTURE_DATA`), si el autoplay está bloqueado, si terminó y el objetivo está en o tras el final, o si ya está a < 250 ms del objetivo. Si la corrección trae `status` y `rate` (y `media_id`) distintos del estado aplicado, la web adopta ese estado (broadcast perdido). |
+| Autoplay | Solo un `NotAllowedError` muestra "Unirse a la reproducción"; un `AbortError` (carrera PLAY → PAUSE, cambio de `src`) se ignora. |
+| Calidad `auto` | 360p con 2g/3g o `saveData`; 720p con ancho < 640 px; si no, 720p salvo `navigator.connection.downlink` ≥ 10 Mbps (original). Sin Network Information API → 720p. Si no existe, el original. |
 | Control | Los controles se habilitan según `canControl` del servidor. Un participante con control delegado ve "El host no está: tienes el control temporal". |
 
 ---
@@ -843,7 +914,7 @@ flowchart TD
 | Revocación | `token:revoked:{jti}` en el handshake (upgrade y cierre `4001`; 503 si Redis no responde) y `REVOKED` en vivo (cierre `4001`). Token expirado bien firmado: upgrade y cierre `4003`. |
 | Autorización | `host`/`cohost` siempre; un participante solo si es el delegado vigente. El resto recibe `FORBIDDEN`. |
 | Origen | `OriginPatterns` desde `ALLOWED_ORIGINS`. |
-| Tamaño y frecuencia | 4 KB por mensaje (`1009`) y 20 mensajes/s (`RATE_LIMITED`). |
+| Tamaño y frecuencia | 4 KB por mensaje (`1009`) y 20 mensajes/s (`RATE_LIMITED`); `SYNC_CHECK` no cuenta en ese límite y tiene el suyo de 5/s (el exceso se descarta en silencio). |
 | Argumentos | `rate` ∈ [0.25, 4], `media_id` de 1 a 128 caracteres y `duration_ms` de `BUFFERING` en [0, 120000]; fuera de rango → `INVALID`. `BUFFERING`: máximo 1 por segundo y conexión (el exceso se descarta). |
 | Vídeo | URL firmada con vida corta (`PLAYBACK_URL_TTL_SECONDS`); el bucket no es público. |
 | Privacidad | `drift_correction`, `playback_command` y `buffering` sin PII (solo `role`); `/guests` no expone `sub`; `/metrics` sin identificadores de usuario y detrás del ingress. |

@@ -66,7 +66,7 @@ function withDuration(seconds: number) {
 beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
   vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
-  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false })));
+  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false, addListener: vi.fn(), removeListener: vi.fn() })));
 });
 
 afterEach(() => {
@@ -167,6 +167,19 @@ describe('SyncedPlayer — atajos de teclado', () => {
     expect(sync.sendCommand).toHaveBeenLastCalledWith('SEEK', 2_000);
   });
 
+  it('con láser, L lo alterna (no avanza) y la ayuda lo refleja', () => {
+    const onToggleLaser = vi.fn();
+    const { sync } = renderPlayer({ onToggleLaser });
+    expect(screen.getByRole('button', { name: 'Avanzar 10 segundos' })).toHaveAttribute('aria-keyshortcuts', 'ArrowRight');
+    fireEvent.keyDown(document.body, { key: 'l' });
+    expect(onToggleLaser).toHaveBeenCalledTimes(1);
+    expect(sync.sendCommand).not.toHaveBeenCalled();
+    fireEvent.keyDown(document.body, { key: '?' });
+    expect(screen.getByText('Activar o desactivar el puntero láser')).toBeInTheDocument();
+    expect(screen.queryByText('→ / L')).not.toBeInTheDocument();
+    expect(screen.getByText('→')).toBeInTheDocument();
+  });
+
   it('sin control no hay atajos ni ayuda', () => {
     const { sync } = renderPlayer({ canControl: false });
     fireEvent.keyDown(document.body, { key: 'k' });
@@ -236,7 +249,7 @@ describe('SyncedPlayer — fundido al corregir', () => {
   });
 
   it('con prefers-reduced-motion no hay fundido', () => {
-    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addListener: vi.fn(), removeListener: vi.fn() })));
     renderPlayer({
       sync: makeSync({ correction: { seq: 1, target_ms: 42_000, strategy: 'seek', drift_ms: 900, version: 1 } }),
     });
@@ -261,6 +274,25 @@ describe('SyncedPlayer — cambio de src', () => {
     video().currentTime = 0;
     fireEvent.loadedMetadata(video());
     expect(video().currentTime).toBe(20);
+  });
+
+  it.each([
+    [2, true],
+    [4, true],
+    [3, false],
+    [1, false],
+  ])('un error del vídeo con código %i avisa (onMediaError): %s', (code, expected) => {
+    const onMediaError = vi.fn();
+    renderPlayer({ onMediaError });
+    Object.defineProperty(video(), 'error', { configurable: true, value: { code } });
+    fireEvent.error(video());
+    expect(onMediaError).toHaveBeenCalledTimes(expected ? 1 : 0);
+  });
+
+  it('un error sin onMediaError ni MediaError no rompe', () => {
+    renderPlayer();
+    fireEvent.error(video());
+    expect(video()).toBeInTheDocument();
   });
 
   it('permite personalizar el mensaje sin vídeo', () => {

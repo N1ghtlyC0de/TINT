@@ -5,6 +5,8 @@ Eres el cerebro de inteligencia de negocio de **TINT**. Ingieres eventos desde R
 
 El contrato de eventos (qué publica cada servicio) está en [docs/contrato-eventos-analitica.md](../../docs/contrato-eventos-analitica.md); este dominio es su dueño.
 
+Cómo funciona el servicio por dentro (ingesta, sanitización, KPIs y API): [README.md](README.md).
+
 ## Stack Técnico
 | Pieza | Versión | Por qué |
 | :--- | :--- | :--- |

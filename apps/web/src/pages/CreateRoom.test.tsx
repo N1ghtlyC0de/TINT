@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { vi, beforeEach } from 'vitest';
@@ -185,13 +185,17 @@ describe('CreateRoom', () => {
   });
 
   it('modo gestionar: revoca el link actual y avisa que los de adentro no salen', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
+    const confirmSpy = vi.spyOn(window, 'confirm');
     mockManageLoad();
     mockedApi.mockResolvedValueOnce({ success: true });
     mockedApi.mockResolvedValueOnce({ invitations: [] });
     renderManage();
     await screen.findByDisplayValue('Cine');
     await userEvent.click(screen.getByRole('button', { name: /revocar link/i }));
+    const dialog = await screen.findByRole('alertdialog', { name: '¿Revocar este link?' });
+    expect(dialog).toHaveTextContent(/nadie nuevo podrá entrar/i);
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Revocar' }));
+    expect(confirmSpy).not.toHaveBeenCalled();
     await waitFor(() =>
       expect(mockedApi).toHaveBeenCalledWith('/invitations/abc123/revoke', { method: 'POST' }),
     );
@@ -208,15 +212,51 @@ describe('CreateRoom', () => {
     expect(screen.queryByRole('link', { name: /ver invitación/i })).not.toBeInTheDocument();
   });
 
+  it('modo gestionar: no revoca si se cancela la confirmación', async () => {
+    mockManageLoad();
+    renderManage();
+    await screen.findByDisplayValue('Cine');
+    await userEvent.click(screen.getByRole('button', { name: /revocar link/i }));
+    const dialog = await screen.findByRole('alertdialog');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancelar' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    expect(mockedApi).toHaveBeenCalledTimes(2);
+    expect(screen.getByText(`${window.location.origin}/invite/abc123`)).toBeInTheDocument();
+  });
+
   it('modo gestionar: elimina y vuelve al dashboard', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
     mockManageLoad();
     mockedApi.mockResolvedValueOnce({ success: true });
     renderManage();
     await screen.findByDisplayValue('Cine');
     await userEvent.click(screen.getByText('Eliminar sala'));
+    const dialog = await screen.findByRole('alertdialog', { name: '¿Eliminar esta sala?' });
+    expect(dialog).toHaveTextContent('Los links dejarán de funcionar.');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Eliminar' }));
     await waitFor(() => expect(mockedApi).toHaveBeenCalledWith('/rooms/r1', { method: 'DELETE' }));
     await waitFor(() => expect(screen.getByText('Volver al dashboard')).toBeInTheDocument());
+  });
+
+  it('modo gestionar: no elimina si se cancela la confirmación', async () => {
+    mockManageLoad();
+    renderManage();
+    await screen.findByDisplayValue('Cine');
+    await userEvent.click(screen.getByText('Eliminar sala'));
+    const dialog = await screen.findByRole('alertdialog');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancelar' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
+    expect(mockedApi).not.toHaveBeenCalledWith('/rooms/r1', { method: 'DELETE' });
+    expect(screen.getByDisplayValue('Cine')).toBeInTheDocument();
+  });
+
+  it('modo gestionar: el chip del código muestra el código de la invitación nueva', async () => {
+    mockManageLoad();
+    mockedApi.mockResolvedValueOnce({ code: 'nuevo99', link: '/invite/nuevo99', expiresAt: FUTURE });
+    renderManage();
+    await screen.findByDisplayValue('Cine');
+    expect(screen.getByTestId('invite-code')).toHaveTextContent('abc123');
+    await userEvent.click(screen.getByText('Generar link adicional'));
+    await waitFor(() => expect(screen.getByTestId('invite-code')).toHaveTextContent('nuevo99'));
   });
 
   it('modo gestionar: avisa si la sala fue eliminada (410)', async () => {

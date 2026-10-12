@@ -1,36 +1,51 @@
-import { lazy, Suspense } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { lazy, Suspense, type ReactNode } from 'react';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { AnimatePresence } from 'framer-motion';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import CreateRoom from './pages/CreateRoom';
 import InviteLanding from './pages/InviteLanding';
 import WatchRoom from './pages/WatchRoom';
 import ProtectedRoute from './routes/ProtectedRoute';
-// Carga diferida: la ruta oculta no debe sumar framer-motion al bundle principal.
+import { MotionProvider } from './components/motion/MotionProvider';
+import { PageTransition } from './components/motion/PageTransition';
+// Carga diferida: la ruta oculta del cuestionario no se enlaza desde la UI.
 const TestMe = lazy(() => import('./pages/TestMe'));
 // Carga diferida: la analítica solo la abre el host y no debe pesar en el bundle principal.
 const RoomAnalytics = lazy(() => import('./pages/RoomAnalytics'));
-//import Demo from './pages/Demo'; // opcional: mover vista original aquí
+
+const page = (node: ReactNode) => <PageTransition>{node}</PageTransition>;
+
+/** Rutas con transición: AnimatePresence necesita la ubicación para animar la salida. */
+function AnimatedRoutes() {
+  const location = useLocation();
+  return (
+    <AnimatePresence mode="wait" initial={false}>
+      <Routes location={location} key={location.pathname}>
+        <Route path="/login" element={page(<Login />)} />
+        <Route path="/invite/:code" element={page(<InviteLanding />)} />
+        <Route path="/dashboard" element={page(<ProtectedRoute><Dashboard /></ProtectedRoute>)} />
+        <Route path="/rooms/new" element={page(<ProtectedRoute><CreateRoom /></ProtectedRoute>)} />
+        <Route path="/rooms/:id" element={page(<ProtectedRoute><CreateRoom /></ProtectedRoute>)} />
+        <Route
+          path="/rooms/:id/analytics"
+          element={page(<ProtectedRoute><Suspense fallback={null}><RoomAnalytics /></Suspense></ProtectedRoute>)}
+        />
+        <Route path="/watch/:roomId" element={page(<WatchRoom />)} />
+        {/* Ruta oculta: cuestionario del monorepo, sin enlaces desde la UI. */}
+        <Route path="/test-me" element={<Suspense fallback={null}><TestMe /></Suspense>} />
+        <Route path="/" element={<Navigate to="/login" replace />} />
+      </Routes>
+    </AnimatePresence>
+  );
+}
 
 export default function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="/invite/:code" element={<InviteLanding />} />
-        <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-        <Route path="/rooms/new" element={<ProtectedRoute><CreateRoom /></ProtectedRoute>} />
-        <Route path="/rooms/:id" element={<ProtectedRoute><CreateRoom /></ProtectedRoute>} />
-        <Route
-          path="/rooms/:id/analytics"
-          element={<ProtectedRoute><Suspense fallback={null}><RoomAnalytics /></Suspense></ProtectedRoute>}
-        />
-        <Route path="/watch/:roomId" element={<WatchRoom />} />
-        {/* Ruta oculta: cuestionario del monorepo, sin enlaces desde la UI. */}
-        <Route path="/test-me" element={<Suspense fallback={null}><TestMe /></Suspense>} />
-        {/* <Route path="/demo" element={<Demo />} /> */}
-        <Route path="/" element={<Navigate to="/login" replace />} />
-      </Routes>
-    </BrowserRouter>
+    <MotionProvider>
+      <BrowserRouter>
+        <AnimatedRoutes />
+      </BrowserRouter>
+    </MotionProvider>
   );
 }

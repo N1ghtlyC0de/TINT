@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import WatchRoom from './WatchRoom';
@@ -37,6 +37,17 @@ function baseSocial(over: Record<string, unknown> = {}) {
     closePoll: vi.fn(() => true),
     recap: null,
     requestRecap: vi.fn(() => true),
+    chatSettings: { slow_mode_s: 0, muted_user_ids: [] },
+    chatCooldownUntil: null,
+    setSlowMode: vi.fn(() => true),
+    muteUser: vi.fn(() => true),
+    trivia: { question: null, receivedAt: null, ack: null, result: null, myOption: null },
+    triviaSchedule: [],
+    scheduleTrivia: vi.fn(() => true),
+    deleteTrivia: vi.fn(() => true),
+    listTrivia: vi.fn(() => true),
+    answerTrivia: vi.fn(() => true),
+    dismissTrivia: vi.fn(),
     ...over,
   };
 }
@@ -69,7 +80,7 @@ beforeEach(() => {
   localStorage.clear();
   MockWebSocket.reset();
   vi.stubGlobal('WebSocket', MockWebSocket);
-  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
+  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addListener: vi.fn(), removeListener: vi.fn() })));
   vi.stubEnv('VITE_SYNC_ENCODING', 'json');
   mockedApiFetch.mockReset();
   mockedApiFetch.mockImplementation(routeApi as typeof apiFetch);
@@ -95,7 +106,7 @@ describe('WatchRoom — puntero láser', () => {
     expect(surface.className).toContain('pointer-events-none');
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-pressed', 'true');
-    expect(surface.className).toContain('cursor-crosshair');
+    expect(surface.style.cursor).toContain('url(');
     vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({
       left: 0,
       top: 0,
@@ -108,7 +119,9 @@ describe('WatchRoom — puntero láser', () => {
       toJSON: () => ({}),
     });
     fireEvent.pointerDown(surface, { clientX: 25, clientY: 50 });
+    fireEvent.pointerMove(surface, { clientX: 50, clientY: 50 });
     expect(social.current.sendLaser).toHaveBeenCalledWith(0.25, 0.5, false);
+    expect(social.current.sendLaser).toHaveBeenLastCalledWith(0.5, 0.5, false);
   });
 
   it('el invitado ve el trazo pero no tiene el botón del láser', async () => {
@@ -132,7 +145,8 @@ describe('WatchRoom — encuestas', () => {
     fireEvent.change(screen.getByLabelText('Opción 2'), { target: { value: 'No' } });
     fireEvent.click(screen.getByRole('button', { name: 'Lanzar encuesta' }));
     expect(social.current.createPoll).toHaveBeenCalledWith('¿Final?', ['Sí', 'No'], 60);
-    expect(screen.queryByLabelText('Pregunta')).not.toBeInTheDocument();
+    // El creador colapsa animado (AnimatePresence) antes de desmontarse.
+    await waitFor(() => expect(screen.queryByLabelText('Pregunta')).not.toBeInTheDocument());
   });
 
   it('el invitado vota en la encuesta activa y ve los errores del canal', async () => {
@@ -196,6 +210,57 @@ describe('WatchRoom — Watch Party Recap', () => {
     renderWatch();
     await flush();
     expect(screen.getByRole('dialog', { name: 'Watch Party Recap' })).toBeInTheDocument();
+  });
+});
+
+describe('WatchRoom — halo del reproductor', () => {
+  it('respira mientras el vídeo se reproduce y se atenúa en pausa o al terminar', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    const { container } = renderWatch();
+    await flush();
+    const halo = screen.getByTestId('player-halo');
+    expect(halo).toHaveAttribute('aria-hidden', 'true');
+    expect(halo).toHaveAttribute('data-playing', 'false');
+    const video = screen.getByLabelText('Vídeo de la sala');
+    fireEvent.play(video);
+    expect(halo).toHaveAttribute('data-playing', 'true');
+    fireEvent.pause(video);
+    expect(halo).toHaveAttribute('data-playing', 'false');
+    fireEvent.play(video);
+    fireEvent.ended(video);
+    expect(halo).toHaveAttribute('data-playing', 'false');
+    // La franja degradada difuminada bajo el vídeo ya no existe.
+    expect(container.querySelector('.blur-\\[6px\\]')).toBeNull();
+  });
+});
+
+describe('WatchRoom — chat', () => {
+  const msg = (id: string, text: string) => ({
+    event_id: id,
+    type: 'chat_message',
+    room_id: 'r1',
+    user_id: 'u1',
+    nick: 'Ana',
+    text,
+    occurred_at: '2026-10-10T10:05:00Z',
+  });
+
+  it('los mensajes del primer render no animan su entrada; los nuevos sí', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    social.current = baseSocial({ messages: [msg('m1', 'Hola')] });
+    const { rerender } = renderWatch();
+    await flush();
+    expect(screen.getByText('Hola').closest('li')).toHaveAttribute('data-enter', 'false');
+    social.current = { ...social.current, messages: [msg('m1', 'Hola'), msg('m2', 'Qué tal')] };
+    rerender(
+      <MemoryRouter initialEntries={['/watch/r1']}>
+        <Routes>
+          <Route path="/watch/:roomId" element={<WatchRoom />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('Qué tal').closest('li')).toHaveAttribute('data-enter', 'true');
+    expect(screen.getByText('Hola').closest('li')).toHaveAttribute('data-enter', 'false');
   });
 });
 

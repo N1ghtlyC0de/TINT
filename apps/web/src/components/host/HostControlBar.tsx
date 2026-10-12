@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
+import { isTypingTarget } from '../../hooks/usePlayerShortcuts';
 import { QUALITY_LABELS, type PlaybackQuality } from '../../lib/quality';
 import { QUALITY_PREFS, RATE_OPTIONS, type QualityPref } from '../../lib/syncProtocol';
 import { formatRate } from '../../lib/time';
@@ -55,10 +56,27 @@ export function HostControlBar({
   /** Último volumen audible, para recuperarlo al reactivar el sonido. */
   const lastAudibleRef = useRef(volume > 0 ? volume : 1);
   const sendRef = useRef(onVolumeChange);
+  const toggleLaserRef = useRef(onToggleLaser);
+  const laserAvailable = !!onToggleLaser;
 
   useEffect(() => {
     sendRef.current = onVolumeChange;
+    toggleLaserRef.current = onToggleLaser;
   });
+
+  // Atajo L del láser. En captura sobre window para correr antes que usePlayerShortcuts
+  // (L = avanzar 10 s): con preventDefault ese atajo ignora la tecla.
+  useEffect(() => {
+    if (!laserAvailable) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== 'l' && e.key !== 'L') return;
+      if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || isTypingTarget(e.target)) return;
+      e.preventDefault();
+      toggleLaserRef.current?.();
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [laserAvailable]);
 
   useEffect(() => {
     if (volume > 0) lastAudibleRef.current = volume;
@@ -167,6 +185,8 @@ export function HostControlBar({
           className="px-3 py-1.5 text-[13px]"
           aria-label="Puntero láser"
           aria-pressed={laserOn}
+          aria-keyshortcuts="L"
+          title="Puntero láser (L)"
           onClick={onToggleLaser}
         >
           <span aria-hidden="true">🔴</span> Láser
