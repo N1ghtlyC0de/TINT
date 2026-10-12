@@ -38,8 +38,8 @@ describe('videos.repo', () => {
   });
 
   it('findById devuelve la fila o null', async () => {
-    whereMock.mockResolvedValueOnce([video]);
-    await expect(findById(video.id)).resolves.toEqual(video);
+    whereMock.mockResolvedValueOnce([{ ...video, renditions: [360, 720] }]);
+    await expect(findById(video.id)).resolves.toEqual({ ...video, renditions: [720, 360] });
     whereMock.mockResolvedValueOnce([]);
     await expect(findById('x')).resolves.toBeNull();
   });
@@ -50,5 +50,17 @@ describe('videos.repo', () => {
     expect(setMock).toHaveBeenCalledWith(expect.objectContaining({ status: 'processing', updatedAt: expect.any(Date) }));
     returningMock.mockResolvedValueOnce([]);
     await expect(transitionStatus(video.id, 'pending', 'processing')).resolves.toBeNull();
+  });
+
+  it('findById normaliza renditions: solo alturas conocidas (720, 360), enteras y sin duplicados', async () => {
+    whereMock.mockResolvedValueOnce([{ ...video, renditions: [720, '360', 360.5, 1080, null, 360, 720, { h: 720 }] }]);
+    await expect(findById(video.id)).resolves.toMatchObject({ renditions: [720, 360] });
+  });
+
+  it('findById devuelve renditions vacío si la columna no es un array', async () => {
+    whereMock.mockResolvedValueOnce([{ ...video, renditions: null }]);
+    await expect(findById(video.id)).resolves.toMatchObject({ renditions: [] });
+    whereMock.mockResolvedValueOnce([{ ...video, renditions: { 720: true } }]);
+    await expect(findById(video.id)).resolves.toMatchObject({ renditions: [] });
   });
 });

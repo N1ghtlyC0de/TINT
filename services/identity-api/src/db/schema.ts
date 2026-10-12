@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, uuid, varchar, bigint, integer, uniqueIndex } from 'drizzle-orm/pg-core';
+import { pgTable, text, timestamp, boolean, uuid, varchar, bigint, integer, jsonb, uniqueIndex } from 'drizzle-orm/pg-core';
 
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -49,7 +49,8 @@ export const invitations = pgTable('invitations', {
 
 // Vídeos subidos al Blob Storage (MinIO). identity-api crea la fila y publica
 // `media:uploads`; media-worker solo la actualiza (processing → ready | failed,
-// duration_ms). Las columnas id, storage_key, duration_ms y status son su contrato.
+// duration_ms, renditions). Las columnas id, storage_key, duration_ms, status y
+// renditions son su contrato.
 export const videos = pgTable('videos', {
   id: uuid('id').primaryKey(),
   roomId: uuid('room_id').notNull().references(() => rooms.id, { onDelete: 'cascade' }),
@@ -59,6 +60,8 @@ export const videos = pgTable('videos', {
   sizeBytes: bigint('size_bytes', { mode: 'number' }).notNull(),
   durationMs: integer('duration_ms'),
   status: varchar('status', { length: 20 }).notNull().default('pending'),
+  // Alturas de las calidades publicadas por media-worker (`{id}/{h}p.mp4`), p. ej. [720, 360].
+  renditions: jsonb('renditions').$type<number[]>().notNull().default([]),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
 });
