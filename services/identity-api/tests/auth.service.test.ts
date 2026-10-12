@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import jwt from 'jsonwebtoken';
-import { issueGuestToken, generateSyncTicket } from '../src/modules/auth/auth.service.js';
+import { issueGuestToken, generateSyncTicket, generateHostTicket } from '../src/modules/auth/auth.service.js';
 import { env } from '../src/config/env.js';
 
 describe('issueGuestToken', () => {
@@ -69,5 +69,23 @@ describe('generateSyncTicket', () => {
     const a = jwt.decode(generateSyncTicket({ userId: 'u', roomId: 'r', nick: 'n' }).token) as any;
     const b = jwt.decode(generateSyncTicket({ userId: 'u', roomId: 'r', nick: 'n' }).token) as any;
     expect(a.jti).not.toBe(b.jti);
+  });
+});
+
+describe('generateHostTicket', () => {
+  it('emite los mismos claims que el sync-ticket (sync y analítica comparten forma y TTL)', () => {
+    const { token, expiresAt } = generateHostTicket({ userId: 'user-1', roomId: 'room-9', nick: 'Ana' });
+    const decoded = jwt.verify(token, env.JWT_SECRET, {
+      algorithms: ['HS256'],
+      issuer: env.JWT_ISSUER,
+      audience: env.JWT_AUDIENCE,
+    }) as any;
+    expect(decoded).toMatchObject({ sub: 'user-1', room_id: 'room-9', role: 'host', nick: 'Ana' });
+    expect(decoded.exp - decoded.iat).toBe(env.SYNC_TICKET_TTL_SECONDS);
+    expect(expiresAt.getTime()).toBe(decoded.exp * 1000);
+  });
+
+  it('generateSyncTicket es un alias de generateHostTicket', () => {
+    expect(generateSyncTicket).toBe(generateHostTicket);
   });
 });

@@ -69,6 +69,7 @@ const redis = {
   set: vi.fn(async () => 'OK'),
   publish: vi.fn(async () => 1),
   exists: vi.fn(async () => 0),
+  xadd: vi.fn(async () => '1-0'),
 };
 
 describe('rutas v1', () => {
