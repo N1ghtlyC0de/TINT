@@ -19,9 +19,10 @@ import { Button } from '../components/ui/Button';
 import { Card, Field } from '../components/ui/Primitives';
 import { apiFetch } from '../lib/api';
 import { toAbsoluteInviteLink, pickLatestActiveInvitation, parseInviteCode } from '../lib/invite';
-import { formatChatTime, noticeText, type RecapMessage } from '../lib/socialSocket';
+import { formatChatTime, noticeText } from '../lib/socialSocket';
 import { getLocalIdentity, guestTokenGrantsRoom } from '../lib/identity';
 import { useRoomPlayback, type MediaStatus } from '../hooks/useRoomPlayback';
+import { useRecapGate } from '../hooks/useRecapGate';
 
 import { useSocialSocket } from '../hooks/useSocialSocket';
 import { useSyncSocket } from '../hooks/useSyncSocket';
@@ -141,17 +142,38 @@ export default function WatchRoom() {
   const [laserOn, setLaserOn] = useState(false);
   const laserDrawing = laserOn && !isGuest && canControl;
   const [pollCreatorOpen, setPollCreatorOpen] = useState(false);
-  // Recap: se abre al terminar el vídeo (y se pide) o cuando llega uno nuevo de social-core.
-  const [awaitingRecap, setAwaitingRecap] = useState(false);
-  const [dismissedRecap, setDismissedRecap] = useState<RecapMessage | null>(null);
-  const showRecap = awaitingRecap || (recap !== null && recap !== dismissedRecap);
+  // Recap: una sola vez por vídeo (los `ended` repetidos por el drift no lo reabren).
+  const recapGate = useRecapGate({
+    mediaKey: sync.state?.media_id ?? playback.mediaId,
+    recap,
+    requestRecap,
+  });
+  /** El vídeo terminó en esta visita: una expulsión posterior es el cierre de la sala. */
+  const [videoFinished, setVideoFinished] = useState(false);
+  const [libraryRequest, setLibraryRequest] = useState(0);
   const onVideoEnded = () => {
-    requestRecap();
-    setAwaitingRecap(true);
+    setVideoFinished(true);
+    // Sync-core sigue en `playing`: sin PAUSE, la corrección de drift lo reanudaría.
+    if (canControl && sync.state?.status === 'playing') {
+      const duration = videoRef.current?.duration;
+      const endMs = Number.isFinite(duration) ? Math.round((duration as number) * 1000) : sync.state.position_ms;
+      sendCommand('PAUSE', endMs);
+    }
+    recapGate.onEnded();
   };
-  const dismissRecap = () => {
-    setAwaitingRecap(false);
-    setDismissedRecap(recap);
+  const replay = () => {
+    recapGate.rearm();
+    setVideoFinished(false);
+    sendCommand('SEEK', 0);
+    sendCommand('PLAY', 0);
+  };
+  const chooseAnother = () => {
+    recapGate.dismiss();
+    setLibraryRequest((n) => n + 1);
+  };
+  const endRoom = async () => {
+    await apiFetch(`/rooms/${encodeURIComponent(roomId ?? '')}`, { method: 'DELETE' }, 'host');
+    navigate('/dashboard');
   };
   const [chat, setChat] = useState('');
   const [invite, setInvite] = useState('');
@@ -230,6 +252,14 @@ export default function WatchRoom() {
 
   // Antes que la puerta: al revocar se borra el guest token y hasAccess cae a false.
   if (sync.revoked) {
+    if (videoFinished) {
+      return (
+        <RoomNotice
+          title="El host terminó la sala"
+          body="Gracias por ver juntos. Si quieres otra función, pide al host un nuevo enlace."
+        />
+      );
+    }
     return (
       <RoomNotice
         title="Fuiste retirado de la sala por el host"
@@ -417,7 +447,7 @@ export default function WatchRoom() {
                 <p className="mb-4 mt-1 text-[13px] leading-relaxed">
                   Sube un vídeo desde tu equipo; todos lo cargarán en pausa al inicio.
                 </p>
-                <ChangeVideoPanel roomId={roomId ?? ''} onMediaAssigned={loadMedia} />
+                <ChangeVideoPanel roomId={roomId ?? ''} onMediaAssigned={loadMedia} openRequest={libraryRequest} />
               </Card>
               <Card className="p-5">
                 <ParticipantsPanel roomId={roomId ?? ''} />
@@ -545,7 +575,16 @@ export default function WatchRoom() {
       </main>
 
       <ToastStack toasts={toasts} className="fixed right-4 top-20 z-40" />
-      {showRecap && <RecapScreen recap={recap} onDismiss={dismissRecap} />}
+      {recapGate.open && (
+        <RecapScreen
+          recap={recapGate.recap}
+          onDismiss={recapGate.dismiss}
+          isHost={!isGuest}
+          onReplay={replay}
+          onChooseAnother={chooseAnother}
+          onEndRoom={endRoom}
+        />
+      )}
     </div>
   );
 }

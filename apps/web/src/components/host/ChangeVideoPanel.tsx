@@ -8,6 +8,8 @@ export interface ChangeVideoPanelProps {
   roomId: string;
   /** Envía LOAD{media_id} por el canal; false si no se pudo (sin conexión o sin control). */
   onMediaAssigned: (mediaId: string) => boolean;
+  /** Cada incremento abre el panel (p. ej. "Elegir otra película" del recap). */
+  openRequest?: number;
 }
 
 interface AssignMediaResponse {
@@ -47,7 +49,7 @@ const inputClass =
  * y encola el procesamiento) → LOAD{media_id} por el Canal Sync.
  * Opción secundaria — un objeto ya presente en el bucket: `PUT /rooms/:id/media` → LOAD.
  */
-export function ChangeVideoPanel({ roomId, onMediaAssigned }: ChangeVideoPanelProps) {
+export function ChangeVideoPanel({ roomId, onMediaAssigned, openRequest = 0 }: ChangeVideoPanelProps) {
   const [open, setOpen] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [fileInputKey, setFileInputKey] = useState(0);
@@ -69,6 +71,13 @@ export function ChangeVideoPanel({ roomId, onMediaAssigned }: ChangeVideoPanelPr
   useEffect(() => {
     if (open) fileRef.current?.focus();
   }, [open]);
+
+  useEffect(() => {
+    if (openRequest > 0) {
+      setOpen(true);
+      toggleRef.current?.scrollIntoView?.({ block: 'center' });
+    }
+  }, [openRequest]);
 
   // Si el panel desaparece (cambio de página), no se deja un PUT huérfano.
   useEffect(() => () => abortRef.current?.abort(), []);

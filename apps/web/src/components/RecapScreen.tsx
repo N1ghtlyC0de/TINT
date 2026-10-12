@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { formatMmSs, type RecapMessage } from '../lib/socialSocket';
 import { Button } from './ui/Button';
 
@@ -6,6 +6,14 @@ export interface RecapScreenProps {
   /** null mientras social-core prepara el recap. */
   recap: RecapMessage | null;
   onDismiss: () => void;
+  /** El host elige qué sigue; el invitado espera su decisión. */
+  isHost?: boolean;
+  /** "Volver a verla": SEEK 0 + PLAY. */
+  onReplay?: () => void;
+  /** "Elegir otra película": abre la biblioteca. */
+  onChooseAnother?: () => void;
+  /** "Terminar la sala" (tras confirmar). Rechaza si no se pudo. */
+  onEndRoom?: () => Promise<void>;
 }
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
@@ -40,7 +48,29 @@ const Empty = ({ text }: { text: string }) => <p className="text-[14px] text-tin
  * con más pausas/retrocesos y el momento con más reacciones, más los totales. Los datos
  * los calcula social-core; cada bloque puede venir null.
  */
-export function RecapScreen({ recap, onDismiss }: RecapScreenProps) {
+export function RecapScreen({ recap, onDismiss, isHost = false, onReplay, onChooseAnother, onEndRoom }: RecapScreenProps) {
+  const [confirmEnd, setConfirmEnd] = useState(false);
+  const [ending, setEnding] = useState(false);
+  const [endError, setEndError] = useState('');
+  const confirmRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    if (confirmEnd) confirmRef.current?.focus();
+  }, [confirmEnd]);
+
+  const endRoom = async () => {
+    if (!onEndRoom) return;
+    setEnding(true);
+    setEndError('');
+    try {
+      await onEndRoom();
+    } catch {
+      setEndError('No se pudo terminar la sala. Inténtalo de nuevo.');
+      setEnding(false);
+      setConfirmEnd(false);
+    }
+  };
+
   const titleId = useId();
   const closeRef = useRef<HTMLButtonElement>(null);
   const dismissRef = useRef(onDismiss);
@@ -137,6 +167,55 @@ export function RecapScreen({ recap, onDismiss }: RecapScreenProps) {
               ))}
             </ul>
           </>
+        )}
+
+        {isHost ? (
+          <div className="mt-6 border-t border-white/10 pt-5">
+            <p className="text-sm font-semibold text-white">¿Qué sigue?</p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button onClick={onChooseAnother}>Elegir otra película</Button>
+              <Button variant="ghost" onClick={onReplay}>
+                Volver a verla
+              </Button>
+              {!confirmEnd && (
+                <Button variant="quiet" onClick={() => setConfirmEnd(true)}>
+                  Terminar la sala
+                </Button>
+              )}
+            </div>
+            {confirmEnd && (
+              <div
+                role="group"
+                aria-label="Confirmar terminar la sala"
+                className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-red-400/30 bg-red-500/10 p-3"
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    e.stopPropagation();
+                    setConfirmEnd(false);
+                  }
+                }}
+              >
+                <p className="text-[13px] text-white">
+                  ¿Terminar la sala? Todos los invitados saldrán y el enlace dejará de funcionar.
+                </p>
+                <Button ref={confirmRef} className="px-4 py-2" disabled={ending} onClick={endRoom}>
+                  {ending ? 'Terminando…' : 'Sí, terminar'}
+                </Button>
+                <Button variant="quiet" className="px-4 py-2" onClick={() => setConfirmEnd(false)}>
+                  Cancelar
+                </Button>
+              </div>
+            )}
+            {endError && (
+              <p role="alert" className="mt-3 text-[13px] text-red-300">
+                {endError}
+              </p>
+            )}
+          </div>
+        ) : (
+          <p className="mt-6 border-t border-white/10 pt-5 text-[14px] text-tint-muted">
+            Esperando a que el host decida qué sigue…
+          </p>
         )}
       </div>
     </div>
