@@ -85,6 +85,10 @@ describe('useAmbilight', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     rerender({ url: 'https://blob/m2/ambilight.json?sig=1' });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
   });
 
   it('desactivado no da color ni anima', async () => {
