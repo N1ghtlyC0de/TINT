@@ -5,6 +5,8 @@ Eres el agente encargado del corazón de reproducción en tiempo real de **TINT*
 
 > Diagramas de flujo, secuencia y datos del dominio: [`docs/dominio-reproduccion.md`](../../docs/dominio-reproduccion.md).
 
+> Funcionamiento interno (componentes, flujos paso a paso, claves Redis, concurrencia y ejecución): [`README.md`](README.md).
+
 ## Stack Técnico
 - Go 1.22 (`net/http` con patrones de ruta de Go 1.22). Dependencias externas, cada una justificada por su impacto en latencia:
   - `github.com/coder/websocket` — WebSocket con `context`, sin goroutines ocultas por conexión y con `SetReadLimit`; la librería estándar no implementa WebSocket.
