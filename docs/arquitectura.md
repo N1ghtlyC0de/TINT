@@ -93,7 +93,7 @@ Son los únicos puntos en los que un PR puede necesitar coordinar dos dominios (
 | Revocación (`token:revoked:{jti}` + `REVOKED`) | identity-api → sync-core, social-core | [dominio-reproduccion §6.6](dominio-reproduccion.md#66-retirar-a-un-invitado-f5) · social-core lee `REVOKED` de `room:{id}:sync` y cierra con 4001 |
 | `mediaId` / `media_id` | identity-api → web → sync-core | [dominio-reproduccion §6.7](dominio-reproduccion.md#67-cambio-de-vídeo-f3--load) |
 | API REST `/api/v1` | identity-api → web | [identity-api/AGENTS.md](../services/identity-api/AGENTS.md#api) |
-| `media:uploads` + tabla `videos` | identity-api → media-worker | Evento `{video_id}`; columnas `id`, `storage_key`, `duration_ms`, `status`; original en `incoming/{id}/original.*`, el worker publica `{id}/source.*` y reescribe `storage_key` ([dominio-reproduccion §6.7](dominio-reproduccion.md#67-subida-y-cambio-de-vídeo)) |
+| `media:uploads` + tabla `videos` | identity-api → media-worker | Evento `{video_id}`; columnas `id`, `storage_key`, `duration_ms`, `status`, `renditions`; original en `incoming/{id}/original.*`, el worker publica `{id}/source.*` y reescribe `storage_key`, y además publica las calidades `{id}/720p.mp4` y `{id}/360p.mp4` y escribe sus alturas en `renditions` (jsonb, p. ej. `[720, 360]`), que identity-api expone como `qualities` en el playback ([dominio-reproduccion §6.7](dominio-reproduccion.md#67-subida-y-cambio-de-vídeo)) |
 | `analytics:events` | sync-core, social-core → analytics | Campos obligatorios `event_id`, `type`, `room_id`, `occurred_at`; sin PII |
 
 ## 6. Puertos locales
