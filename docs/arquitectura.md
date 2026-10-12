@@ -65,7 +65,7 @@ flowchart TB
     SOCIAL -- "certificados x509" --> FB
     ID --> PG
     ID -- "revocación · XADD media:uploads · XADD analytics:events" --> RD
-    ID -. "firma URLs · HEAD · DELETE" .-> MI
+    ID -. "firma URLs PUT y GET · HEAD al confirmar · DELETE si supera el tamaño" .-> MI
     SYNC -- "sync_state, Pub/Sub, presencia, XADD analytics:events" --> RD
     SOCIAL -- "chat, moderación, encuestas, recap, trivias, Pub/Sub, XADD analytics:events" --> RD
     RD -- "XREADGROUP media:uploads" --> MEDIA
@@ -87,9 +87,13 @@ flowchart TB
 | `services/media-worker` | Consume `media:uploads`: valida con `ffprobe`, normaliza a MP4 H.264 + AAC, extrae el Ambilight, publica el vídeo, las calidades 720p/360p y `ambilight.json`; estado de `videos`; publica `media_processed` | ✅ Implementado (servicio de docker compose, verificado de punta a punta) | [README](../services/media-worker/README.md) · [AGENTS](../services/media-worker/AGENTS.md) |
 | `services/analytics` | Ingesta de `analytics:events`, sanitización, KPIs por sala, retención de 90 días y API de solo lectura de KPIs, heatmap de reacciones y línea de tiempo para el host | ✅ Implementado (consumidor, migraciones y API; servicio de docker compose) | [README](../services/analytics/README.md) · [AGENTS](../services/analytics/AGENTS.md) · [contrato de eventos](contrato-eventos-analitica.md) |
 
+<a id="vista-de-componentes-y-conectores"></a>
+
 ## 4. Vista de componentes y conectores (C&C)
 
-Muestra los componentes **en tiempo de ejecución** y los conectores por los que interactúan. Cada conector está rotulado con su tipo y protocolo.
+Muestra los componentes **en tiempo de ejecución** y los conectores por los que interactúan. Cada conector está rotulado con su tipo y protocolo. Ancla estable para enlazar esta vista: `arquitectura.md#vista-de-componentes-y-conectores`.
+
+> social-core **no** tiene heatmap en vivo ni retransmisión de Ambilight (solo `reactions.Buckets` en memoria y los buckets de 5 s del recap en Redis), y no expone `/metrics`: solo sync-core lo hace.
 
 ```mermaid
 flowchart LR
@@ -288,6 +292,8 @@ Son los únicos puntos en los que un PR puede necesitar coordinar dos dominios (
 | Redis Stream | identity-api, social-core, sync-core, media-worker → analytics | `analytics:events` (grupo `analytics-workers`) |
 | MinIO | web (PUT/GET firmados) · media-worker | Bucket `tint-media`: `incoming/{videoId}/original.*` (staging del navegador, caduca a los 2 días), `{videoId}/source.mp4`, `{videoId}/720p.mp4`, `{videoId}/360p.mp4` y `{videoId}/ambilight.json` (publicados por el worker) |
 
+<a id="vista-de-despliegue"></a>
+
 ## 7. Vista de despliegue
 
 ### 7.1 Entorno local (el único que existe hoy)
@@ -351,6 +357,7 @@ flowchart TB
 - **identity-api no está en `docker-compose.yml` ni tiene Dockerfile.** Corre como proceso de Node 22 en la máquina del desarrollador (`npm run dev`, `tsx watch src/server.ts`) y llega a la infraestructura por los puertos publicados en `localhost`. Existe `npm run build` (`tsup` → `dist/`) y `npm start`, pero no hay imagen. Sus migraciones se aplican a mano con `npx drizzle-kit migrate`.
 - **La web tampoco está en compose:** `npm run dev` (Vite 5173) o `npm run build` (`tsc -b && vite build` → `dist/`, servible con `npm run preview`). No hay servidor estático configurado en el repositorio.
 - **Orden de arranque** (`depends_on`): `minio-init` espera a que MinIO esté sano; `media-worker` espera a PostgreSQL y Redis sanos y a que `minio-init` termine bien; `analytics`, `social-core` y `sync-core` esperan a Redis (analytics también a PostgreSQL). analytics aplica sus migraciones al arrancar.
+- **Salud y métricas:** los cuatro servicios de compose exponen `/healthz` (media-worker no tiene HTTP); solo sync-core expone `/metrics` (Prometheus). social-core no tiene `/metrics`.
 - **Réplicas:** compose levanta **una** réplica de cada servicio. El diseño soporta N réplicas de sync-core y social-core (Pub/Sub, CAS y `HSETNX` entre réplicas), pero no hay balanceador ni configuración multirréplica en el repositorio.
 
 | Nodo | Artefacto | Puertos (host → contenedor) | Volúmenes | Variables principales |
