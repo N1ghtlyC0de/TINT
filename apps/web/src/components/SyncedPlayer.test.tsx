@@ -356,6 +356,87 @@ describe('SyncedPlayer — correcciones', () => {
     expect(video().playbackRate).toBe(1);
   });
 
+  it('a 2× la corrección de velocidad es relativa (2.1) y restaura a la velocidad de la sala', () => {
+    vi.useFakeTimers();
+    let perf = 0;
+    renderPlayer({
+      sync: makeSync({
+        state: { ...playingState, rate: 2 },
+        correction: { seq: 1, target_ms: 10_000, strategy: 'rate', drift_ms: -300, version: 2 },
+      }),
+      now: () => perf,
+    });
+    expect(video().playbackRate).toBeCloseTo(2.1);
+    perf = 5_000;
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(video().playbackRate).toBe(2);
+  });
+
+  it('usa la velocidad de sala que trae la corrección si la hay', () => {
+    renderPlayer({
+      sync: makeSync({
+        state: playingState,
+        correction: { seq: 1, target_ms: 10_000, strategy: 'rate', drift_ms: 300, version: 2, rate: 1.5 },
+      }),
+    });
+    expect(video().playbackRate).toBeCloseTo(1.425);
+  });
+
+  it('no aplica un seek de corrección mientras el vídeo hace buffering', () => {
+    const { rerender, videoRef } = renderPlayer();
+    Object.defineProperty(video(), 'readyState', { configurable: true, value: 2 });
+    Object.defineProperty(video(), 'paused', { configurable: true, value: false });
+    video().currentTime = 5;
+    rerender(
+      <SyncedPlayer
+        src={SRC}
+        canControl
+        videoRef={videoRef}
+        now={() => 0}
+        sync={makeSync({ correction: { seq: 1, target_ms: 42_000, strategy: 'seek', drift_ms: -900, version: 1 } })}
+      />,
+    );
+    expect(video().currentTime).toBe(5);
+    expect(screen.getByTestId('sync-fade')).toHaveAttribute('data-active', 'false');
+  });
+
+  it('no aplica un seek de corrección con el autoplay bloqueado', async () => {
+    playSpy.mockRejectedValueOnce(new DOMException('blocked', 'NotAllowedError'));
+    const { rerender, videoRef } = renderPlayer({ sync: makeSync({ state: playingState }) });
+    await screen.findByRole('button', { name: 'Unirse a la reproducción' });
+    video().currentTime = 10;
+    rerender(
+      <SyncedPlayer
+        src={SRC}
+        canControl
+        videoRef={videoRef}
+        now={() => 0}
+        sync={makeSync({
+          state: playingState,
+          correction: { seq: 1, target_ms: 42_000, strategy: 'seek', drift_ms: -900, version: 2 },
+        })}
+      />,
+    );
+    expect(video().currentTime).toBe(10);
+  });
+
+  it('no re-posiciona cerca del final un vídeo que ya terminó', () => {
+    const { rerender, videoRef } = renderPlayer();
+    Object.defineProperty(video(), 'duration', { configurable: true, value: 60 });
+    Object.defineProperty(video(), 'ended', { configurable: true, value: true });
+    video().currentTime = 60;
+    rerender(
+      <SyncedPlayer
+        src={SRC}
+        canControl
+        videoRef={videoRef}
+        now={() => 0}
+        sync={makeSync({ correction: { seq: 1, target_ms: 61_000, strategy: 'seek', drift_ms: -900, version: 1 } })}
+      />,
+    );
+    expect(video().currentTime).toBe(60);
+  });
+
   it('un nuevo estado cancela la corrección de velocidad', () => {
     vi.useFakeTimers();
     const correction = { seq: 1, target_ms: 0, strategy: 'rate' as const, drift_ms: 300, version: 1 };

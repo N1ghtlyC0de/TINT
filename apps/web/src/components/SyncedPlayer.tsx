@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, useRef, useState, type ReactNode, type R
 import type { SyncSocketApi } from '../hooks/useSyncSocket';
 import { PLAYER_SHORTCUTS, SHORTCUT_SEEK_MS, usePlayerShortcuts } from '../hooks/usePlayerShortcuts';
 import { useTransientFlag } from '../hooks/useTransientFlag';
-import { applyCorrection, shouldRestoreRate } from '../lib/drift';
+import { applyCorrection, shouldRestoreRate, shouldSkipSeekCorrection } from '../lib/drift';
 import { readNetworkHints, resolveQuality, type PlaybackQuality } from '../lib/quality';
 import { estimateServerNow, expectedPosition, stepRate, type QualityPref, type SyncSnapshot } from '../lib/syncProtocol';
 import { createStallTracker } from '../lib/stallTracker';
@@ -125,10 +125,13 @@ export function SyncedPlayer({
 
   const sendBufferingRef = useRef(sendBuffering);
 
+  const needsGestureRef = useRef(needsGesture);
+
   useEffect(() => {
     nowRef.current = now;
     stateRef.current = state;
     sendBufferingRef.current = sendBuffering;
+    needsGestureRef.current = needsGesture;
   });
 
   // Stalls (waiting → playing) para la analítica; se ignoran los causados por seeks.
@@ -209,13 +212,18 @@ export function SyncedPlayer({
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !correction) return;
+    if (correction.strategy === 'seek' && shouldSkipSeekCorrection(video, correction.target_ms, needsGestureRef.current)) {
+      return;
+    }
     cancelRateCorrection();
-    const action = applyCorrection(video, correction);
+    // La corrección por velocidad es relativa a la velocidad de la sala.
+    const roomRate = correction.rate ?? stateRef.current?.rate ?? 1;
+    const action = applyCorrection(video, correction, roomRate);
     if (action.kind === 'seek') {
       fade();
       return;
     }
-    if (action.playbackRate === 1) return;
+    if (action.playbackRate === roomRate) return;
 
     const startedAt = nowRef.current();
     const check = () => {
@@ -223,7 +231,7 @@ export function SyncedPlayer({
       const t = nowRef.current();
       const expected = snap ? expectedPosition(snap, estimateServerNow(snap, t)) : null;
       if (shouldRestoreRate(video.currentTime * 1000, expected, t - startedAt)) {
-        video.playbackRate = snap?.rate ?? 1;
+        video.playbackRate = snap?.rate ?? roomRate;
         cancelRateCorrection();
       }
     };
