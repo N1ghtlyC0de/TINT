@@ -31,7 +31,7 @@ flowchart TB
         SYNC["sync-core<br/>Go :8083 · N réplicas"]
         SOCIAL["social-core<br/>Go :8082"]
         MEDIA["media-worker<br/>Python + FFmpeg"]
-        AN["analytics<br/>Python"]
+        AN["analytics<br/>Python :8084"]
     end
 
     subgraph datos["Infraestructura (docker compose)"]
@@ -43,17 +43,21 @@ flowchart TB
     WEB -- "HTTP /api/v1" --> ID
     WEB -- "WebSocket /ws/sync" --> SYNC
     WEB -- "WebSocket /ws/social" --> SOCIAL
+    WEB -- "HTTP KPIs (solo lectura)" --> AN
     WEB -- "PUT y GET de vídeo (URLs firmadas)" --> MI
     ID --> PG
     ID -- "revocación · XADD media:uploads" --> RD
     ID -. "firma URLs · HEAD" .-> MI
     SYNC -- "estado, Pub/Sub, presencia" --> RD
     SYNC -- "XADD analytics:events" --> RD
+    ID -- "XADD analytics:events" --> RD
+    SOCIAL -- "XADD analytics:events" --> RD
+    MEDIA -- "XADD analytics:events" --> RD
     SOCIAL -- "historial de chat, Pub/Sub" --> RD
     RD -- "XREADGROUP media:uploads" --> MEDIA
     MEDIA -- "source / ambilight.json" --> MI
     MEDIA -- "UPDATE videos" --> PG
-    AN -- "XREADGROUP" --> RD
+    AN -- "XREADGROUP analytics:events · revocación" --> RD
     AN -- "telemetry_events, room_kpis" --> PG
 ```
 
@@ -66,19 +70,19 @@ flowchart TB
 | `services/sync-core` | Reloj Maestro, Canal Sync, drift, presencia, delegación | ✅ Implementado (v2) | [AGENTS](../services/sync-core/AGENTS.md) |
 | `services/social-core` | Chat en vivo (`/ws/social`), reacciones, puntero láser, encuestas, recap, heatmaps, trivias | 🟢 Chat, reacciones, láser, encuestas y recap implementados; heatmaps y trivias en curso | [AGENTS](../services/social-core/AGENTS.md) |
 | `services/media-worker` | Consume `media:uploads`: valida con `ffprobe`, extrae el Ambilight y publica el vídeo y `ambilight.json`; estado de `videos` | ✅ Implementado (servicio de docker compose, verificado de punta a punta) | [AGENTS](../services/media-worker/AGENTS.md) |
-| `services/analytics` | Ingesta de `analytics:events`, sanitización, KPIs | 🟡 Núcleo (sanitize y KPIs) | [AGENTS](../services/analytics/AGENTS.md) |
+| `services/analytics` | Ingesta de `analytics:events`, sanitización, KPIs por sala, retención de 90 días y API de solo lectura de KPIs para el host | ✅ Implementado (consumidor, migraciones y API; servicio de docker compose) | [AGENTS](../services/analytics/AGENTS.md) · [contrato de eventos](contrato-eventos-analitica.md) |
 
 ## 4. Almacenes de datos
 
 | Almacén | Dueño | Contenido principal |
 | :--- | :--- | :--- |
 | PostgreSQL | identity-api | `users`, `rooms`, `invitations`, `guest_sessions`, `videos` ([esquema](usuarios-e-identidad.md#3-esquema-de-datos-postgresql)); media-worker lee y actualiza `videos` (no crea filas) |
-| PostgreSQL | analytics | `telemetry_events`, `room_kpis` (según su guía) |
+| PostgreSQL | analytics | `schema_migrations`, `telemetry_events` (90 días), `room_kpis` ([modelo](../services/analytics/AGENTS.md#modelo-de-datos-involucrado)) |
 | Redis | sync-core | `room:{id}:*` (estado, Pub/Sub, presencia, delegación) ([modelo](dominio-reproduccion.md#7-modelo-de-datos-en-redis)) |
-| Redis | identity-api → sync-core, social-core | `token:revoked:{jti}` |
+| Redis | identity-api → sync-core, social-core, analytics | `token:revoked:{jti}` |
 | Redis | social-core | `room:{id}:chat:history`, `room:{id}:poll*` (encuestas), `room:{id}:recap:*` (métricas del recap), Pub/Sub `room:{id}:social` (chat, reacciones, láser y `poll_state` entre réplicas) |
 | Redis Stream | identity-api → media-worker | `media:uploads` (grupo `media-workers`) |
-| Redis Stream | sync-core, social-core → analytics | `analytics:events` |
+| Redis Stream | identity-api, social-core, sync-core, media-worker → analytics | `analytics:events` (grupo `analytics-workers`) |
 | MinIO | web (PUT/GET firmados) · media-worker | Bucket `tint-media`: `incoming/{videoId}/original.*` (staging del navegador, caduca a los 2 días), `{videoId}/source.*` y `{videoId}/ambilight.json` (publicados por el worker) |
 
 ## 5. Contratos compartidos entre dominios
@@ -96,7 +100,8 @@ Son los únicos puntos en los que un PR puede necesitar coordinar dos dominios (
 | `mediaId` / `media_id` | identity-api → web → sync-core | [dominio-reproduccion §6.7](dominio-reproduccion.md#67-cambio-de-vídeo-f3--load) |
 | API REST `/api/v1` | identity-api → web | [identity-api/AGENTS.md](../services/identity-api/AGENTS.md#api) |
 | `media:uploads` + tabla `videos` | identity-api → media-worker | Evento `{video_id}`; columnas `id`, `storage_key`, `duration_ms`, `status`, `renditions`; original en `incoming/{id}/original.*`, el worker publica `{id}/source.*` y reescribe `storage_key`, y además publica las calidades `{id}/720p.mp4` y `{id}/360p.mp4` y escribe sus alturas en `renditions` (jsonb, p. ej. `[720, 360]`), que identity-api expone como `qualities` en el playback ([dominio-reproduccion §6.7](dominio-reproduccion.md#67-subida-y-cambio-de-vídeo)) |
-| `analytics:events` | sync-core, social-core → analytics | Campos obligatorios `event_id`, `type`, `room_id`, `occurred_at`; sin PII |
+| `analytics:events` | identity-api, social-core, sync-core, media-worker → analytics | [contrato-eventos-analitica](contrato-eventos-analitica.md) · obligatorios `event_id`, `type`, `source`, `occurred_at`, `received_at`; `room_id` en todo evento de sala; sin texto libre ni PII |
+| API de lectura de analytics + `analytics-ticket` | identity-api (emite el ticket) → web → analytics | `POST /api/v1/rooms/:id/analytics-ticket` (host dueño, también con la sala cerrada) → `GET /api/v1/rooms/{id}/kpis`, `/reactions/heatmap`, `/timeline` en el puerto 8084 ([analytics/AGENTS.md](../services/analytics/AGENTS.md#api-solo-lectura-puerto-analytics_port-por-defecto-8084)) · mismos `JWT_SECRET`/`JWT_ISSUER`/`JWT_AUDIENCE`; revocación con falla cerrado |
 
 ## 6. Puertos locales
 
@@ -106,6 +111,7 @@ Son los únicos puntos en los que un PR puede necesitar coordinar dos dominios (
 | identity-api | 8081 | `npm run dev` |
 | social-core | 8082 | `docker compose` (`/ws/social`, `/healthz`) |
 | sync-core | 8083 → 8080 | `docker compose` (`/ws/sync`, `/healthz`, `/metrics`) |
+| analytics | 8084 | `docker compose` (`/healthz`, `/api/v1/rooms/{id}/kpis`, `/reactions/heatmap`, `/timeline`) |
 | PostgreSQL | 5432 | |
 | Redis | 6379 | |
 | MinIO | 9000 (API) · 9001 (consola) | |

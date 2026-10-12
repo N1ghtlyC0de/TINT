@@ -1,1 +1,7 @@
-# Dependencias de runtime (cliente Redis/PostgreSQL se agregarán con la HU de ingesta).
+# Dependencias de runtime (versiones exactas).
+# Driver PostgreSQL: la misma versión que media-worker.
+psycopg[binary]==3.2.13
+# Consumo de analytics:events (XREADGROUP) y revocación token:revoked:{jti}: igual que media-worker.
+redis==5.2.1
+# Verificación HS256 del analytics-ticket (iss, aud, exp) en la API de lectura.
+PyJWT==2.9.0

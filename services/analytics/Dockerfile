@@ -9,4 +9,7 @@ ENV PYTHONPATH=/app/src PYTHONUNBUFFERED=1
 RUN useradd --create-home worker
 USER worker
 
+# API de solo lectura de KPIs (ANALYTICS_PORT).
+EXPOSE 8084
+
 CMD ["python", "-m", "analytics"]

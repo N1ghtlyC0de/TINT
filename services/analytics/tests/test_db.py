@@ -1,0 +1,238 @@
+from datetime import UTC, datetime, timedelta
+
+import psycopg
+import pytest
+from fakes import FakeConn, FakeCursor
+
+from analytics.db import (
+    KPI_COLUMNS,
+    EventStore,
+    Migration,
+    ReadRepository,
+    apply_migrations,
+    load_migrations,
+)
+from analytics.kpis import KPI_TYPES
+from analytics.sanitize import InvalidEvent
+
+NOW = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
+
+
+def event(**extra):
+    return {
+        "event_id": "e1",
+        "type": "reaction",
+        "source": "social-core",
+        "room_id": "r1",
+        "user_id": "guest:1",
+        "emoji": "👏",
+        "occurred_at": "2026-10-11T10:00:00.000Z",
+        "received_at": "2026-10-11T10:00:00.050Z",
+        **extra,
+    }
+
+
+# --- migraciones -------------------------------------------------------------------------
+
+
+def test_load_migrations_reads_versioned_sql_files_in_order(tmp_path):
+    (tmp_path / "002_more.sql").write_text("SELECT 2;")
+    (tmp_path / "001_init.sql").write_text("SELECT 1;")
+    (tmp_path / "notes.txt").write_text("ignorar")
+    assert load_migrations(tmp_path) == [
+        Migration("001_init", "SELECT 1;"),
+        Migration("002_more", "SELECT 2;"),
+    ]
+
+
+def test_packaged_init_migration_creates_both_tables_and_indexes():
+    (first, *_rest) = load_migrations()
+    assert first.version == "001_init"
+    sql = first.sql
+    assert "CREATE TABLE IF NOT EXISTS telemetry_events" in sql
+    assert "event_id TEXT PRIMARY KEY" in sql
+    assert "payload JSONB NOT NULL" in sql
+    assert "(room_id, type)" in sql
+    assert "(occurred_at)" in sql
+    assert "CREATE TABLE IF NOT EXISTS room_kpis" in sql
+    for column in KPI_COLUMNS:
+        assert column in sql
+
+
+def test_apply_migrations_runs_only_pending_versions_under_a_lock():
+    def responder(sql, params):
+        if sql.startswith("SELECT version FROM schema_migrations"):
+            return [("001_init",)]
+        return []
+
+    conn = FakeConn(responder)
+    migrations = [Migration("001_init", "SELECT 1;"), Migration("002_more", "SELECT 2;")]
+    assert apply_migrations(conn, migrations) == ["002_more"]
+    sqls = [sql for sql, _ in conn.executed]
+    assert sqls[0].startswith("SELECT pg_advisory_xact_lock")
+    assert sqls[1].startswith("CREATE TABLE IF NOT EXISTS schema_migrations")
+    assert "SELECT 1;" not in sqls
+    assert "SELECT 2;" in sqls
+    assert conn.statements("INSERT INTO schema_migrations") == [
+        ("INSERT INTO schema_migrations (version) VALUES (%s)", ("002_more",))
+    ]
+    assert conn.committed == 1
+
+
+def test_apply_migrations_defaults_to_packaged_files():
+    conn = FakeConn()
+    assert apply_migrations(conn) == [m.version for m in load_migrations()]
+
+
+# --- EventStore ----------------------------------------------------------------------------
+
+
+def store_with(responder=None):
+    conns = []
+
+    def connect():
+        conns.append(FakeConn(responder))
+        return conns[-1]
+
+    return EventStore(connect, clock=lambda: NOW), conns
+
+
+def inserted(sql, params):
+    return [("e1",)] if sql.startswith("INSERT INTO telemetry_events") else []
+
+
+def test_save_inserts_event_idempotently_inside_a_transaction():
+    store, conns = store_with(inserted)
+    assert store.save(event()) is True
+    ((sql, params),) = conns[0].statements("INSERT INTO telemetry_events")
+    assert "ON CONFLICT (event_id) DO NOTHING" in sql
+    assert params[:5] == ("e1", "reaction", "r1", "guest:1", "social-core")
+    assert params[5] == datetime(2026, 10, 11, 10, tzinfo=UTC)
+    assert params[6] == datetime(2026, 10, 11, 10, 0, 0, 50000, tzinfo=UTC)
+    assert params[7].obj == event()
+    assert conns[0].committed == 1
+
+
+def test_save_reports_duplicates_and_reuses_the_connection():
+    store, conns = store_with()
+    assert store.save(event()) is False
+    assert store.save(event(event_id="e2")) is False
+    assert len(conns) == 1
+
+
+def test_save_stores_null_room_and_user_when_absent():
+    store, conns = store_with(inserted)
+    login = event(type="user_login", source="identity-api")
+    del login["room_id"], login["user_id"]
+    store.save(login)
+    ((_sql, params),) = conns[0].statements("INSERT INTO telemetry_events")
+    assert params[2] is None and params[3] is None
+
+
+def test_room_closed_computes_and_upserts_room_kpis_in_the_same_transaction():
+    def responder(sql, params):
+        if sql.startswith("SELECT payload FROM telemetry_events"):
+            return [
+                ({"type": "presence", "connected_users": "4"},),
+                ({"type": "reaction", "emoji": "👏"},),
+            ]
+        return inserted(sql, params)
+
+    store, conns = store_with(responder)
+    store.save(event(type="room_closed", source="identity-api", reason="deleted"))
+    conn = conns[0]
+    ((select_sql, select_params),) = conn.statements("SELECT payload FROM telemetry_events")
+    assert select_params == ("r1", list(KPI_TYPES))
+    assert "ORDER BY occurred_at" in select_sql
+    ((upsert_sql, params),) = conn.statements("INSERT INTO room_kpis")
+    assert "ON CONFLICT (room_id) DO UPDATE" in upsert_sql
+    values = dict(zip(("room_id", *KPI_COLUMNS), params, strict=True))
+    assert values["room_id"] == "r1"
+    assert values["peak_users"] == 4
+    assert values["reactions"] == 1
+    assert values["closed_at"] == datetime(2026, 10, 11, 10, tzinfo=UTC)
+    assert values["computed_at"] == NOW
+    assert conn.transactions == conn.committed == 1
+
+
+def test_room_closed_redelivery_recomputes_kpis():
+    store, conns = store_with()
+    store.save(event(type="room_closed"))
+    assert len(conns[0].statements("INSERT INTO room_kpis")) == 1
+
+
+def test_save_turns_data_errors_into_invalid_events_and_keeps_the_connection():
+    def responder(sql, params):
+        raise psycopg.DataError("valor fuera de rango")
+
+    store, conns = store_with(responder)
+    with pytest.raises(InvalidEvent):
+        store.save(event())
+    assert not conns[0].closed
+
+
+def test_save_drops_the_connection_on_infrastructure_errors_and_reconnects():
+    calls = {"n": 0}
+
+    def responder(sql, params):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise psycopg.OperationalError("conexión perdida")
+        return inserted(sql, params)
+
+    store, conns = store_with(responder)
+    with pytest.raises(psycopg.OperationalError):
+        store.save(event())
+    assert conns[0].closed
+    assert store.save(event()) is True
+    assert len(conns) == 2
+
+
+def test_purge_expired_deletes_events_older_than_retention():
+    store, conns = store_with(lambda sql, params: FakeCursor(rowcount=7))
+    assert store.purge_expired() == 7
+    ((sql, params),) = conns[0].statements("DELETE FROM telemetry_events")
+    assert "occurred_at < %s" in sql
+    assert params == (NOW - timedelta(days=90),)
+
+
+def test_close_closes_the_open_connection():
+    store, conns = store_with()
+    store.close()  # sin conexión abierta no hace nada
+    store.save(event())
+    store.close()
+    assert conns[0].closed
+
+
+# --- ReadRepository ------------------------------------------------------------------------
+
+
+def test_room_kpis_returns_named_columns_or_none():
+    row = ("r1", 3, 2.5, 120.0, 50.0, 4, 5, 6, 1, 800.0, NOW, NOW)
+
+    def responder(sql, params):
+        return [row] if params == ("r1",) else []
+
+    conns = []
+
+    def connect():
+        conns.append(FakeConn(responder))
+        return conns[-1]
+
+    repo = ReadRepository(connect)
+    kpis = repo.room_kpis("r1")
+    assert kpis["room_id"] == "r1"
+    assert kpis["avg_users"] == 2.5
+    assert kpis["closed_at"] == NOW
+    assert set(kpis) == {"room_id", *KPI_COLUMNS}
+    assert repo.room_kpis("otra") is None
+    assert all(conn.closed for conn in conns), "cada consulta abre y cierra su conexión"
+
+
+def test_room_events_filters_by_room_and_types():
+    conn = FakeConn(lambda sql, params: [({"type": "reaction"},)])
+    repo = ReadRepository(lambda: conn)
+    assert repo.room_events("r1", ("reaction",)) == [{"type": "reaction"}]
+    ((sql, params),) = conn.executed
+    assert "WHERE room_id = %s AND type = ANY(%s)" in sql
+    assert params == ("r1", ["reaction"])
