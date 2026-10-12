@@ -202,6 +202,7 @@ def test_kpis_of_a_closed_room_come_from_room_kpis():
         "computed_at": "2026-10-11T11:00:01.000Z",
     }
     assert isinstance(response.body["avg_drift_ms"], float)
+    assert list(response.body)[:4] == ["room_id", "live", "peak_users", "avg_users"]
 
 
 def test_kpis_of_an_open_room_are_computed_live_from_telemetry():

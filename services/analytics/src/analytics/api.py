@@ -40,8 +40,18 @@ DEFAULT_PORT = 8084
 DEFAULT_ALLOWED_ORIGINS = ("http://localhost:5173",)
 REVOKED_KEY = "token:revoked:{jti}"
 ROUTE = re.compile(r"^/api/v1/rooms/(?P<room_id>[^/]+)/(?P<view>kpis|reactions/heatmap|timeline)$")
-INT_METRICS = ("peak_users", "messages", "reactions", "playback_commands", "buffering_events")
-FLOAT_METRICS = ("avg_users", "avg_drift_ms", "trivia_accuracy_pct", "avg_buffering_ms")
+# Métricas en el orden del contrato y con su tipo JSON (los promedios siempre como float).
+METRICS = (
+    ("peak_users", int),
+    ("avg_users", float),
+    ("avg_drift_ms", float),
+    ("trivia_accuracy_pct", float),
+    ("messages", int),
+    ("reactions", int),
+    ("playback_commands", int),
+    ("buffering_events", int),
+    ("avg_buffering_ms", float),
+)
 # (default, mínimo, máximo) de los parámetros de consulta.
 BUCKET_MS = (5000, 1000, 60000)
 STEP_S = (60, 10, 3600)
@@ -184,8 +194,7 @@ class AnalyticsApi:
             return {
                 "room_id": room_id,
                 "live": False,
-                **{name: int(row[name]) for name in INT_METRICS},
-                **{name: float(row[name]) for name in FLOAT_METRICS},
+                **{name: cast(row[name]) for name, cast in METRICS},
                 "closed_at": _iso(row["closed_at"]),
                 "computed_at": _iso(row["computed_at"]),
             }
@@ -194,8 +203,7 @@ class AnalyticsApi:
         return {
             "room_id": room_id,
             "live": True,
-            **{name: kpis[name] for name in INT_METRICS},
-            **{name: float(kpis[name]) for name in FLOAT_METRICS},
+            **{name: cast(kpis[name]) for name, cast in METRICS},
             "closed_at": None,
             "computed_at": _iso(self.clock()),
         }
