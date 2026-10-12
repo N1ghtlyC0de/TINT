@@ -167,6 +167,19 @@ describe('SyncedPlayer — atajos de teclado', () => {
     expect(sync.sendCommand).toHaveBeenLastCalledWith('SEEK', 2_000);
   });
 
+  it('con láser, L lo alterna (no avanza) y la ayuda lo refleja', () => {
+    const onToggleLaser = vi.fn();
+    const { sync } = renderPlayer({ onToggleLaser });
+    expect(screen.getByRole('button', { name: 'Avanzar 10 segundos' })).toHaveAttribute('aria-keyshortcuts', 'ArrowRight');
+    fireEvent.keyDown(document.body, { key: 'l' });
+    expect(onToggleLaser).toHaveBeenCalledTimes(1);
+    expect(sync.sendCommand).not.toHaveBeenCalled();
+    fireEvent.keyDown(document.body, { key: '?' });
+    expect(screen.getByText('Activar o desactivar el puntero láser')).toBeInTheDocument();
+    expect(screen.queryByText('→ / L')).not.toBeInTheDocument();
+    expect(screen.getByText('→')).toBeInTheDocument();
+  });
+
   it('sin control no hay atajos ni ayuda', () => {
     const { sync } = renderPlayer({ canControl: false });
     fireEvent.keyDown(document.body, { key: 'k' });

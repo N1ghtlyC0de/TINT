@@ -18,7 +18,7 @@ export const PLAYER_SHORTCUTS = [
   { keys: '?', action: 'Mostrar u ocultar esta ayuda' },
 ] as const;
 
-function isTypingTarget(target: EventTarget | null): boolean {
+export function isTypingTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   if (target.isContentEditable || target.contentEditable === 'true') return true;
   return ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
