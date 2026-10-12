@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { memo, useCallback, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { SyncSocketApi } from '../hooks/useSyncSocket';
 import { PLAYER_SHORTCUTS, SHORTCUT_SEEK_MS, usePlayerShortcuts } from '../hooks/usePlayerShortcuts';
 import { useTransientFlag } from '../hooks/useTransientFlag';
@@ -60,6 +60,8 @@ export const APPLY_SEEK_TOLERANCE_PAUSED_MS = 50;
 const RECOVERABLE_MEDIA_ERRORS: readonly number[] = [2, 4];
 /** Marcadores de saltos del host que se conservan. */
 const MAX_SEEK_MARKS = 5;
+/** La posición mostrada solo se actualiza si avanzó al menos esto (o tras un seek). */
+const PROGRESS_STEP_MS = 250;
 
 const ERROR_MESSAGES: Record<string, string> = {
   FORBIDDEN: 'No tienes permiso para controlar la reproducción.',
@@ -76,6 +78,10 @@ function durationOf(video: HTMLVideoElement): number {
   return Number.isFinite(video.duration) ? Math.round(video.duration * 1000) : 0;
 }
 
+function sameRanges(a: Array<[number, number]>, b: Array<[number, number]>): boolean {
+  return a.length === b.length && a.every(([s, e], i) => s === b[i][0] && e === b[i][1]);
+}
+
 function bufferedOf(video: HTMLVideoElement): Array<[number, number]> {
   const ranges: Array<[number, number]> = [];
   const b = video.buffered;
@@ -88,9 +94,11 @@ function bufferedOf(video: HTMLVideoElement): Array<[number, number]> {
 /**
  * Reproductor sincronizado con el Canal Sync. No decide nada por sí mismo: aplica el
  * estado maestro y las correcciones de sync-core, y quien tiene el control solo emite
- * comandos que el servidor valida y difunde.
+ * comandos que el servidor valida y difunde. Es `memo`: quien lo usa debe pasar props
+ * estables (callbacks con `useCallback`, `sync` memoizado) para que el chat y las
+ * reacciones no lo re-rendericen.
  */
-export function SyncedPlayer({
+export const SyncedPlayer = memo(function SyncedPlayer({
   src,
   qualities,
   canControl,
@@ -261,12 +269,32 @@ export function SyncedPlayer({
     }
   }, [lastBroadcast]);
 
-  const syncProgress = (video: HTMLVideoElement) => {
+  /** Últimos valores mostrados: evita 3 setState (y renders) por cada timeupdate/progress. */
+  const shownRef = useRef<{ ms: number; duration: number; buffered: Array<[number, number]> }>({
+    ms: Number.NEGATIVE_INFINITY,
+    duration: 0,
+    buffered: [],
+  });
+
+  /** `force`: tras un seek o un `src` nuevo la posición se muestra aunque el salto sea pequeño. */
+  const syncProgress = (video: HTMLVideoElement, force = false) => {
     const ms = Math.round(video.currentTime * 1000);
     lastPosRef.current = ms;
-    setCurrentMs(ms);
-    setDurationMs(durationOf(video));
-    setBuffered(bufferedOf(video));
+    const shown = shownRef.current;
+    if (force || Math.abs(ms - shown.ms) >= PROGRESS_STEP_MS) {
+      shown.ms = ms;
+      setCurrentMs(ms);
+    }
+    const duration = durationOf(video);
+    if (duration !== shown.duration) {
+      shown.duration = duration;
+      setDurationMs(duration);
+    }
+    const ranges = bufferedOf(video);
+    if (!sameRanges(ranges, shown.buffered)) {
+      shown.buffered = ranges;
+      setBuffered(ranges);
+    }
   };
 
   // Nuevo src (otro vídeo o URL firmada refrescada): se re-aplica el estado maestro o,
@@ -275,7 +303,7 @@ export function SyncedPlayer({
     const snap = stateRef.current;
     if (snap) applyMaster(video, snap);
     else if (lastPosRef.current > 0) video.currentTime = lastPosRef.current / 1000;
-    syncProgress(video);
+    syncProgress(video, true);
   };
 
   const localPositionMs = () => {
@@ -348,7 +376,10 @@ export function SyncedPlayer({
             onWaiting={() => stalls.waiting()}
             onPlaying={(e) => stalls.playing(e.currentTarget.currentTime * 1000)}
             onSeeking={() => stalls.seeking()}
-            onSeeked={() => stalls.seeked()}
+            onSeeked={(e) => {
+              stalls.seeked();
+              syncProgress(e.currentTarget, true);
+            }}
             onEmptied={() => stalls.reset()}
           />
         ) : (
@@ -534,4 +565,4 @@ export function SyncedPlayer({
       )}
     </div>
   );
-}
+});

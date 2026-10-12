@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import { createRef } from 'react';
+import { createRef, Profiler } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SyncedPlayer, type SyncedPlayerProps } from './SyncedPlayer';
 import type { SyncSocketApi } from '../hooks/useSyncSocket';
@@ -452,6 +452,63 @@ describe('SyncedPlayer — correcciones', () => {
       />,
     );
     expect(video().playbackRate).toBe(1);
+  });
+});
+
+describe('SyncedPlayer — rendimiento del progreso', () => {
+  function renderCounted() {
+    const videoRef = createRef<HTMLVideoElement>();
+    const commits = { count: 0 };
+    render(
+      <Profiler id="player" onRender={() => (commits.count += 1)}>
+        <SyncedPlayer src={SRC} canControl={false} sync={makeSync()} videoRef={videoRef} now={() => 0} />
+      </Profiler>,
+    );
+    Object.defineProperty(video(), 'duration', { configurable: true, value: 100 });
+    fireEvent.durationChange(video());
+    return commits;
+  }
+
+  it('es un componente memo (los mensajes del chat no lo re-renderizan)', () => {
+    expect((SyncedPlayer as unknown as { $$typeof: symbol }).$$typeof).toBe(Symbol.for('react.memo'));
+  });
+
+  it('timeupdate solo re-renderiza si la posición avanzó ≥ 250 ms', () => {
+    const commits = renderCounted();
+    video().currentTime = 10;
+    fireEvent.timeUpdate(video());
+    const base = commits.count;
+    video().currentTime = 10.1;
+    fireEvent.timeUpdate(video());
+    video().currentTime = 10.2;
+    fireEvent.timeUpdate(video());
+    expect(commits.count).toBe(base);
+    video().currentTime = 10.3;
+    fireEvent.timeUpdate(video());
+    expect(commits.count).toBe(base + 1);
+  });
+
+  it('un seek actualiza la posición aunque el salto sea pequeño', () => {
+    const commits = renderCounted();
+    video().currentTime = 10;
+    fireEvent.timeUpdate(video());
+    const base = commits.count;
+    video().currentTime = 10.1;
+    fireEvent.seeked(video());
+    expect(commits.count).toBe(base + 1);
+  });
+
+  it('progress y durationchange sin cambios no re-renderizan', () => {
+    const commits = renderCounted();
+    Object.defineProperty(video(), 'buffered', {
+      configurable: true,
+      value: { length: 1, start: () => 0, end: () => 40 },
+    });
+    fireEvent.progress(video());
+    const base = commits.count;
+    fireEvent.progress(video());
+    fireEvent.durationChange(video());
+    expect(commits.count).toBe(base);
   });
 });
 

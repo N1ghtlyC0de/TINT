@@ -1,6 +1,6 @@
 
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { m, useReducedMotion } from 'framer-motion';
 
 import { ReactionBar } from '../components/ReactionBar';
@@ -215,6 +215,20 @@ export default function WatchRoom() {
     }
     recapGate.onEnded();
   };
+  // Props estables para el reproductor (memo): el chat y las reacciones re-renderizan la sala
+  // pero no deben re-renderizar el `<video>` ni su barra.
+  const onVideoEndedRef = useRef(onVideoEnded);
+  useEffect(() => {
+    onVideoEndedRef.current = onVideoEnded;
+  });
+  const handleVideoEnded = useCallback(() => onVideoEndedRef.current(), []);
+  const toggleLaser = useCallback(() => setLaserOn((on) => !on), []);
+  const openPollCreator = useCallback(() => setPollCreatorOpen(true), []);
+  // El láser a 30 Hz sí cambia esta capa (y re-renderiza el reproductor): es lo esperado.
+  const laserOverlay = useMemo(
+    () => <LaserOverlay points={laser} drawing={laserDrawing} onPoint={sendLaser} />,
+    [laser, laserDrawing, sendLaser],
+  );
   const replay = () => {
     recapGate.rearm();
     setVideoFinished(false);
@@ -478,11 +492,11 @@ export default function WatchRoom() {
                     videoRef={videoRef}
                     emptyMessage={emptyMessage}
                     laserOn={laserOn}
-                    onToggleLaser={isGuest ? undefined : () => setLaserOn((on) => !on)}
-                    onOpenPoll={isGuest ? undefined : () => setPollCreatorOpen(true)}
-                    onEnded={onVideoEnded}
+                    onToggleLaser={isGuest ? undefined : toggleLaser}
+                    onOpenPoll={isGuest ? undefined : openPollCreator}
+                    onEnded={handleVideoEnded}
                     onMediaError={recoverPlayback}
-                    overlay={<LaserOverlay points={laser} drawing={laserDrawing} onPoint={sendLaser} />}
+                    overlay={laserOverlay}
                   />
                   <ReactionOverlay reactions={reactions} />
                   <TriviaPopup

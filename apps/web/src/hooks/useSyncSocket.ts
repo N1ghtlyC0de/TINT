@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import { errorStatus } from '../lib/errorStatus';
 import type { Correction } from '../lib/drift';
@@ -499,23 +499,45 @@ export function useSyncSocket({
     [roomId],
   );
 
-  return {
-    connected,
-    state,
-    hostOnline,
-    lastError,
-    correction,
-    canControl,
-    rttMs,
-    driftMs,
-    revoked,
-    expired,
-    fatalError,
-    reconnect,
-    lastBroadcast,
-    volume,
-    quality,
-    sendCommand,
-    sendBuffering,
-  };
+  // Objeto estable mientras nada cambie: `SyncedPlayer` es memo y lo recibe entero.
+  return useMemo(
+    () => ({
+      connected,
+      state,
+      hostOnline,
+      lastError,
+      correction,
+      canControl,
+      rttMs,
+      driftMs,
+      revoked,
+      expired,
+      fatalError,
+      reconnect,
+      lastBroadcast,
+      volume,
+      quality,
+      sendCommand,
+      sendBuffering,
+    }),
+    [
+      connected,
+      state,
+      hostOnline,
+      lastError,
+      correction,
+      canControl,
+      rttMs,
+      driftMs,
+      revoked,
+      expired,
+      fatalError,
+      reconnect,
+      lastBroadcast,
+      volume,
+      quality,
+      sendCommand,
+      sendBuffering,
+    ],
+  );
 }

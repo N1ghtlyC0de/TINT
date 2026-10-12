@@ -384,6 +384,16 @@ describe('useSyncSocket — mensajes', () => {
     expect(result.current.state).toBe(before);
   });
 
+  it('devuelve el mismo objeto mientras nada cambie (props estables para el reproductor memo)', () => {
+    const { result, rerender, ws } = connected();
+    act(() => ws.receive(snapshot));
+    const api = result.current;
+    rerender({ roomId: 'r1', role: 'guest', url: WS });
+    expect(result.current).toBe(api);
+    act(() => ws.receive({ type: 'HOST_STATUS', online: false }));
+    expect(result.current).not.toBe(api);
+  });
+
   it('HOST_STATUS actualiza hostOnline', () => {
     const { result, ws } = connected();
     act(() => ws.receive({ type: 'HOST_STATUS', online: false }));
