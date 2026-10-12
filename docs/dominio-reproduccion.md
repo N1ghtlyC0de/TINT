@@ -575,8 +575,8 @@ sequenceDiagram
     Inv->>MI: GET original (incoming/)
     R-->>MW: XREADGROUP media-workers
     MW->>MI: descarga incoming/{videoId}/original.mp4
-    MW->>MW: ffprobe + Ambilight
-    MW->>MI: PUT {videoId}/source.mp4 + {videoId}/ambilight.json
+    MW->>MW: ffprobe + normalizar (remux +faststart si ya es MP4 H.264/AAC ≤ 12 Mbps;<br/>si no, re-codificar con keyframe cada 2 s y tope de bitrate) + Ambilight
+    MW->>MI: PUT {videoId}/source.mp4 (video/mp4) + {videoId}/ambilight.json
     MW->>PG: ready, duration_ms, storage_key = {videoId}/source.mp4
     MW->>R: XACK
     Note over Inv: la web consulta playback cada ~5 s mientras status es<br/>pending/processing. Al quedar ready la URL ya apunta a la versión publicada
@@ -587,7 +587,7 @@ sequenceDiagram
 | Reservar | `POST /rooms/:id/media/uploads` | 400 (no es `video/*`), 413 (> `MAX_UPLOAD_BYTES`, 2 GiB), 403, 410 |
 | Subir | `PUT uploadUrl` a MinIO (Content-Type firmado, 15 min) | CORS según `MINIO_CORS_ALLOW_ORIGIN` |
 | Confirmar | `POST /rooms/:id/media/uploads/:videoId/complete` | 409 `Upload missing`, 413 si el objeto real supera el `sizeBytes` declarado o `MAX_UPLOAD_BYTES` (se borra del bucket y el vídeo sigue en `pending`), 503 si Redis falla (el vídeo vuelve a `pending` y se puede reintentar), 404. **Idempotente:** solo la transición `pending → processing` encola y asigna; si el vídeo ya no está en `pending` responde 200 con el estado actual sin re-encolar. |
-| Procesar | `media:uploads` → media-worker (`python -m media_worker`, servicio de docker compose) | Si es válido publica `{videoId}/source.*` + `ambilight.json` y actualiza `storage_key`; después genera las calidades `{videoId}/720p.mp4` y `{videoId}/360p.mp4` menores que el original y escribe las publicadas en `videos.renditions` (una calidad que falle se omite sin marcar `failed`). Si ffprobe o el Ambilight fallan queda `failed` y **no se publica nada**. Un fallo de SQL/S3 no confirma el evento: se reintenta cada 5 s |
+| Procesar | `media:uploads` → media-worker (`python -m media_worker`, servicio de docker compose) | Si es válido lo normaliza (nunca publica el original: remux `-c copy` con `+faststart` si ya es MP4 H.264 + AAC de ≤ 12 Mbps, si no re-codificación H.264 con keyframe cada 2 s y tope VBV), publica `{videoId}/source.mp4` + `ambilight.json` (`Content-Type: video/mp4`, `Cache-Control: public, max-age=86400`) y actualiza `storage_key`; después genera las calidades `{videoId}/720p.mp4` y `{videoId}/360p.mp4` menores que el original y escribe las publicadas en `videos.renditions` (una calidad que falle se omite sin marcar `failed`). Si ffprobe o el Ambilight fallan queda `failed` y **no se publica nada**. Un fallo de SQL/S3 no confirma el evento: se reintenta cada 5 s |
 | Reproducir | `GET /rooms/:id/playback` firma `videos.storage_key` (el original mientras se procesa, la versión publicada al quedar `ready`) y devuelve `qualities`: `Original` (= `url`) y, si está `ready`, `720p`/`360p` según `videos.renditions` (`{id}/{h}p.mp4`) | 401 si el token fue revocado, 410 si la sala se borró. Un vídeo `failed` responde `url: null` y `qualities: []` |
 
 Sigue existiendo `PUT /rooms/:id/media { mediaKey }`, para asignar un objeto que ya está en el bucket (sin fila en `videos`, `status: null`).
