@@ -10,7 +10,7 @@ Eres el agente encargado del corazón de reproducción en tiempo real de **TINT*
 ## Stack Técnico
 - Go 1.22 (`net/http` con patrones de ruta de Go 1.22). Dependencias externas, cada una justificada por su impacto en latencia:
   - `github.com/coder/websocket` — WebSocket con `context`, sin goroutines ocultas por conexión y con `SetReadLimit`; la librería estándar no implementa WebSocket.
-  - `github.com/redis/go-redis/v9` — cliente Redis con pool de conexiones, `WATCH/MULTI/EXEC` y Pub/Sub sobre una única conexión por réplica.
+  - `github.com/redis/go-redis/v9` — cliente Redis con pool de conexiones, compare-and-set atómico con script Lua (`casScript` en `internal/store/store.go`; reemplazó a `WATCH/MULTI/EXEC`, ver [ADR 0004](../../docs/adr/0004-scripts-lua-en-lugar-de-watch-multi.md)), `MULTI` en pipeline para `Init` y Pub/Sub sobre una única conexión por réplica.
   - `github.com/golang-jwt/jwt/v5` — validación HS256 de tokens de identity-api restringiendo algoritmo, `iss`, `aud` y `exp` (evita reimplementar criptografía).
   - `github.com/google/uuid` — `event_id` y `id` de conexión (UUID v4).
   - `github.com/vmihailenco/msgpack/v5` — codificación MessagePack opcional (subprotocolo `tint.sync.msgpack`); sin cgo.
