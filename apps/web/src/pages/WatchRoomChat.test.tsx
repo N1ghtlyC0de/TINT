@@ -65,6 +65,8 @@ vi.mock('../hooks/useSocialSocket', () => ({
     ],
     send: sendMock,
     sendReaction: sendReactionMock,
+    laser: [],
+    sendLaser: vi.fn(() => true),
   }),
 }));
 

@@ -1,4 +1,4 @@
-/** Contrato del Canal Social (/ws/social) — solo chat en este alcance. */
+/** Contrato del Canal Social (/ws/social): chat, reacciones, puntero láser, encuestas y recap. */
 
 export const CHAT_MAX_LENGTH = 280;
 export const CHAT_HISTORY_LIMIT = 50;
@@ -59,7 +59,50 @@ export interface ReactionBroadcast {
   received_at: string;
 }
 
-export type SocialIncoming = ChatMessage | HistoryEnvelope | PresenceNotice | ReactionBroadcast | SocialError;
+/** Punto del puntero láser del host (x, y normalizados 0..1 sobre el vídeo). */
+export interface LaserBroadcast {
+  type: 'laser';
+  event_id: string;
+  user_id: string;
+  nick: string;
+  x: number;
+  y: number;
+  /** true en el último punto del trazo (al soltar). */
+  end: boolean;
+}
+
+/** Punto en memoria: los propios se pintan al enviarlos (`own`) y su eco se descarta. */
+export interface LaserPoint extends LaserBroadcast {
+  own?: boolean;
+}
+
+export type SocialIncoming =
+  | ChatMessage
+  | HistoryEnvelope
+  | PresenceNotice
+  | ReactionBroadcast
+  | LaserBroadcast
+  | SocialError;
+
+export function newEventId(): string {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `c-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
+}
+
+export function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.min(1, Math.max(0, value));
+}
+
+/** Coordenada normalizada con 4 decimales (frames pequeños a 30 puntos/s). */
+const round4 = (value: number) => Math.round(clamp01(value) * 10_000) / 10_000;
+
+export function buildLaserPoint(roomId: string, x: number, y: number, end = false, eventId = newEventId()): string {
+  const frame: Record<string, unknown> = { type: 'laser_point', event_id: eventId, room_id: roomId, x: round4(x), y: round4(y) };
+  if (end) frame.end = true;
+  return JSON.stringify(frame);
+}
 
 export function buildSocialUrl(base: string, roomId: string, token: string): string {
   const sep = base.includes('?') ? '&' : '?';
@@ -96,7 +139,8 @@ export function parseSocialMessage(raw: string): SocialIncoming | null {
     type === 'history' ||
     type === 'error' ||
     type === 'notice' ||
-    type === 'reaction'
+    type === 'reaction' ||
+    type === 'laser'
   ) {
     return data as SocialIncoming;
   }

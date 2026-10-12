@@ -1,12 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { getLocalIdentity } from '../lib/identity';
 import {
   buildChatSend,
+  buildLaserPoint,
   buildReactionSend,
   buildSocialUrl,
   CHAT_HISTORY_LIMIT,
+  clamp01,
   isReactionEmoji,
+  newEventId,
   parseSocialMessage,
   type ChatMessage,
+  type LaserPoint,
   type PresenceNotice,
   type ReactionBroadcast,
   type ReactionEmoji,
@@ -17,6 +22,8 @@ export type SocialChatItem = ChatMessage | PresenceNotice;
 
 /** Tope de reacciones en memoria para el overlay (efímeras, fuera del chat). */
 export const REACTION_STREAM_LIMIT = 30;
+/** Puntos del láser en memoria (~2 s a 30 puntos/s; el overlay los desvanece en 1.5 s). */
+export const LASER_STREAM_LIMIT = 64;
 
 export type SocialStatus = 'connecting' | 'open' | 'reconnecting' | 'closed';
 
@@ -50,6 +57,7 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
   const [status, setStatus] = useState<SocialStatus>('connecting');
   const [messages, setMessages] = useState<SocialChatItem[]>([]);
   const [reactions, setReactions] = useState<ReactionBroadcast[]>([]);
+  const [laser, setLaser] = useState<LaserPoint[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
   const attemptRef = useRef(0);
   const timerRef = useRef<number | null>(null);
@@ -83,6 +91,14 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     (msg: ReactionBroadcast) => {
       if (remember(msg.event_id)) return;
       setReactions((prev) => [...prev.slice(-(REACTION_STREAM_LIMIT - 1)), msg]);
+    },
+    [remember],
+  );
+
+  const pushLaser = useCallback(
+    (msg: LaserPoint) => {
+      if (remember(msg.event_id)) return;
+      setLaser((prev) => [...prev.slice(-(LASER_STREAM_LIMIT - 1)), msg]);
     },
     [remember],
   );
@@ -123,6 +139,8 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
           pushMessage(parsed);
         } else if (parsed.type === 'reaction') {
           pushReaction(parsed);
+        } else if (parsed.type === 'laser') {
+          pushLaser({ ...parsed, end: parsed.end === true });
         }
         // Los errores (RATE_LIMITED, etc.) se ignoran en esta fase.
       };
@@ -156,7 +174,7 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [roomId, pushMessage, pushReaction, remember]);
+  }, [roomId, pushMessage, pushReaction, pushLaser, remember]);
 
   const send = useCallback(
     (text: string) => {
@@ -181,5 +199,29 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     [roomId],
   );
 
-  return { status, messages, reactions, send, sendReaction };
+  /** Envía un punto del láser (x, y en 0..1) y lo pinta al instante; su eco se descarta. */
+  const sendLaser = useCallback(
+    (x: number, y: number, end = false) => {
+      if (!roomId) return false;
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      const eventId = newEventId();
+      ws.send(buildLaserPoint(roomId, x, y, end, eventId));
+      const me = getLocalIdentity();
+      pushLaser({
+        type: 'laser',
+        event_id: eventId,
+        user_id: me?.sub ?? '',
+        nick: me?.nick ?? '',
+        x: clamp01(x),
+        y: clamp01(y),
+        end,
+        own: true,
+      });
+      return true;
+    },
+    [roomId, pushLaser],
+  );
+
+  return { status, messages, reactions, laser, send, sendReaction, sendLaser };
 }

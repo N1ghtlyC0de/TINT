@@ -50,6 +50,14 @@ Eres el agente especializado en la capa de presentación de **TINT**. Tu foco es
 | `src/components/SyncedPlayer.tsx` | `<video>` gobernado por el estado maestro; controles habilitados por `canControl`; barra del host (`HostControlBar`); aviso "Host desconectado" y de control temporal delegado; botón de autoplay; fundido al corregir con seek (sin él con `prefers-reduced-motion`); re-aplica el estado al cambiar el `src`; aplica el `volume` maestro a todos (el participante tiene un silencio local, `aria-pressed`) y cambia el `src` a la calidad maestra resuelta. |
 | `src/components/host/*` | Paneles del host: "Cambiar vídeo" (subida desde el navegador con progreso y cancelar → `LOAD{media_id}`; secundaria: clave del bucket con `PUT /rooms/:id/media`) y "Participantes" (listar —se refresca cada 10 s y con "Actualizar"— y retirar invitados con confirmación). `HostControlBar` (solo con `canControl`, dentro de `SyncedPlayer`): volumen + silencio de la sala (`VOLUME`, deslizador con debounce de 150 ms), calidad (`Auto` + `playback.qualities` → `QUALITY`), velocidad (`RATE`, atajos `[`/`]`), puntero láser y "Crear encuesta". |
 
+## Canal Social: interacción del host
+JSON sobre `useSocialSocket` (`src/lib/socialSocket.ts`); social-core es autoritativo (permisos, conteos, cierres).
+
+| Pieza | Rol |
+| :--- | :--- |
+| Puntero láser | Envía `laser_point{type, event_id, room_id, x, y, end?}` (x, y normalizados 0..1, 4 decimales) y recibe `laser{event_id, user_id, nick, x, y, end}`. `useSocialSocket` expone `laser` (últimos 64 puntos) y `sendLaser(x, y, end?)`, que pinta el punto propio al instante y descarta su eco por `event_id`. |
+| `src/components/LaserOverlay.tsx` | Lienzo sobre el área del vídeo (`SyncedPlayer.overlay`); el host con el modo láser dibuja con eventos de puntero (máx. 30 puntos/s con `useThrottle`; el punto final siempre se envía) y todos ven un trazo rojo brillante que se desvanece en 1.5 s (`requestAnimationFrame`, con guardas para jsdom). La edad de cada punto usa el reloj local de llegada, nunca el del emisor. |
+
 ## Sesión y credenciales
 - **Host:** `tint_token` guarda el ID token de Firebase (caduca a la hora). `src/lib/authSession.ts` (`startHostSession`, llamado en `main.tsx`) lo mantiene fresco con `onIdTokenChanged` y registra en `apiFetch` un proveedor que pide `auth.currentUser.getIdToken()`. Ante un 401 con credencial de host, `apiFetch` fuerza un refresco y reintenta una vez; si sigue en 401 borra `tint_token` y lleva a `/login?next=<ruta actual>`.
 - **Invitado:** `tint_guest_token` (+ `tint_room_title`/`tint_invite_link` guardados al canjear) solo da acceso a `/watch/:roomId` si su payload (`guestTokenGrantsRoom`, sin verificar firma) tiene `room_id` igual a la sala y `exp` futuro; si no, se muestra la puerta.

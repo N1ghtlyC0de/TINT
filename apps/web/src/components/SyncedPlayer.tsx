@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState, type RefObject } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { SyncSocketApi } from '../hooks/useSyncSocket';
 import { PLAYER_SHORTCUTS, SHORTCUT_SEEK_MS, usePlayerShortcuts } from '../hooks/usePlayerShortcuts';
 import { useTransientFlag } from '../hooks/useTransientFlag';
@@ -30,6 +30,8 @@ export interface SyncedPlayerProps {
   onToggleLaser?: () => void;
   /** Abre el creador de encuestas (botón en la barra de controles). */
   onOpenPoll?: () => void;
+  /** Capas sobre el área del vídeo (p. ej. el puntero láser). */
+  overlay?: ReactNode;
 }
 
 const RATE_CHECK_INTERVAL_MS = 200;
@@ -81,6 +83,7 @@ export function SyncedPlayer({
   laserOn,
   onToggleLaser,
   onOpenPoll,
+  overlay,
 }: SyncedPlayerProps) {
   const { state, correction, connected, hostOnline, lastError, lastBroadcast, sendCommand, volume, quality } = sync;
   const [needsGesture, setNeedsGesture] = useState(false);
@@ -286,6 +289,8 @@ export function SyncedPlayer({
             <p className="text-[13px] text-tint-muted">{emptyMessage}</p>
           </div>
         )}
+
+        {overlay}
 
         {/* Fundido breve al corregir con seek o en saltos grandes (no con reduced-motion). */}
         <div

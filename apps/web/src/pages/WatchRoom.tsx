@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { ReactionBar } from '../components/ReactionBar';
 import { ReactionOverlay } from '../components/ReactionOverlay';
+import { LaserOverlay } from '../components/LaserOverlay';
 import { CopyButton } from '../components/CopyButton';
 import { SyncedPlayer } from '../components/SyncedPlayer';
 import { ChangeVideoPanel } from '../components/host/ChangeVideoPanel';
@@ -78,7 +79,9 @@ export default function WatchRoom() {
   // Sin ningún token válido no hay cómo autenticar el socket: se muestra la puerta.
   const hasAccess = !!hostToken || !!guestToken;
   // Canal Social (/ws/social): el estado maestro del chat vive en social-core.
-  const { messages, reactions, send, sendReaction, status } = useSocialSocket(hasAccess ? roomId : undefined);
+  const { messages, reactions, laser, send, sendReaction, sendLaser, status } = useSocialSocket(
+    hasAccess ? roomId : undefined,
+  );
   // Si hay sesión de host, manda el host aunque queden restos de invitado
   // (p. ej. guest token de una visita anterior al login). Coherente con
   // apiFetch, que prefiere el header de host.
@@ -119,6 +122,9 @@ export default function WatchRoom() {
     (mediaId: string) => sendCommand('LOAD', 0, { media_id: mediaId }) !== null,
     [sendCommand],
   );
+  // Puntero láser: solo el host (social-core rechaza el resto con FORBIDDEN).
+  const [laserOn, setLaserOn] = useState(false);
+  const laserDrawing = laserOn && !isGuest && canControl;
   const [chat, setChat] = useState('');
   const [invite, setInvite] = useState('');
   const [inviteHint, setInviteHint] = useState('');
@@ -351,6 +357,9 @@ export default function WatchRoom() {
                 sync={sync}
                 videoRef={videoRef}
                 emptyMessage={emptyMessage}
+                laserOn={laserOn}
+                onToggleLaser={isGuest ? undefined : () => setLaserOn((on) => !on)}
+                overlay={<LaserOverlay points={laser} drawing={laserDrawing} onPoint={sendLaser} />}
               />
               <ReactionOverlay reactions={reactions} />
             </div>
