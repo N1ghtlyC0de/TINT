@@ -19,9 +19,12 @@ const StatusRevoked websocket.StatusCode = 4001
 // revocationTimeout acota el EXISTS del handshake.
 const revocationTimeout = 2 * time.Second
 
-// liveConn es una conexión local revocable.
+// liveConn es una conexión local: revocable por jti y destinataria de los
+// mensajes personalizados (trivia_result con my_score).
 type liveConn struct {
 	jti   string
+	sub   string
+	send  chan<- []byte
 	close func()
 }
 
@@ -37,7 +40,7 @@ func (d *Deps) checkRevoked(ctx context.Context, jti string) (bool, error) {
 }
 
 // trackConn registra una conexión para poder revocarla; devuelve el untrack.
-func (d *Deps) trackConn(roomID, connID, jti string, closeFn func()) func() {
+func (d *Deps) trackConn(roomID, connID string, lc liveConn) func() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.conns == nil {
@@ -48,7 +51,7 @@ func (d *Deps) trackConn(roomID, connID, jti string, closeFn func()) func() {
 		room = make(map[string]liveConn)
 		d.conns[roomID] = room
 	}
-	room[connID] = liveConn{jti: jti, close: closeFn}
+	room[connID] = lc
 	return func() {
 		d.mu.Lock()
 		defer d.mu.Unlock()

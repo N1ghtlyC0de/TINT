@@ -93,14 +93,27 @@ func (d *Deps) acquireRelay(roomID string) (release func()) {
 				continue
 			}
 			if in.Sync != nil {
-				d.recordSync(roomID, *in.Sync) // solo métricas del recap
+				// Métricas del recap y rearme del disparo de trivias (la
+				// posición proyectada cambió).
+				kind, ok := d.recordSync(roomID, *in.Sync)
+				d.armTrivia(roomID)
+				if ok && d.syncHook != nil {
+					d.syncHook(kind)
+				}
 				continue
 			}
 			if in.EventID == "" || seen.seen(in.EventID) {
 				continue // eco propio o redelivery
 			}
-			if in.Type == socialevent.TypePollState {
+			switch in.Type {
+			case socialevent.TypePollState:
 				d.observeRemotePoll(roomID, in.Payload)
+			case socialevent.TypeTriviaQuestion:
+				d.observeRemoteTrivia(roomID, in.Payload)
+			case socialevent.TypeTriviaResult:
+				// Se personaliza por conexión (my_score), no se reenvía tal cual.
+				d.deliverRemoteResult(roomID, in.Payload)
+				continue
 			}
 			hub.Broadcast(roomID, in.Payload)
 		}
@@ -118,6 +131,7 @@ func (d *Deps) releaseRelay(roomID string) {
 	r.refs--
 	if r.refs <= 0 {
 		delete(d.relays, roomID)
+		d.stopTriviaArmLocked(roomID)
 		if r.stop != nil {
 			r.stop()
 		}

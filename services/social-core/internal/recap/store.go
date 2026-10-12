@@ -8,7 +8,8 @@
 //   - room:{id}:recap:pauses         Hash bucket → pausas + rebobinados
 //   - room:{id}:recap:totals         Hash reactions, pauses, rewinds, polls
 //   - room:{id}:recap:last_pos       Hash ancla de reproducción conocida
-//     (pos, status, rate, updated_at_ms, version)
+//     (pos, status, rate, updated_at_ms, version y seen_at_ms: reloj de
+//     social-core al procesar el evento, base de Position)
 //   - room:{id}:recap:seen:{event_id} String, EX 1 h: dedup de los eventos
 //     del bus de sync entre réplicas
 package recap
@@ -141,7 +142,7 @@ elseif ARGV[1] == 'SEEK' and prev[1] and not stale then
   if pos < expected - tonumber(ARGV[10]) then kind = 2 end
 end
 if not stale then
-  redis.call('HSET', KEYS[2], 'pos', ARGV[2], 'status', ARGV[3], 'rate', ARGV[4], 'updated_at_ms', ARGV[5], 'version', ARGV[6])
+  redis.call('HSET', KEYS[2], 'pos', ARGV[2], 'status', ARGV[3], 'rate', ARGV[4], 'updated_at_ms', ARGV[5], 'version', ARGV[6], 'seen_at_ms', ARGV[11])
   redis.call('EXPIRE', KEYS[2], ARGV[7])
 end
 if kind > 0 then
@@ -155,10 +156,17 @@ end
 return kind
 `)
 
-// RecordSync procesa un comando de reproducción leído del bus de sync. El
-// bucket de un rebobinado es el destino del SEEK (el momento que se
-// vuelve a ver).
+// RecordSync es RecordSyncAt con el reloj real.
 func (s *Store) RecordSync(ctx context.Context, roomID string, ev socialevent.SyncEvent) (Kind, error) {
+	return s.RecordSyncAt(ctx, roomID, ev, time.Now())
+}
+
+// RecordSyncAt procesa un comando de reproducción leído del bus de sync.
+// El bucket de un rebobinado es el destino del SEEK (el momento que se
+// vuelve a ver). now (reloj de social-core) queda como seen_at_ms del
+// ancla: Position proyecta desde ahí y nunca compara con updated_at_ms,
+// que viene del reloj de sync-core.
+func (s *Store) RecordSyncAt(ctx context.Context, roomID string, ev socialevent.SyncEvent, now time.Time) (Kind, error) {
 	rate := ev.Rate
 	if rate <= 0 {
 		rate = 1
@@ -166,11 +174,47 @@ func (s *Store) RecordSync(ctx context.Context, roomID string, ev socialevent.Sy
 	keys := []string{SeenKey(roomID, ev.EventID), LastPosKey(roomID), PausesKey(roomID), TotalsKey(roomID)}
 	n, err := syncScript.Run(ctx, s.client, keys,
 		ev.Type, ev.PositionMS, ev.Status, strconv.FormatFloat(rate, 'f', -1, 64), ev.UpdatedAtMS, ev.Version,
-		int64(s.ttl/time.Second), bucketOf(ev.PositionMS), int64(SeenTTL/time.Second), RewindToleranceMS).Int64()
+		int64(s.ttl/time.Second), bucketOf(ev.PositionMS), int64(SeenTTL/time.Second), RewindToleranceMS, now.UnixMilli()).Int64()
 	if err != nil {
 		return KindNone, err
 	}
 	return Kind(n), nil
+}
+
+// Playback es la reproducción proyectada a un instante.
+type Playback struct {
+	PositionMS int64
+	Playing    bool
+	Rate       float64
+}
+
+// Position proyecta la posición del vídeo a now desde el ancla last_pos:
+// pos + (now − seen_at_ms) × rate si se está reproduciendo. seen_at_ms es
+// el reloj de social-core al procesar el evento (sin él, un ancla legada
+// usa updated_at_ms). ok=false si la sala no tiene ancla.
+func (s *Store) Position(ctx context.Context, roomID string, now time.Time) (Playback, bool, error) {
+	v, err := s.client.HMGet(ctx, LastPosKey(roomID), "pos", "status", "rate", "seen_at_ms", "updated_at_ms").Result()
+	if err != nil {
+		return Playback{}, false, err
+	}
+	str := func(i int) string { x, _ := v[i].(string); return x }
+	if str(0) == "" {
+		return Playback{}, false, nil
+	}
+	p := Playback{PositionMS: atoi(str(0)), Playing: str(1) == "playing", Rate: 1}
+	if r, err := strconv.ParseFloat(str(2), 64); err == nil && r > 0 {
+		p.Rate = r
+	}
+	base := atoi(str(3))
+	if base == 0 {
+		base = atoi(str(4))
+	}
+	if p.Playing && base > 0 {
+		if dt := now.UnixMilli() - base; dt > 0 {
+			p.PositionMS += int64(float64(dt) * p.Rate)
+		}
+	}
+	return p, true, nil
 }
 
 // Build arma el recap de la sala. Los empates se resuelven de forma estable:
