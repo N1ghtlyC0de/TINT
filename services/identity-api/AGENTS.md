@@ -24,6 +24,8 @@ Documentación de referencia: [Usuarios, identidad y permisos](../../docs/usuari
 - Vídeo de la sala (`media_id`, `media_key`) y URL firmada de reproducción, con el estado del procesamiento.
 - Salas: renombrar y borrado lógico (`status`). Borrar una sala revoca todas sus sesiones de invitado activas.
 - Listar y retirar invitados: BD + `token:revoked:{jti}` + `PUBLISH REVOKED`.
+- Bloquear invitados por dispositivo (`room_bans`, `deviceId` del claim) y desbloquearlos. Es una barrera contra la reentrada casual, no un control de seguridad: borrar los datos del navegador la evade ([usuarios-e-identidad §6.6](../../docs/usuarios-e-identidad.md#66-bloquear-a-un-invitado-por-dispositivo)).
+- Biblioteca de vídeos del host (`GET /videos`, `PATCH /videos/:id`) y reuso de un vídeo propio en una sala (`PUT /rooms/:id/media { videoId }`).
 
 ## Límites de Dominio
 - ❌ No gestiones el estado de reproducción: el Reloj Maestro es de sync-core. Aquí solo se asigna el vídeo; el `LOAD` lo envía el cliente por el Canal Sync.
@@ -37,9 +39,10 @@ Documentación de referencia: [Usuarios, identidad y permisos](../../docs/usuari
 | :--- | :--- | :--- |
 | `users` | PostgreSQL | `id`, `provider` (`firebase`), `provider_sub`, `email`, `display_name`, `avatar_url`, timestamps. Único `(provider, provider_sub)` (migración `0005`) |
 | `rooms` | PostgreSQL | `id`, `host_id` → `users`, `title` (≤150), `status` (`active`/`deleted`, borrado lógico), `media_id`, `media_key`, timestamps |
-| `invitations` | PostgreSQL | `id`, `code` (único, 12), `room_id`, `created_by`, `expires_at`, `revoked` |
+| `invitations` | PostgreSQL | `id`, `code` (único, 12), `room_id`, `created_by`, `expires_at`, `revoked`, `device_id` (nullable, migración `0007`) |
+| `room_bans` | PostgreSQL | `id`, `room_id`, `device_id` (nullable), `sub`, `nick`, `created_at`, `created_by`. Único `(room_id, device_id)` (migración `0007`). Nunca se exponen `device_id` ni `sub` |
 | `guest_sessions` | PostgreSQL | `jti` (PK), `room_id`, `sub` (`guest:<uuid>`), `nick` (≤64), `joined_at`, `expires_at`, `revoked` |
-| `videos` | PostgreSQL | `id` (= `video_id`), `room_id`, `uploaded_by`, `storage_key` (`incoming/{id}/original.*` al reservar; el worker la cambia a `{id}/source.*` al publicar), `content_type`, `size_bytes`, `duration_ms`, `status` (`pending` → `processing` al confirmar, en identity-api → `ready`/`failed`, en media-worker), `renditions` (jsonb, `[]` por defecto: alturas publicadas por media-worker en `{id}/{h}p.mp4`, migración `0006`) |
+| `videos` | PostgreSQL | `id` (= `video_id`), `room_id`, `uploaded_by`, `storage_key` (`incoming/{id}/original.*` al reservar; el worker la cambia a `{id}/source.*` al publicar), `content_type`, `size_bytes`, `duration_ms`, `status` (`pending` → `processing` al confirmar, en identity-api → `ready`/`failed`, en media-worker), `renditions` (jsonb, `[]` por defecto: alturas publicadas por media-worker en `{id}/{h}p.mp4`, migración `0006`), `title` (≤255, nullable: `filename` sin extensión al reservar, migración `0007`) |
 | `token:revoked:{jti}` | Redis String | Marca de revocación con `EXAT` = `exp` del token (la lee sync-core) |
 | `media:uploads` | Redis Stream | `XADD * video_id <id>` al confirmar una subida (lo consume media-worker, grupo `media-workers`) |
 | `analytics:events` | Redis Stream | `XADD MAXLEN ~ 100000 *` de `user_login`, `room_created`, `room_closed` e `invitation_claimed` (lo consume analytics). Ver [Eventos de analítica](#eventos-de-analítica) |
@@ -60,15 +63,20 @@ Prefijo `/api/v1`. Los errores siempre tienen la forma `{ "error": "<texto>" }`;
 | `GET /rooms/:id/invitations` | Firebase + dueño | Invitaciones de la sala con `link` |
 | `POST /rooms/:id/invitations` | Firebase + dueño | Nueva invitación (`ttlHours` opcional, entero 1–720) |
 | `POST /invitations/:code/revoke` | Firebase + dueño | Cierra la invitación (no retira a quienes ya entraron). 404 si la invitación o su sala no existen, 403 si no es el dueño |
-| `POST /invitations/claim` | — | `{ code, nick }` → `{ token, roomId, nick, roomTitle }`. Errores: 404, 409 (revocada), 410 (vencida o sala borrada) |
+| `POST /invitations/claim` | — | `{ code, nick, deviceId? }` → `{ token, roomId, nick, roomTitle }`. `deviceId` es un UUID opcional del navegador que se guarda en `guest_sessions.device_id`. Errores: 400, 404, 409 (revocada), 410 (vencida o sala borrada), **403 `{ error: "BANNED" }`** (dispositivo bloqueado en la sala; sin `deviceId` no se comprueba) |
 | `POST /rooms/:id/sync-ticket` | Firebase + dueño | Sync-ticket HS256 para `/ws/sync`. `nick` = `displayName`, si no la parte local del email, si no `Host` (nunca el email completo) |
 | `POST /rooms/:id/analytics-ticket` | Firebase + dueño | `{ token, expiresAt }`: ticket de host HS256 (mismos claims y TTL que el sync-ticket, `generateHostTicket`) para la API de lectura de analytics. **Sin** `requireActiveRoom`: también se entrega para una sala borrada, para ver sus KPIs |
 | `POST /rooms/:id/media/uploads` | Firebase + dueño | `{ filename, contentType: video/*, sizeBytes }` → `{ videoId, uploadUrl, storageKey, expiresAt, headers }` (PUT firmado a MinIO; 413 si supera `MAX_UPLOAD_BYTES`) |
 | `POST /rooms/:id/media/uploads/:videoId/complete` | Firebase + dueño | HEAD del objeto (409 `Upload missing`; 413 y se borra si el tamaño real supera `sizeBytes` o `MAX_UPLOAD_BYTES`), `pending → processing` condicional, `XADD media:uploads` (503 si Redis falla, vuelve a `pending`) y asigna el vídeo → `{ mediaId, mediaKey, status }`. Idempotente: si ya no está en `pending` devuelve el estado actual sin re-encolar |
-| `PUT /rooms/:id/media` | Firebase + dueño | `{ mediaKey }` → `{ mediaId, mediaKey }` (objeto que ya está en el bucket) |
+| `PUT /rooms/:id/media` | Firebase + dueño | `{ mediaKey }` (objeto que ya está en el bucket, `mediaId` nuevo) **o** `{ videoId }` (vídeo de su biblioteca: `mediaId = videoId`, `mediaKey = storage_key`; 404 si no lo subió él, no existe o no está `processing`/`ready`) → `{ mediaId, mediaKey }`. Enviar ambos es 400 |
+| `GET /videos` | Firebase | Biblioteca: `{ videos: [{ id, title, durationMs, status, createdAt, previewUrl }] }`, los vídeos con `uploaded_by` = el host y `status` en `processing`/`ready` (subida confirmada), recientes primero. `previewUrl` firma `{id}/360p.mp4` si está `ready` con `360` en `renditions`; si no, `storage_key` |
+| `PATCH /videos/:id` | Firebase + quien lo subió | `{ title }` (1–255) → `{ video }` con la forma de la biblioteca. 404 si no es suyo |
 | `GET /rooms/:id/playback` | dueño **o** guest token de la sala | `{ mediaId, url, expiresAt, status, ambilightUrl, qualities }` (o `null`s y `qualities: []`). `qualities: [{ id, label, url }]`: primero `{ id: 'source', label: 'Original' }` con la misma URL que `url`; si el vídeo está `ready`, después `720p` y `360p` (de mayor a menor, solo las de `videos.renditions`) firmadas sobre `{id}/{h}p.mp4` con el mismo TTL. Un vídeo `failed` → `qualities: []` |
 | `GET /rooms/:id/guests` | Firebase + dueño | Invitados de la sala (sin `sub`) |
 | `POST /rooms/:id/guests/:jti/revoke` | Firebase + dueño | Retira al invitado (idempotente) |
+| `POST /rooms/:id/bans` | Firebase + dueño | `{ jti }` (panel) **o** `{ sub }` (chat) → `{ ban: { id, nick, createdAt } }`. Inserta un ban por cada `device_id` de las sesiones del invitado (o uno por `sub` si ninguna lo tiene, cliente viejo) y revoca todas sus sesiones vigentes (`token:revoked:{jti}` + `REVOKED`). Idempotente; 404 si el invitado no tiene sesiones en la sala; **503** si Redis falla (el ban ya quedó guardado, reintentar) |
+| `GET /rooms/:id/bans` | Firebase + dueño | `{ bans: [{ id, nick, createdAt }] }`, recientes primero |
+| `DELETE /rooms/:id/bans/:banId` | Firebase + dueño | Desbloquea → `{ success: true }`; 404 si no existe en la sala |
 
 Middlewares: `requireAuthHost`, `requireRoomOwner` (no filtra por estado de la sala), `requireRoomGuest`, `requireRoomHostOrGuest` (decide según el `alg` del JWT), `requireActiveRoom` (404/410 y `req.room`) y `validate(schema)`. Las rutas del Canal Sync y de medios responden **410** si la sala tiene borrado lógico.
 
@@ -93,7 +101,7 @@ Middlewares: `requireAuthHost`, `requireRoomOwner` (no filtra por estado de la s
 4. **Migraciones:** todo cambio de `src/db/schema.ts` va acompañado de su migración generada con `npx drizzle-kit generate`, commiteada junto con `migrations/meta`.
 5. **Dependencias inyectables:** Redis (`setRedisClient`), el firmado (`setMediaSigner`), el bucket (`setMediaStore`: `stat`/`remove`) y los repos se reemplazan por dobles en las pruebas. Las pruebas no dependen de Postgres, Redis ni MinIO reales.
 6. **TDD:** prueba primero (supertest para rutas y mocks de repos). Cobertura mínima **85 %** (`vitest.config.ts`).
-7. **Privacidad:** `GET /guests` nunca devuelve `sub`; no registres tokens ni emails en los logs.
+7. **Privacidad:** `GET /guests` y `GET /bans` nunca devuelven `sub` (ni `device_id`); no registres tokens ni emails en los logs.
 
 ## Variables de Entorno
 | Variable | Por defecto | Descripción |

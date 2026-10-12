@@ -76,7 +76,7 @@ flowchart TB
 
 | Almacén | Dueño | Contenido principal |
 | :--- | :--- | :--- |
-| PostgreSQL | identity-api | `users`, `rooms`, `invitations`, `guest_sessions`, `videos` ([esquema](usuarios-e-identidad.md#3-esquema-de-datos-postgresql)); media-worker lee y actualiza `videos` (no crea filas) |
+| PostgreSQL | identity-api | `users`, `rooms`, `invitations`, `guest_sessions`, `room_bans`, `videos` ([esquema](usuarios-e-identidad.md#3-esquema-de-datos-postgresql)); media-worker lee y actualiza `videos` (no crea filas) |
 | PostgreSQL | analytics | `schema_migrations`, `telemetry_events` (90 días), `room_kpis` ([modelo](../services/analytics/AGENTS.md#modelo-de-datos-involucrado)) |
 | Redis | sync-core | `room:{id}:*` (estado, Pub/Sub, presencia, delegación) ([modelo](dominio-reproduccion.md#7-modelo-de-datos-en-redis)) |
 | Redis | identity-api → sync-core, social-core, analytics | `token:revoked:{jti}` |

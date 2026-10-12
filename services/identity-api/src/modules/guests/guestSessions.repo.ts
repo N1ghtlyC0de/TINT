@@ -19,6 +19,11 @@ export async function listByRoom(roomId: string) {
   return db.select().from(guestSessions).where(eq(guestSessions.roomId, roomId)).orderBy(asc(guestSessions.joinedAt));
 }
 
+/** Todas las sesiones de un invitado (`sub`) en la sala, revocadas o no. */
+export async function listByRoomAndSub(roomId: string, sub: string) {
+  return db.select().from(guestSessions).where(and(eq(guestSessions.roomId, roomId), eq(guestSessions.sub, sub)));
+}
+
 export async function setRevoked(jti: string) {
   const result = await db.update(guestSessions).set({ revoked: true }).where(eq(guestSessions.jti, jti)).returning();
   return result[0] || null;
