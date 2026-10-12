@@ -35,6 +35,10 @@ Reglas:
 `user_id` debe ser el mismo valor en todos los servicios. `social-core` ya usa el `sub` del token
 como `UserID`; `identity-api` debe publicar ese mismo `sub` (`users.provider_sub`), no `users.id`.
 
+**Excepción: `sync-core` no envía `user_id`.** Sus eventos llevan `role` (`host` o `guest`) en su lugar:
+el Canal Sync no necesita identificar a la persona y así se publica lo mínimo. Analítica guarda
+`user_id` como `NULL` en esos eventos.
+
 ## Eventos
 
 `position_ms` es siempre la posición del video en milisegundos, igual que en `/ws/sync` y en las reacciones.
@@ -63,9 +67,17 @@ como `UserID`; `identity-api` debe publicar ese mismo `sub` (`users.provider_sub
 
 | `type` | Cuándo | Campos propios | Sirve para |
 | :--- | :--- | :--- | :--- |
-| `playback_command` | El host manda play, pausa o seek | `command` (`PLAY`, `PAUSE`, `SEEK`), `position_ms` | Cómo se conduce la sesión |
-| `drift_correction` | Se detecta un desfase mayor a 500 ms | `drift_ms`, `position_ms` | Calidad de sincronización (REQ-28) |
-| `buffering` | Un cliente termina de recargar el video | `duration_ms`, `position_ms` | QoE |
+| `playback_command` | Se acepta un comando de reproducción (no duplicado) | `role`, `command` (`PLAY`, `PAUSE`, `SEEK`, `RATE`, `LOAD`), `position_ms` | Cómo se conduce la sesión |
+| `drift_correction` | Se detecta un desfase mayor a 500 ms | `role`, `drift_ms`, `position_ms` (+ `rtt_ms`, `strategy`) | Calidad de sincronización (REQ-28) |
+| `buffering` | Un cliente termina de recargar el video | `role`, `duration_ms`, `position_ms` | QoE |
+
+`drift_correction` **reemplaza a `sync_drift`**, el nombre que usaba antes la telemetría de sync-core.
+
+Origen de `buffering`: el navegador mide el atasco (evento `waiting` del `<video>` hasta el siguiente
+`playing`) y, si dura al menos 100 ms, envía por el Canal Sync v2 el mensaje
+`BUFFERING {event_id, room_id, position_ms, duration_ms, occurred_at}`. sync-core sella
+`received_at`, valida `0 <= duration_ms <= 120000` y `position_ms >= 0`, limita a 1 por segundo por
+conexión y solo publica el evento: no responde `ACK` ni hace broadcast.
 
 Los latidos (`HEARTBEAT`) no se publican: son demasiados y no aportan a ningún KPI.
 
@@ -73,9 +85,9 @@ Los latidos (`HEARTBEAT`) no se publican: son demasiados y no aportan a ningún 
 
 | `type` | Cuándo | Campos propios | Sirve para |
 | :--- | :--- | :--- | :--- |
-| `media_processed` | Termina de procesar un video, bien o mal | `media_id`, `status` (`ready`, `failed`), `duration_ms`, `processing_ms` | Tasa de fallo y tiempo del worker |
+| `media_processed` | Termina de procesar un video, bien o mal | `media_id`, `status` (`ready`, `failed`), `duration_ms` (vacío o `0` si `failed`), `processing_ms` | Tasa de fallo y tiempo del worker |
 
-No lleva `room_id`. `user_id` es quien subió el video.
+No lleva `room_id`. `user_id` es quien subió el video (`users.provider_sub` de `uploaded_by`; vacío si es nulo).
 
 ## Ejemplo
 
@@ -95,10 +107,23 @@ XADD analytics:events *
 
 ## Qué entrega Analítica a cambio
 
-- `telemetry_events` en PostgreSQL: todos los eventos, 90 días, sin duplicados por `event_id`.
-- `room_kpis`: al recibir `room_closed`, pico de espectadores, drift promedio, % de aciertos y
-  conteos de mensajes y reacciones de esa sala.
-- Usuarios activos por día (DAU/MAU) a partir de `user_login`.
+- `telemetry_events` en PostgreSQL: todos los eventos sanitizados, 90 días, sin duplicados por `event_id`.
+- `room_kpis`: al recibir `room_closed`, pico y promedio de espectadores, drift promedio, % de aciertos,
+  conteos de mensajes, reacciones, comandos y buffering, y duración media del buffering de esa sala.
+- Usuarios activos por día (DAU/MAU) a partir de `user_login` (consultable en SQL).
+- **API de solo lectura** (`analytics`, puerto `ANALYTICS_PORT` = 8084) para el host de la sala, con el
+  `analytics-ticket` que emite identity-api en `POST /api/v1/rooms/:id/analytics-ticket`:
+
+| Ruta | Devuelve |
+| :--- | :--- |
+| `GET /healthz` | `{"status":"ok"}` |
+| `GET /api/v1/rooms/{id}/kpis` | Los KPIs de arriba más `live` (`false` = `room_kpis` de una sala cerrada; `true` = calculados al vuelo), `closed_at` y `computed_at` |
+| `GET /api/v1/rooms/{id}/reactions/heatmap?bucket_ms=5000` | `buckets` `[{bucket_start_ms, emoji, count}]` por posición del vídeo y `by_emoji` `[{emoji, count}]` |
+| `GET /api/v1/rooms/{id}/timeline?step_s=60` | `points` `[{t, connected_users, messages, reactions}]` por intervalo |
+
+Formas exactas, auth (HS256, `role` `host`, sala del token, revocación con falla cerrado) y errores:
+[services/analytics/AGENTS.md](../services/analytics/AGENTS.md#api-solo-lectura-puerto-analytics_port-por-defecto-8084).
+Nunca hay endpoints de tiempo real ni de eventos crudos.
 
 Un evento con un `type` que no está en este documento se guarda igual, pero no entra a ningún KPI.
 Para agregar un tipo o un campo: PR a este archivo.
@@ -111,6 +136,4 @@ Para agregar un tipo o un campo: PR a este archivo.
 | `identity-api` | Nada |
 | `sync-core` | Nada (el servicio aún no tiene WebSocket) |
 | `media-worker` | Nada |
-
-Pendiente del lado de Analítica: `sanitize.py` exige hoy `room_id` en todos los eventos; se relaja
-para `user_login` y `media_processed` junto con el consumidor.
+| `analytics` (consumidor) | Consume `analytics:events` (grupo `analytics-workers`), persiste en `telemetry_events`, consolida `room_kpis` con `room_closed`, purga a los 90 días y sirve la API de lectura. `room_id` solo se exige fuera de `user_login` y `media_processed` |
