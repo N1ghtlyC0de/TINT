@@ -80,7 +80,13 @@ func RevokedKey(jti string) string {
 // para reenviar a los clientes locales (deduplicado por EventID), o bien la
 // revocación de un token (RevokedJTI), que nunca llega a los clientes.
 type Inbound struct {
-	EventID    string
+	EventID string
+	// Type es el tipo del evento social (p. ej. poll_state agenda timers).
+	Type       socialevent.Type
 	Payload    []byte
 	RevokedJTI string
+	// Sync es un comando de reproducción de sync-core (PLAY, PAUSE, SEEK,
+	// RATE, LOAD) leído de room:{id}:sync para el recap; nunca llega a los
+	// clientes.
+	Sync *socialevent.SyncEvent
 }

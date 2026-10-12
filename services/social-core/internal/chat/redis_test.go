@@ -105,7 +105,9 @@ func TestRedisSubscribeDeliversRevoked(t *testing.T) {
 	waitSubscribers(t, mr, SyncChannelKey("r1"))
 
 	for _, raw := range []string{
-		`{"type":"PLAY","room_id":"r1","event_id":"p1"}`,
+		`{"type":"HEARTBEAT","room_id":"r1","event_id":"h1"}`,
+		`{"type":"PAUSE","room_id":"r1"}`,
+		`{"type":"SEEK","room_id":"r1","event_id":"s0","position_ms":-5}`,
 		`no-json`,
 		`{"type":"REVOKED","room_id":"r1"}`,
 		`{"event_id":"x","type":"REVOKED","room_id":"r1","jti":"J1","position_ms":0,"version":0}`,
@@ -152,6 +154,71 @@ func TestRedisPublishReactionRelayed(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal("timeout esperando la reacción")
+	}
+}
+
+// Los comandos de reproducción de sync-core alimentan el recap: se
+// entregan como Sync (nunca como payload para los clientes).
+func TestRedisSubscribeDeliversSyncCommands(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+	s := NewRedisStoreWithClient(client, 3, time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sub, stop := s.Subscribe(ctx, "r1")
+	defer stop()
+	waitSubscribers(t, mr, SyncChannelKey("r1"))
+	raw := `{"event_id":"s1","type":"SEEK","room_id":"r1","position_ms":42000,"status":"playing","rate":1.5,"updated_at_ms":99,"version":7}`
+	if err := client.Publish(ctx, SyncChannelKey("r1"), raw).Err(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-sub:
+		want := socialevent.SyncEvent{EventID: "s1", Type: "SEEK", PositionMS: 42000, Status: "playing", Rate: 1.5, UpdatedAtMS: 99, Version: 7}
+		if got.Sync == nil || *got.Sync != want || got.Payload != nil || got.EventID != "" {
+			t.Fatalf("sub = %+v, want Sync %+v", got, want)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout esperando el SEEK")
+	}
+}
+
+// El puntero láser viaja por el mismo canal, re-serializado por tipo.
+func TestRedisPublishRawLaserRelayed(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+	s := NewRedisStoreWithClient(client, 3, time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sub, stop := s.Subscribe(ctx, "r1")
+	defer stop()
+	waitSubscribers(t, mr, ChannelKey("r1"))
+	raw := `{"event_id":"l1","type":"laser","room_id":"r1","user_id":"h","nick":"Ana","x":0.5,"y":0.25,"end":false,"extra":"x"}`
+	if err := s.PublishRaw(ctx, "r1", []byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-sub:
+		if got.EventID != "l1" || !strings.Contains(string(got.Payload), `"x":0.5`) || strings.Contains(string(got.Payload), "extra") {
+			t.Fatalf("sub = %+v, want laser re-serializado", got)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout esperando el láser")
+	}
+	// poll_state también se reenvía y lleva su tipo (el relay agenda timers).
+	poll := `{"event_id":"ps1","type":"poll_state","room_id":"r1","poll_id":"p1","question":"q","options":["a","b"],"counts":[1,0],"closes_at_ms":5,"closed":false}`
+	if err := s.Client().Publish(ctx, ChannelKey("r1"), poll).Err(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-sub:
+		if got.EventID != "ps1" || got.Type != socialevent.TypePollState || !strings.Contains(string(got.Payload), `"counts":[1,0]`) {
+			t.Fatalf("sub = %+v, want poll_state", got)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout esperando poll_state")
 	}
 }
 

@@ -79,6 +79,32 @@ func TestLimiterMassiveBurst(t *testing.T) {
 	}
 }
 
+// El puntero láser usa su propio límite (30/s); cero = valores por defecto.
+func TestLimiterWithCustomLimit(t *testing.T) {
+	l := NewLimiterWith(30, time.Second)
+	base := time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)
+	for i := 0; i < 30; i++ {
+		if !l.Allow("host", base) {
+			t.Fatalf("punto %d debe pasar", i+1)
+		}
+	}
+	if l.Allow("host", base) {
+		t.Fatal("el punto 31 en el mismo segundo debe rechazarse")
+	}
+	if !l.Allow("host", base.Add(1001*time.Millisecond)) {
+		t.Fatal("al deslizar la ventana debe volver a pasar")
+	}
+	def := NewLimiterWith(0, 0)
+	for i := 0; i < MaxPerSecond; i++ {
+		if !def.Allow("u", base) {
+			t.Fatalf("valores cero = defaults; punto %d", i+1)
+		}
+	}
+	if def.Allow("u", base) {
+		t.Fatal("valores cero deben usar el límite por defecto")
+	}
+}
+
 // Tasa sostenida: 10 intentos/ms durante 3s dejan pasar 5 por ventana (15).
 func TestLimiterSustainedRate(t *testing.T) {
 	l := NewLimiter()
