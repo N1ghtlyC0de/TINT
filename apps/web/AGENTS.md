@@ -9,7 +9,7 @@ Eres el agente especializado en la capa de presentación de **TINT**. Tu foco es
 - Vitest + Testing Library (`jsdom`) + cobertura `v8`
 - ESLint 9 (`typescript-eslint`, `react-hooks`)
 - `@msgpack/msgpack` — codificación MessagePack opcional del Canal Sync (implementación oficial, sin dependencias, mismo modelo de datos que el JSON del protocolo).
-- `framer-motion` 11.11.17 — animaciones declarativas en toda la app. `MotionProvider` (en `App`) carga `LazyMotion` con `domAnimation` (≈ +15 KB gz en el bundle principal; sin `layout`/`layoutId`, que exigirían `domMax`) y `MotionConfig reducedMotion="user"`. Los componentes usan `m.*`; el cuestionario `/test-me` (lazy) sigue con `motion.*`. En pruebas `setupTests.ts` activa `MotionGlobalConfig.skipAnimations` y mapea `m` → `motion`; los stubs de `matchMedia` deben incluir `addListener`/`removeListener`.
+- `framer-motion` 11.11.17 — animaciones declarativas en toda la app. `MotionProvider` (en `App`) carga `LazyMotion` con `domAnimation` en un chunk diferido (`motion/features.ts`; el bundle principal crece ≈ 10 KB gz; sin `layout`/`layoutId`, que exigirían `domMax`) y `MotionConfig reducedMotion="user"`. Los componentes usan `m.*`; el cuestionario `/test-me` (lazy) sigue con `motion.*`. En pruebas `setupTests.ts` activa `MotionGlobalConfig.skipAnimations` y mapea `m` → `motion`; los stubs de `matchMedia` deben incluir `addListener`/`removeListener`.
 - Outfit (Google Fonts, `index.html`) — tipografía de la marca.
 
 ## Responsabilidades
