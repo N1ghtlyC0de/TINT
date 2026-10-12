@@ -436,7 +436,7 @@ sequenceDiagram
     end
 ```
 
-`SYNC_CORRECTION` incluye, además de `target_ms`, `strategy`, `drift_ms` y `version`, los campos opcionales `status`, `rate` (velocidad de la sala) y `media_id` del estado en esa `version`. Un cliente que perdió un broadcast (p. ej. por una reconexión del Pub/Sub) puede usarlos para reconciliar estado y vídeo; los clientes que no los conocen los ignoran. La web aún no los aplica.
+`SYNC_CORRECTION` incluye, además de `target_ms`, `strategy`, `drift_ms` y `version`, los campos opcionales `status`, `rate` (velocidad de la sala) y `media_id` del estado en esa `version`. Un cliente que perdió un broadcast (p. ej. por una reconexión del Pub/Sub) puede usarlos para reconciliar estado y vídeo; los clientes que no los conocen los ignoran. La web los aplica (ver §10, "Correcciones").
 
 ```mermaid
 flowchart TD
@@ -608,6 +608,8 @@ sequenceDiagram
 | Confirmar | `POST /rooms/:id/media/uploads/:videoId/complete` | 409 `Upload missing`, 413 si el objeto real supera el `sizeBytes` declarado o `MAX_UPLOAD_BYTES` (se borra del bucket y el vídeo sigue en `pending`), 503 si Redis falla (el vídeo vuelve a `pending` y se puede reintentar), 404. **Idempotente:** solo la transición `pending → processing` encola y asigna; si el vídeo ya no está en `pending` responde 200 con el estado actual sin re-encolar. |
 | Procesar | `media:uploads` → media-worker (`python -m media_worker`, servicio de docker compose) | Si es válido publica `{videoId}/source.*` + `ambilight.json` y actualiza `storage_key`; después genera las calidades `{videoId}/720p.mp4` y `{videoId}/360p.mp4` menores que el original y escribe las publicadas en `videos.renditions` (una calidad que falle se omite sin marcar `failed`). Si ffprobe o el Ambilight fallan queda `failed` y **no se publica nada**. Un fallo de SQL/S3 no confirma el evento: se reintenta cada 5 s |
 | Reproducir | `GET /rooms/:id/playback` firma `videos.storage_key` (el original mientras se procesa, la versión publicada al quedar `ready`) y devuelve `qualities`: `Original` (= `url`) y, si está `ready`, `720p`/`360p` según `videos.renditions` (`{id}/{h}p.mp4`) | 401 si el token fue revocado, 410 si la sala se borró. Un vídeo `failed` responde `url: null` y `qualities: []` |
+
+**Refresco de la URL en la web:** ~1 min antes de `expiresAt` la web pide `GET /playback` otra vez, pero si es el mismo vídeo **no** cambia el `src` del `<video>` (eso lo recargaba y dejaba un fotograma negro cada hora): guarda las URLs nuevas aparte —también las que aparecen al quedar `ready`— y las adopta solo si el `<video>` falla (`MEDIA_ERR_NETWORK`/`MEDIA_ERR_SRC_NOT_SUPPORTED`, p. ej. URL caducada o staging ya borrado; si no tiene URLs guardadas pide unas nuevas, como mucho cada 30 s) o cuando el `src` cambia igualmente (otra calidad u otro vídeo). Al cargar el `src` nuevo re-aplica la posición y el play/pausa del estado maestro.
 
 Sigue existiendo `PUT /rooms/:id/media { mediaKey }`, para asignar un objeto que ya está en el bucket (sin fila en `videos`, `status: null`).
 
@@ -895,6 +897,11 @@ flowchart TD
 | Barra de cine | `role="slider"`: búfer, tiempo bajo el cursor, marcadores de los saltos del Host; flechas ±5 s y RePág/AvPág ±30 s. |
 | Atajos | Espacio/K reproducir o pausar · ←/→ o J/L ±10 s · `[`/`]` velocidad · `?` ayuda. Llevan `aria-keyshortcuts` y se ignoran dentro de campos de texto. |
 | Fundido | ~150–200 ms en correcciones por seek y en saltos de más de 2 s. Desactivado con `prefers-reduced-motion`. |
+| Aplicar estado | Cada `STATE`/broadcast aplica siempre la velocidad y el play/pausa, pero solo hace seek si la deriva supera 250 ms reproduciendo (50 ms en pausa): un `VOLUME`/`QUALITY`/`RATE` no hace saltar a nadie. En la misma conexión, un `STATE` con `version` menor a la aplicada se descarta; el primero de cada conexión siempre aplica (la sala pudo reiniciarse tras el TTL). |
+| `SYNC_CHECK` | Lleva la `version` del estado aplicado. Tras un `LOAD`, hasta que llega la URL nueva, informa la posición esperada del estado maestro en lugar de la del vídeo anterior. |
+| Correcciones | `rate`: velocidad de la sala × 1.05 (atrasado) o × 0.95 (adelantado) y vuelta a la velocidad de la sala. `seek`: se omite si el vídeo está en buffering (reproduce con `readyState` < `HAVE_FUTURE_DATA`), si el autoplay está bloqueado, si terminó y el objetivo está en o tras el final, o si ya está a < 250 ms del objetivo. Si la corrección trae `status` y `rate` (y `media_id`) distintos del estado aplicado, la web adopta ese estado (broadcast perdido). |
+| Autoplay | Solo un `NotAllowedError` muestra "Unirse a la reproducción"; un `AbortError` (carrera PLAY → PAUSE, cambio de `src`) se ignora. |
+| Calidad `auto` | 360p con 2g/3g o `saveData`; 720p con ancho < 640 px; si no, 720p salvo `navigator.connection.downlink` ≥ 10 Mbps (original). Sin Network Information API → 720p. Si no existe, el original. |
 | Control | Los controles se habilitan según `canControl` del servidor. Un participante con control delegado ve "El host no está: tienes el control temporal". |
 
 ---
