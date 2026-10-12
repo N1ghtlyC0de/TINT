@@ -95,6 +95,9 @@ func (d *Deps) acquireRelay(roomID string) (release func()) {
 			if in.EventID == "" || seen.seen(in.EventID) {
 				continue // eco propio o redelivery
 			}
+			if in.Type == socialevent.TypePollState {
+				d.observeRemotePoll(roomID, in.Payload)
+			}
 			hub.Broadcast(roomID, in.Payload)
 		}
 	}()

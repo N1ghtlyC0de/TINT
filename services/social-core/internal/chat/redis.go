@@ -188,6 +188,8 @@ func decodeInbound(fromSync bool, raw []byte) (Inbound, bool) {
 		v = &socialevent.Reaction{}
 	case socialevent.TypeLaser:
 		v = &socialevent.Laser{}
+	case socialevent.TypePollState:
+		v = &socialevent.PollState{}
 	default:
 		return Inbound{}, false
 	}
@@ -198,7 +200,7 @@ func decodeInbound(fromSync bool, raw []byte) (Inbound, bool) {
 	if err != nil {
 		return Inbound{}, false
 	}
-	return Inbound{EventID: head.EventID, Payload: payload}, true
+	return Inbound{EventID: head.EventID, Type: head.Type, Payload: payload}, true
 }
 
 // TrackChat publica telemetría sin texto (solo message_length, Ley 1581).
@@ -213,6 +215,12 @@ func (s *RedisStore) TrackChat(ctx context.Context, msg socialevent.ChatMessage,
 			"occurred_at":    msg.OccurredAt.UTC().Format(time.RFC3339Nano),
 		},
 	}).Err()
+}
+
+// Client expone el cliente Redis para los stores que comparten conexión
+// (encuestas, recap).
+func (s *RedisStore) Client() *redis.Client {
+	return s.client
 }
 
 // Close libera el cliente.

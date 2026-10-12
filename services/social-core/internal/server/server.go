@@ -12,6 +12,7 @@ import (
 
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/auth"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/chat"
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/polls"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/reactions"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/socialevent"
 )
@@ -76,6 +77,7 @@ func DefaultDeps(getenv func(string) string) *Deps {
 		d.IsRevoked = st.IsRevoked
 		d.PublishReaction = st.PublishReaction
 		d.PublishRaw = st.PublishRaw
+		d.Polls = polls.NewStore(st.Client(), chat.HistoryTTL)
 		d.Track = func(ctx context.Context, roomID string, length int, eventID string, occurredAt time.Time) {
 			go func() {
 				tctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)

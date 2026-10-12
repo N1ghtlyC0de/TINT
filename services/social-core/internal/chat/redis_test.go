@@ -178,6 +178,19 @@ func TestRedisPublishRawLaserRelayed(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("timeout esperando el láser")
 	}
+	// poll_state también se reenvía y lleva su tipo (el relay agenda timers).
+	poll := `{"event_id":"ps1","type":"poll_state","room_id":"r1","poll_id":"p1","question":"q","options":["a","b"],"counts":[1,0],"closes_at_ms":5,"closed":false}`
+	if err := s.Client().Publish(ctx, ChannelKey("r1"), poll).Err(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-sub:
+		if got.EventID != "ps1" || got.Type != socialevent.TypePollState || !strings.Contains(string(got.Payload), `"counts":[1,0]`) {
+			t.Fatalf("sub = %+v, want poll_state", got)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout esperando poll_state")
+	}
 }
 
 func waitSubscribers(t *testing.T, mr *miniredis.Miniredis, channel string) {

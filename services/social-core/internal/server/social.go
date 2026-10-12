@@ -16,6 +16,7 @@ import (
 
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/auth"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/chat"
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/polls"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/reactions"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/socialevent"
 )
@@ -61,6 +62,16 @@ type Deps struct {
 	// LaserLimit frena el puntero láser (30/s por usuario). Nil = limitador
 	// propio por conexión.
 	LaserLimit *reactions.Limiter
+	// Polls guarda las encuestas en Redis. Nil (modo memoria) = las
+	// operaciones de encuesta responden UNAVAILABLE.
+	Polls *polls.Store
+	// OnPollCreated se llama tras crear una encuesta (contador del recap).
+	OnPollCreated func(ctx context.Context, roomID string)
+	// AfterFunc agenda timers (cierre de encuestas, flush de votos).
+	// Nil = time.AfterFunc; los tests inyectan uno manual.
+	AfterFunc func(d time.Duration, f func()) (stop func() bool)
+	// pollTimers es el timer de cierre de la encuesta vigente por sala.
+	pollTimers map[string]*pollTimer
 	// Estado interno del relay compartido y dedup (ver relay.go).
 	mu     sync.Mutex
 	relays map[string]*roomRelay
@@ -331,6 +342,8 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 	}
 	histRaw, _ := json.Marshal(socialevent.HistoryEnvelope{Type: socialevent.TypeHistory, RoomID: roomID, Messages: recent})
 	_ = writeMsg(ctx, c, histRaw, d.writeTimeout())
+	// Encuesta vigente (con el voto de este usuario), si la hay.
+	d.sendPollOnJoin(ctx, c, roomID, claims.Subject)
 
 	// Aviso de entrada (solo en vivo, tras el historial). Se perdona el
 	// reingreso dentro de la gracia (StrictMode, refresh, flap).
@@ -370,6 +383,7 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 	if laserLimiter == nil {
 		laserLimiter = reactions.NewLimiterWith(LaserPerSecond, time.Second)
 	}
+	actionLimiter := reactions.NewLimiterWith(PollActionsPerSecond, time.Second)
 
 	for {
 		_, raw, err := c.Read(ctx)
@@ -389,6 +403,15 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 			continue
 		case socialevent.TypeLaserPoint:
 			d.handleLaser(ctx, c, roomID, claims, raw, laserLimiter)
+			continue
+		case socialevent.TypePollCreate:
+			d.handlePollCreate(ctx, c, roomID, claims, raw)
+			continue
+		case socialevent.TypePollVote:
+			d.handlePollVote(ctx, c, roomID, claims, raw, actionLimiter)
+			continue
+		case socialevent.TypePollClose:
+			d.handlePollClose(ctx, c, roomID, claims, raw)
 			continue
 		}
 		var in socialevent.ChatSend
