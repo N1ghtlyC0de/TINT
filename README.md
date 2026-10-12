@@ -132,7 +132,7 @@ C4Component
         Component(master, "master", "Go puro", "Ancla del Reloj Maestro: PositionAt y Apply.")
         Component(store, "store", "go-redis + Lua", "Compare-and-set del estado, presencia, revocación.")
         Component(bus, "bus", "Pub/Sub", "Difusión entre réplicas por sala.")
-        Component(tel, "telemetry", "Go", "XADD sync_drift sin bloquear.")
+        Component(tel, "telemetry", "Go", "XADD playback_command, drift_correction y buffering sin bloquear.")
         Component(metrics, "metrics", "Go", "GET /metrics (Prometheus).")
     }
     Rel(web, ws, "/ws/sync", "WebSocket")
@@ -233,7 +233,7 @@ sequenceDiagram
         SC-->>W: HEARTBEAT {rtt_ms, drift_ms}
         W->>SC: SYNC_CHECK {posición}
         SC-->>W: SYNC_CORRECTION si drift > 500 ms
-        SC->>R: XADD analytics:events (sync_drift)
+        SC->>R: XADD analytics:events (drift_correction)
     end
     A->>W: "¡Qué escena!"
     W->>SO: mensaje de chat
@@ -472,7 +472,7 @@ erDiagram
     }
     telemetry_events {
         text event_id PK
-        text type "sync_drift | chat_message | ..."
+        text type "drift_correction | chat_message | ..."
         uuid room_id
         timestamptz occurred_at
         jsonb payload "sanitizado, retención 90 días"
