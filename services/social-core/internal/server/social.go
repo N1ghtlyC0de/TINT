@@ -55,6 +55,12 @@ type Deps struct {
 	// ReactionBuckets acumula conteos por sala y ventana de 5s (base del
 	// heatmap). Nil = no se agregan (solo broadcast en vivo).
 	ReactionBuckets *reactions.Buckets
+	// PublishRaw reenvía a las demás réplicas un evento ya serializado
+	// (laser, poll_state) por room:{id}:social. Nil = una réplica.
+	PublishRaw func(ctx context.Context, roomID string, payload []byte) error
+	// LaserLimit frena el puntero láser (30/s por usuario). Nil = limitador
+	// propio por conexión.
+	LaserLimit *reactions.Limiter
 	// Estado interno del relay compartido y dedup (ver relay.go).
 	mu     sync.Mutex
 	relays map[string]*roomRelay
@@ -360,6 +366,10 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 	if reactLimiter == nil {
 		reactLimiter = reactions.NewLimiter()
 	}
+	laserLimiter := d.LaserLimit
+	if laserLimiter == nil {
+		laserLimiter = reactions.NewLimiterWith(LaserPerSecond, time.Second)
+	}
 
 	for {
 		_, raw, err := c.Read(ctx)
@@ -373,8 +383,12 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 			writeError(ctx, c, "INVALID_PAYLOAD", "")
 			continue
 		}
-		if envelope.Type == socialevent.TypeReactionSend {
+		switch envelope.Type {
+		case socialevent.TypeReactionSend:
 			d.handleReaction(ctx, c, roomID, claims, raw, reactLimiter)
+			continue
+		case socialevent.TypeLaserPoint:
+			d.handleLaser(ctx, c, roomID, claims, raw, laserLimiter)
 			continue
 		}
 		var in socialevent.ChatSend

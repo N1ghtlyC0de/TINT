@@ -75,6 +75,7 @@ func DefaultDeps(getenv func(string) string) *Deps {
 		}
 		d.IsRevoked = st.IsRevoked
 		d.PublishReaction = st.PublishReaction
+		d.PublishRaw = st.PublishRaw
 		d.Track = func(ctx context.Context, roomID string, length int, eventID string, occurredAt time.Time) {
 			go func() {
 				tctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)

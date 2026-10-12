@@ -98,6 +98,12 @@ func (s *RedisStore) PublishReaction(ctx context.Context, roomID string, r socia
 	return s.client.Publish(ctx, ChannelKey(roomID), raw).Err()
 }
 
+// PublishRaw emite un evento ya serializado (laser, poll_state) al canal
+// de la sala (multirréplica).
+func (s *RedisStore) PublishRaw(ctx context.Context, roomID string, payload []byte) error {
+	return s.client.Publish(ctx, ChannelKey(roomID), payload).Err()
+}
+
 // IsRevoked indica si identity-api revocó el jti (EXISTS token:revoked:{jti}).
 // Un error de Redis se devuelve tal cual: el llamador debe fallar cerrado.
 func (s *RedisStore) IsRevoked(ctx context.Context, jti string) (bool, error) {
@@ -180,6 +186,8 @@ func decodeInbound(fromSync bool, raw []byte) (Inbound, bool) {
 		v = &socialevent.ChatMessage{}
 	case socialevent.TypeReaction:
 		v = &socialevent.Reaction{}
+	case socialevent.TypeLaser:
+		v = &socialevent.Laser{}
 	default:
 		return Inbound{}, false
 	}

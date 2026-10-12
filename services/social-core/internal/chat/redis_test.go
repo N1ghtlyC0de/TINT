@@ -155,6 +155,31 @@ func TestRedisPublishReactionRelayed(t *testing.T) {
 	}
 }
 
+// El puntero láser viaja por el mismo canal, re-serializado por tipo.
+func TestRedisPublishRawLaserRelayed(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+	s := NewRedisStoreWithClient(client, 3, time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sub, stop := s.Subscribe(ctx, "r1")
+	defer stop()
+	waitSubscribers(t, mr, ChannelKey("r1"))
+	raw := `{"event_id":"l1","type":"laser","room_id":"r1","user_id":"h","nick":"Ana","x":0.5,"y":0.25,"end":false,"extra":"x"}`
+	if err := s.PublishRaw(ctx, "r1", []byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-sub:
+		if got.EventID != "l1" || !strings.Contains(string(got.Payload), `"x":0.5`) || strings.Contains(string(got.Payload), "extra") {
+			t.Fatalf("sub = %+v, want laser re-serializado", got)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout esperando el láser")
+	}
+}
+
 func waitSubscribers(t *testing.T, mr *miniredis.Miniredis, channel string) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
