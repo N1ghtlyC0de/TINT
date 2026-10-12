@@ -3,6 +3,8 @@
 ## Contexto & Responsabilidad
 Eres el agente especializado en la capa de presentación de **TINT**. Tu foco es desarrollar la UI web responsiva, accesible e inmersiva (estética Dark/Luxury) usando React, TypeScript y Tailwind CSS.
 
+Cómo funciona la SPA por dentro (arquitectura, flujos con diagramas, estado y pruebas): [`README.md`](README.md).
+
 ## Stack Técnico
 - React 18 + TypeScript (modo `strict`) + Vite 5
 - Tailwind CSS 3 (paleta `tint.*` en `tailwind.config.js`)
