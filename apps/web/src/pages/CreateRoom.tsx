@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
 import { apiFetch, ApiError } from '../lib/api';
 import { toAbsoluteInviteLink, pickLatestActiveInvitation } from '../lib/invite';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
+import { AnimatePresence, m } from 'framer-motion';
 import { AppShell } from '../components/layout/AppShell';
-import { Button } from '../components/ui/Button';
+import { Button, ButtonLink } from '../components/ui/Button';
 import { BackLink } from '../components/ui/BackLink';
-import { Field, ErrorAlert, Card } from '../components/ui/Primitives';
+import { useConfirm } from '../components/ui/ConfirmDialog';
+import { Field, ErrorAlert, Card, Input } from '../components/ui/Primitives';
+import { ease, pop } from '../lib/motion';
 
 type Invitation = { code: string; link: string; expiresAt: string; createdAt?: string; revoked?: boolean };
 
@@ -13,6 +16,7 @@ export default function CreateRoom() {
   const { id: roomId } = useParams();
   const isManage = Boolean(roomId);
   const navigate = useNavigate();
+  const { confirm, dialog } = useConfirm();
   const [title, setTitle] = useState('');
   const [invitation, setInvitation] = useState<Invitation | null>(null);
   const [error, setError] = useState('');
@@ -99,12 +103,12 @@ export default function CreateRoom() {
 
   const handleRevoke = async () => {
     if (!roomId || !invitation) return;
-    if (
-      !window.confirm(
-        '¿Revocar este link? Quienes ya están en la sala no salen, pero nadie nuevo podrá entrar con él.',
-      )
-    )
-      return;
+    const ok = await confirm({
+      title: '¿Revocar este link?',
+      body: 'Quienes ya están en la sala no salen, pero nadie nuevo podrá entrar con él.',
+      confirmLabel: 'Revocar',
+    });
+    if (!ok) return;
     setError('');
     setNotice('');
     setLoading(true);
@@ -124,7 +128,13 @@ export default function CreateRoom() {
 
   const handleDelete = async () => {
     if (!roomId) return;
-    if (!window.confirm('¿Eliminar esta sala? Los links dejarán de funcionar.')) return;
+    const ok = await confirm({
+      title: '¿Eliminar esta sala?',
+      body: 'Los links dejarán de funcionar.',
+      confirmLabel: 'Eliminar',
+      tone: 'danger',
+    });
+    if (!ok) return;
     setError('');
     setLoading(true);
     try {
@@ -154,6 +164,7 @@ export default function CreateRoom() {
 
   return (
     <AppShell>
+      {dialog}
       <div className="grid gap-8 pt-10 lg:grid-cols-[1fr_380px]">
         <section>
           <BackLink />
@@ -177,9 +188,8 @@ export default function CreateRoom() {
                   helper="Ejemplo: Noche de cine, Final del torneo, Estreno juntos."
                   error={undefined}
                 >
-                  <input
+                  <Input
                     id="room-title"
-                    className="w-full rounded-xl border border-white/10 bg-tint-bg px-4 py-2.5 text-white placeholder:text-tint-muted/50 focus:border-tint-accent focus:outline-none"
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
                     placeholder="Título"
@@ -198,79 +208,77 @@ export default function CreateRoom() {
             </Card>
           )}
 
-          {invitation && !gone && (
-            <Card className="mt-4 max-w-xl border-tint-accent/30 p-6">
-              <h2 className="text-lg font-semibold tracking-tight text-white">Sala lista para compartir</h2>
-              <dl className="mt-4 space-y-3 text-sm">
-                <div className="flex items-center justify-between gap-4">
-                  <dt className="text-tint-muted">Código:</dt>
-                  <dd className="rounded-md bg-white/10 px-3 py-1 font-mono text-white">{invitation.code}</dd>
-                </div>
-                <div className="flex flex-col gap-1">
-                  <dt className="text-tint-muted">Link:</dt>
-                  <dd className="break-all text-white">{toAbsoluteInviteLink(invitation.link)}</dd>
-                </div>
-                <div className="flex items-center justify-between gap-4">
-                  <dt className="text-tint-muted">Expira:</dt>
-                  <dd className="text-white">{invitation.expiresAt}</dd>
-                </div>
-              </dl>
-              <div className="mt-5 flex flex-wrap gap-3">
-                {!isManage && createdRoomId && (
-                  <Link
-                    to={`/watch/${createdRoomId}`}
-                    className="inline-flex items-center justify-center whitespace-nowrap rounded-full bg-tint-accent px-5 py-2.5 text-sm font-semibold text-tint-bg transition hover:bg-tint-accentHover active:scale-[0.98]"
-                  >
-                    Entrar a la sala
-                  </Link>
-                )}
-                <Button type="button" onClick={copyLink} variant="ghost">
-                  {copied ? 'Copiado' : 'Copiar link'}
-                </Button>
-                {!isManage && (
-                  <Link
-                    to={`/invite/${invitation.code}`}
-                    className="inline-flex items-center justify-center whitespace-nowrap rounded-full px-5 py-2.5 text-sm text-tint-muted transition hover:text-white"
-                  >
-                    Ver invitación
-                  </Link>
-                )}
-                {isManage && (
-                  <>
-                    <Link
-                      to={`/watch/${roomId}`}
-                      className="inline-flex items-center justify-center whitespace-nowrap rounded-full bg-tint-accent px-5 py-2.5 text-sm font-semibold text-tint-bg transition hover:bg-tint-accentHover active:scale-[0.98]"
-                    >
-                      Entrar a la sala
-                    </Link>
-                    <Button type="button" onClick={handleNewLink} variant="quiet" disabled={loading}>
-                      {loading ? 'Generando…' : 'Generar link adicional'}
+          <AnimatePresence initial={false}>
+            {invitation && !gone && (
+              <m.div key="share" variants={pop} initial="hidden" animate="show" exit="exit" className="mt-4 max-w-xl">
+                <Card className="border-tint-accent/30 p-6 shadow-lift">
+                  <h2 className="text-lg font-semibold tracking-tight text-white">Sala lista para compartir</h2>
+                  <dl className="mt-4 space-y-3 text-sm">
+                    <div className="flex items-center justify-between gap-4">
+                      <dt className="text-tint-muted">Código:</dt>
+                      <m.dd
+                        key={invitation.code}
+                        data-testid="invite-code"
+                        className="rounded-md px-3 py-1 font-mono text-white"
+                        initial={{ backgroundColor: 'rgba(255,107,26,0.25)' }}
+                        animate={{ backgroundColor: 'rgba(255,255,255,0.10)' }}
+                        transition={{ duration: 1.4, ease }}
+                      >
+                        {invitation.code}
+                      </m.dd>
+                    </div>
+                    <div className="flex flex-col gap-1">
+                      <dt className="text-tint-muted">Link:</dt>
+                      <dd className="break-all text-white">{toAbsoluteInviteLink(invitation.link)}</dd>
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <dt className="text-tint-muted">Expira:</dt>
+                      <dd className="text-white">{invitation.expiresAt}</dd>
+                    </div>
+                  </dl>
+                  <div className="mt-5 flex flex-wrap gap-3">
+                    {!isManage && createdRoomId && <ButtonLink to={`/watch/${createdRoomId}`}>Entrar a la sala</ButtonLink>}
+                    <Button type="button" onClick={copyLink} variant="ghost">
+                      {copied ? 'Copiado' : 'Copiar link'}
                     </Button>
-                    <Button
-                      type="button"
-                      onClick={handleRevoke}
-                      variant="quiet"
-                      disabled={loading}
-                      aria-label="Revocar link de invitación"
-                    >
-                      {loading ? 'Revocando…' : 'Revocar link'}
-                    </Button>
-                  </>
-                )}
-              </div>
-              {isManage && (
-                <p className="mt-3 text-[13px] leading-relaxed text-tint-muted/80">
-                  Los links anteriores siguen funcionando hasta expirar o ser revocados. Revocar solo
-                  impide nuevas entradas; quienes ya están dentro no salen.
-                </p>
-              )}
-              {notice && (
-                <p role="status" className="mt-3 text-sm text-tint-success">
-                  {notice}
-                </p>
-              )}
-            </Card>
-          )}
+                    {!isManage && (
+                      <ButtonLink to={`/invite/${invitation.code}`} variant="quiet" className="font-normal">
+                        Ver invitación
+                      </ButtonLink>
+                    )}
+                    {isManage && (
+                      <>
+                        <ButtonLink to={`/watch/${roomId}`}>Entrar a la sala</ButtonLink>
+                        <Button type="button" onClick={handleNewLink} variant="quiet" disabled={loading}>
+                          {loading ? 'Generando…' : 'Generar link adicional'}
+                        </Button>
+                        <Button
+                          type="button"
+                          onClick={handleRevoke}
+                          variant="quiet"
+                          disabled={loading}
+                          aria-label="Revocar link de invitación"
+                        >
+                          {loading ? 'Revocando…' : 'Revocar link'}
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                  {isManage && (
+                    <p className="mt-3 text-[13px] leading-relaxed text-tint-muted/80">
+                      Los links anteriores siguen funcionando hasta expirar o ser revocados. Revocar solo
+                      impide nuevas entradas; quienes ya están dentro no salen.
+                    </p>
+                  )}
+                  {notice && (
+                    <p role="status" className="mt-3 text-sm text-tint-success">
+                      {notice}
+                    </p>
+                  )}
+                </Card>
+              </m.div>
+            )}
+          </AnimatePresence>
 
           {isManage && !invitation && !pageLoading && !gone && (
             <Card className="mt-4 max-w-xl border-tint-accent/30 p-6">
