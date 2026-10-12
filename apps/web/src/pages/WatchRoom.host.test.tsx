@@ -37,6 +37,17 @@ function baseSocial(over: Record<string, unknown> = {}) {
     closePoll: vi.fn(() => true),
     recap: null,
     requestRecap: vi.fn(() => true),
+    chatSettings: { slow_mode_s: 0, muted_user_ids: [] },
+    chatCooldownUntil: null,
+    setSlowMode: vi.fn(() => true),
+    muteUser: vi.fn(() => true),
+    trivia: { question: null, receivedAt: null, ack: null, result: null, myOption: null },
+    triviaSchedule: [],
+    scheduleTrivia: vi.fn(() => true),
+    deleteTrivia: vi.fn(() => true),
+    listTrivia: vi.fn(() => true),
+    answerTrivia: vi.fn(() => true),
+    dismissTrivia: vi.fn(),
     ...over,
   };
 }

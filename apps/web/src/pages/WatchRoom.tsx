@@ -9,6 +9,8 @@ import { LaserOverlay } from '../components/LaserOverlay';
 import { PollPanel } from '../components/PollPanel';
 import { RecapScreen } from '../components/RecapScreen';
 import { CopyButton } from '../components/CopyButton';
+import { ChatPanel } from '../components/chat/ChatPanel';
+import { TriviaPanel, TriviaPopup } from '../components/quiz/TriviaPanel';
 import { InvitePopover } from '../components/InvitePopover';
 import { SyncedPlayer } from '../components/SyncedPlayer';
 import { AmbilightGlow } from '../components/player/AmbilightGlow';
@@ -21,12 +23,12 @@ import { BrandMark } from '../components/layout/AppShell';
 import { AmbientBackground } from '../components/layout/AmbientBackground';
 import { Button } from '../components/ui/Button';
 import { Card, Field, Input } from '../components/ui/Primitives';
-import { ease, fadeUp } from '../lib/motion';
+import { ease } from '../lib/motion';
 import { apiFetch } from '../lib/api';
 import { toAbsoluteInviteLink, pickLatestActiveInvitation, parseInviteCode } from '../lib/invite';
-import { formatChatTime, noticeText, type RecapMessage } from '../lib/socialSocket';
 import { getLocalIdentity, guestTokenGrantsRoom } from '../lib/identity';
 import { useRoomPlayback, type MediaStatus } from '../hooks/useRoomPlayback';
+import { useRecapGate } from '../hooks/useRecapGate';
 
 import { useSocialSocket } from '../hooks/useSocialSocket';
 import { useSyncSocket } from '../hooks/useSyncSocket';
@@ -130,6 +132,16 @@ export default function WatchRoom() {
     closePoll,
     requestRecap,
     status,
+    chatSettings,
+    chatCooldownUntil,
+    setSlowMode,
+    muteUser,
+    trivia,
+    triviaSchedule,
+    scheduleTrivia,
+    deleteTrivia,
+    answerTrivia,
+    dismissTrivia,
   } = useSocialSocket(hasAccess ? roomId : undefined, { role: hostToken ? 'host' : 'guest' });
   // Si hay sesión de host, manda el host aunque queden restos de invitado
   // (p. ej. guest token de una visita anterior al login). Coherente con
@@ -175,17 +187,38 @@ export default function WatchRoom() {
   const [laserOn, setLaserOn] = useState(false);
   const laserDrawing = laserOn && !isGuest && canControl;
   const [pollCreatorOpen, setPollCreatorOpen] = useState(false);
-  // Recap: se abre al terminar el vídeo (y se pide) o cuando llega uno nuevo de social-core.
-  const [awaitingRecap, setAwaitingRecap] = useState(false);
-  const [dismissedRecap, setDismissedRecap] = useState<RecapMessage | null>(null);
-  const showRecap = awaitingRecap || (recap !== null && recap !== dismissedRecap);
+  // Recap: una sola vez por vídeo (los `ended` repetidos por el drift no lo reabren).
+  const recapGate = useRecapGate({
+    mediaKey: sync.state?.media_id ?? playback.mediaId,
+    recap,
+    requestRecap,
+  });
+  /** El vídeo terminó en esta visita: una expulsión posterior es el cierre de la sala. */
+  const [videoFinished, setVideoFinished] = useState(false);
+  const [libraryRequest, setLibraryRequest] = useState(0);
   const onVideoEnded = () => {
-    requestRecap();
-    setAwaitingRecap(true);
+    setVideoFinished(true);
+    // Sync-core sigue en `playing`: sin PAUSE, la corrección de drift lo reanudaría.
+    if (canControl && sync.state?.status === 'playing') {
+      const duration = videoRef.current?.duration;
+      const endMs = Number.isFinite(duration) ? Math.round((duration as number) * 1000) : sync.state.position_ms;
+      sendCommand('PAUSE', endMs);
+    }
+    recapGate.onEnded();
   };
-  const dismissRecap = () => {
-    setAwaitingRecap(false);
-    setDismissedRecap(recap);
+  const replay = () => {
+    recapGate.rearm();
+    setVideoFinished(false);
+    sendCommand('SEEK', 0);
+    sendCommand('PLAY', 0);
+  };
+  const chooseAnother = () => {
+    recapGate.dismiss();
+    setLibraryRequest((n) => n + 1);
+  };
+  const endRoom = async () => {
+    await apiFetch(`/rooms/${encodeURIComponent(roomId ?? '')}`, { method: 'DELETE' }, 'host');
+    navigate('/dashboard');
   };
   // Estado de reproducción local, solo para el halo (el estado maestro es de sync-core).
   const [playing, setPlaying] = useState(false);
@@ -204,20 +237,12 @@ export default function WatchRoom() {
       video.removeEventListener('ended', off);
     };
   }, [videoSrc]);
-  // Los mensajes del primer render (historial) aparecen sin animación; solo entran los nuevos.
-  const [initialMessageIds] = useState(() => new Set(messages.map((msg) => msg.event_id)));
-  const [chat, setChat] = useState('');
   const [invite, setInvite] = useState('');
   const [inviteHint, setInviteHint] = useState('');
   const [roomTitle, setRoomTitle] = useState<string | null>(null);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
 
-  const sendChat = (e: React.FormEvent) => {
-    e.preventDefault();
-    const text = chat.trim();
-    if (!text) return;
-    if (send(text)) setChat('');
-  };
+
 
   // Título y link de invitación: el host los pide al backend; el invitado
   // usa los guardados al canjear (su token no tiene auth de host).
@@ -255,20 +280,6 @@ export default function WatchRoom() {
   const chatStatus =
     status === 'open' ? 'Chat conectado' : status === 'closed' ? 'Chat desconectado' : 'Chat reconectando…';
 
-  // Auto-scroll inteligente: baja al fondo solo si el usuario ya estaba abajo,
-  // para no robar la lectura de mensajes antiguos cuando llegan nuevos.
-  const listRef = useRef<HTMLUListElement | null>(null);
-  const stickRef = useRef(true);
-
-  const onListScroll = (e: React.UIEvent<HTMLUListElement>) => {
-    const el = e.currentTarget;
-    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
-  };
-
-  useEffect(() => {
-    const el = listRef.current;
-    if (el && stickRef.current) el.scrollTop = el.scrollHeight;
-  }, [messages]);
 
   const handleGateJoin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -283,6 +294,14 @@ export default function WatchRoom() {
 
   // Antes que la puerta: al revocar se borra el guest token y hasAccess cae a false.
   if (sync.revoked) {
+    if (videoFinished) {
+      return (
+        <RoomNotice
+          title="El host terminó la sala"
+          body="Gracias por ver juntos. Si quieres otra función, pide al host un nuevo enlace."
+        />
+      );
+    }
     return (
       <RoomNotice
         title="Fuiste retirado de la sala por el host"
@@ -456,6 +475,13 @@ export default function WatchRoom() {
                     overlay={<LaserOverlay points={laser} drawing={laserDrawing} onPoint={sendLaser} />}
                   />
                   <ReactionOverlay reactions={reactions} />
+                  <TriviaPopup
+                    trivia={trivia}
+                    isHost={!isGuest}
+                    onAnswer={answerTrivia}
+                    onDismiss={dismissTrivia}
+                    error={socialError?.code ?? null}
+                  />
                 </div>
                 <div className="flex flex-wrap items-center justify-between gap-4 p-4">
                   <div>
@@ -493,9 +519,9 @@ export default function WatchRoom() {
               <Card className="p-5">
                 <h2 className="text-[15px] font-semibold text-white">Vídeo de la sala</h2>
                 <p className="mb-4 mt-1 text-[13px] leading-relaxed">
-                  Sube un vídeo desde tu equipo; todos lo cargarán en pausa al inicio.
+                  Elige uno de tus vídeos o sube uno nuevo; todos lo verán desde el inicio, en pausa.
                 </p>
-                <ChangeVideoPanel roomId={roomId ?? ''} onMediaAssigned={loadMedia} />
+                <ChangeVideoPanel roomId={roomId ?? ''} onMediaAssigned={loadMedia} openRequest={libraryRequest} />
               </Card>
               <Card className="p-5">
                 <ParticipantsPanel roomId={roomId ?? ''} />
@@ -516,100 +542,46 @@ export default function WatchRoom() {
             />
           </Card>
 
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <Card className="p-5">
-              <h2 className="text-[15px] font-semibold text-white">Trivia</h2>
-              <p className="mt-1 text-[13px] leading-relaxed">
-                Las preguntas de social-core aparecerán aquí durante la reproducción.
-              </p>
-            </Card>
-          </div>
+          <Card className="mt-4 p-5">
+            <TriviaPanel
+              isHost={!isGuest}
+              schedule={triviaSchedule}
+              getCurrentMs={getPositionMs}
+              onSchedule={scheduleTrivia}
+              onDelete={deleteTrivia}
+              error={socialError?.code ?? null}
+            />
+          </Card>
 
         </section>
 
         <aside aria-label="Social" className="flex min-h-0 flex-col gap-4">
-          <Card className="flex h-[60dvh] min-h-0 flex-col p-5 lg:h-[calc(100dvh-7rem)]">
-            <h2 className="text-[15px] font-semibold text-white">Chat en vivo</h2>
-            {messages.length === 0 ? (
-              <p className="mt-3 flex-1 rounded-xl border border-dashed border-white/15 bg-white/[0.02] p-4 text-[13px] leading-relaxed">
-                Sin mensajes aún. Saluda y prueba la sincronía con tu grupo.
-              </p>
-            ) : (
-              <ul
-                ref={listRef}
-                onScroll={onListScroll}
-                className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto"
-                aria-live="polite"
-              >
-                {messages.map((msg) => {
-                  // Solo entran animados los mensajes que no estaban en el primer render.
-                  const enter = !initialMessageIds.has(msg.event_id);
-                  const motionProps = {
-                    'data-enter': String(enter),
-                    variants: fadeUp,
-                    initial: enter ? ('hidden' as const) : false,
-                    animate: 'show' as const,
-                  };
-                  if (msg.type === 'notice') {
-                    return (
-                      <m.li
-                        key={msg.event_id}
-                        {...motionProps}
-                        className="mx-auto w-fit px-3 py-1 text-center text-[12px] italic text-tint-muted/80"
-                      >
-                        {noticeText(msg)}
-                      </m.li>
-                    );
-                  }
-                  const isMine = identity !== null && msg.user_id === identity.sub;
-                  return (
-                    <m.li
-                      key={msg.event_id}
-                      {...motionProps}
-                      className={
-                        isMine
-                          ? 'ml-auto w-fit max-w-[85%] rounded-xl bg-tint-accent/20 px-3 py-2 text-right text-[13px] break-words'
-                          : 'mr-auto w-fit max-w-[85%] rounded-xl bg-white/5 px-3 py-2 text-[13px] break-words'
-                      }
-                    >
-                      {!isMine && <span className="font-semibold text-white">{msg.nick}: </span>}
-                      <span>{msg.text}</span>{' '}
-                      {formatChatTime(msg.occurred_at) && (
-                        <time dateTime={msg.occurred_at} className="text-[11px] text-tint-muted/70">
-                          {formatChatTime(msg.occurred_at)}
-                        </time>
-                      )}
-                    </m.li>
-                  );
-                })}
-              </ul>
-            )}
-            <form
-              onSubmit={sendChat}
-              className="tint-glass -mx-5 -mb-5 mt-4 flex gap-2 rounded-b-2xl border-x-0 border-b-0 px-4 py-3"
-            >
-              <label htmlFor="chat-input" className="sr-only">
-                Escribe un mensaje
-              </label>
-              <Input
-                id="chat-input"
-                value={chat}
-                onChange={(e) => setChat(e.target.value)}
-                placeholder="Escribe un mensaje"
-                maxLength={280}
-                autoComplete="off"
-                className="min-h-10 min-w-0 flex-1 px-3 py-2 text-sm"
-              />
-              <Button type="submit" size="sm" className="min-h-10 shrink-0 px-4">
-                Enviar
-              </Button>
-            </form>
-          </Card>
+          <ChatPanel
+            roomId={roomId ?? ''}
+            messages={messages}
+            identity={identity}
+            isHost={!isGuest}
+            send={send}
+            chatSettings={chatSettings}
+            cooldownUntil={chatCooldownUntil}
+            lastError={socialError}
+            onSetSlowMode={setSlowMode}
+            onMuteUser={muteUser}
+          />
         </aside>
       </main>
 
       <ToastStack toasts={toasts} className="fixed right-4 top-28 z-40 sm:top-20" />
-      {showRecap && <RecapScreen recap={recap} onDismiss={dismissRecap} />}
+      {recapGate.open && (
+        <RecapScreen
+          recap={recapGate.recap}
+          onDismiss={recapGate.dismiss}
+          isHost={!isGuest}
+          onReplay={replay}
+          onChooseAnother={chooseAnother}
+          onEndRoom={endRoom}
+        />
+      )}
     </div>
   );
 }

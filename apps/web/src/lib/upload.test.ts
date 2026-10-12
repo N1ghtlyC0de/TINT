@@ -127,17 +127,20 @@ describe('uploadErrorMessage', () => {
   it.each([
     [new ApiError(413, 'File too large'), /supera el tamaño máximo/],
     [new ApiError(400, 'File too large'), /supera el tamaño máximo/],
-    [new ApiError(400, 'contentType must be video/*'), /contentType must be video/],
-    [new ApiError(409, 'Upload missing'), /no llegó al almacenamiento; reintenta/],
+    [new ApiError(400, 'contentType must be video/*'), /^No se pudo subir el vídeo\. Inténtalo de nuevo\.$/],
+    [new ApiError(409, 'Upload missing'), /no terminó de llegar; inténtalo de nuevo/],
     [new ApiError(403, 'Forbidden'), /permiso/],
     [new ApiError(404, 'Not found'), /no existe/],
     [new ApiError(410, 'Gone'), /cerrada/],
-    [new ApiError(500, 'boom'), /boom/],
-    [new UploadError('http', 403), /almacenamiento rechazó/],
-    [new UploadError('network', 0), /conexión/],
+    [new ApiError(500, 'boom'), /^No se pudo subir el vídeo\. Inténtalo de nuevo\.$/],
+    [new UploadError('http', 403), /^No se pudo subir el vídeo: el permiso de subida pudo caducar\. Inténtalo de nuevo\.$/],
+    [new UploadError('network', 0), /Se perdió la conexión durante la subida/],
     [new UploadError('abort', 0), /cancelada/],
     [new TypeError('x'), /No se pudo subir el vídeo/],
   ])('%s', (err, expected) => {
-    expect(uploadErrorMessage(err)).toMatch(expected);
+    const text = uploadErrorMessage(err);
+    expect(text).toMatch(expected);
+    // Sin jerga técnica visible.
+    expect(text).not.toMatch(/HTTP|MinIO|bucket|almacenamiento|status/i);
   });
 });
