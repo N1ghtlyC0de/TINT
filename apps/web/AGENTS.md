@@ -29,6 +29,8 @@ Eres el agente especializado en la capa de presentación de **TINT**. Tu foco es
 | `RoomPlayback` | identity-api (`GET /rooms/:id/playback`, host o guest token) | `mediaId`, `url` (GET prefirmado de MinIO), `expiresAt`, `status` (`pending`/`processing`/`ready`/`failed`/null), `ambilightUrl` (solo `ready`), `qualities` (`[{id: source\|720p\|360p, label, url}]`; ausente → solo el original) |
 | `UploadTicket` | identity-api (`POST /rooms/:id/media/uploads`, host) | `videoId`, `uploadUrl` (PUT prefirmado), `storageKey`, `expiresAt`, `headers`; se confirma con `POST …/uploads/:videoId/complete` → `mediaId` |
 | `RoomGuest` | identity-api (`GET /rooms/:id/guests`, `POST /rooms/:id/guests/:jti/revoke`) | `jti`, `nick`, `joinedAt`, `expiresAt`, `revoked` |
+| `AnalyticsTicket` | identity-api (`POST /rooms/:id/analytics-ticket`, host dueño, también con la sala cerrada) | `token` (HS256, `role: host`, `room_id`), `expiresAt` |
+| `RoomKpis` / `ReactionHeatmap` / `RoomTimeline` | analytics (`GET /rooms/:id/kpis`, `/reactions/heatmap`, `/timeline`, puerto 8084) | KPIs (`live`, `closed_at`, pico/promedio de espectadores, drift, conteos, buffering, % trivia); `buckets {bucket_start_ms, emoji, count}` + `by_emoji`; `points {t, connected_users, messages, reactions}` |
 | `Reaction` | social-core | `user_id`, `emoji`, `position_ms` (bucket de 5 s) |
 | `AmbilightFrame` | media-worker (`ambilight.json`) | `t_ms`, `top`, `bottom`, `left`, `right` (hex) |
 | `TriviaQuestion` / `Leaderboard` | social-core | `trivia_id`, `options`, `score` |
@@ -72,6 +74,15 @@ JSON sobre `useSocialSocket` (`src/lib/socialSocket.ts`); social-core es autorit
 
 El cálculo del drift es **autoritativo en sync-core**: el cliente solo aplica las `SYNC_CORRECTION` que recibe. Flujos y diagramas en [`docs/dominio-reproduccion.md`](../../docs/dominio-reproduccion.md).
 
+## Analítica
+| Pieza | Rol |
+| :--- | :--- |
+| `src/lib/stallTracker.ts` · `SyncedPlayer` | Mide cada stall del `<video>` (`waiting` → siguiente `playing`). Descarta los < 100 ms, los > 120 s (sync-core los rechazaría) y los causados por un seek (`waiting` entre `seeking` y `seeked`, o `seeking` durante la espera: saltos del usuario, `SEEK` de la sala y correcciones por seek); `emptied` lo reinicia. |
+| `useSyncSocket().sendBuffering` · `buildBuffering` | Envía `BUFFERING {event_id, room_id, position_ms, duration_ms, occurred_at}` con la codificación negociada (JSON/msgpack), solo con el socket abierto. Cualquier rol; sin ACK ni broadcast. |
+| `src/lib/analytics.ts` | `getAnalyticsTicket` (`POST /rooms/:id/analytics-ticket` en identity-api) y `createAnalyticsClient(roomId)` → `kpis()`, `heatmap(bucketMs = 5000)`, `timeline(stepS = 60)` contra `VITE_ANALYTICS_API_URL` con el ticket como Bearer. Ante un 401 de analytics pide **un** ticket nuevo (compartido entre peticiones paralelas) y reintenta; los errores son `AnalyticsError {status}` (0 = red). |
+| `src/pages/RoomAnalytics.tsx` | Ruta `/rooms/:id/analytics` (host, `ProtectedRoute`, `React.lazy`), enlazada desde "Análisis" en cada tarjeta del Dashboard. Insignia "En vivo"/"Sesión cerrada" (`kpis.live`/`closed_at`), 8 KPIs, botón "Actualizar" y estado vacío sin actividad. 401 de identity-api → `/login?next=`; 403 → sin acceso; 401 de analytics tras reintentar → acceso caducado o revocado; 503/red → servicio no disponible. |
+| `src/components/analytics/*` · `src/lib/chartScale.ts` | Gráficos SVG propios (sin librería): espectadores en el tiempo (área + línea, crosshair por puntero y teclado como `role="slider"`), reacciones por emoji (barras, > 8 se agrupan en "Otros") y heatmap de reacciones por posición del vídeo (rampa ordinal de 4 pasos; > 60 columnas se agrupan). Cada uno tiene `aria-label` con resumen, tabla alternativa en `<details>` y estado vacío. Colores en `CHART_COLORS` (`ChartCard.tsx`), validados con la skill `dataviz` sobre `tint.card`. |
+
 ## Cuestionario oculto `/test-me`
 Ruta sin `ProtectedRoute` ni enlaces desde la UI (solo por URL) para aprender cómo funciona el monorepo. Se carga con `React.lazy` para que `framer-motion` no entre al bundle principal.
 
@@ -86,7 +97,7 @@ Si cambia un dato documentado (puertos, contratos, límites), actualiza la pregu
 
 ## Reglas de Dominio
 1. **Canales Aislados:** Mantén el uso de dos hooks separados: `useSyncSocket` (vídeo/comandos) y `useSocialSocket` (chat, reacciones, láser, encuestas, recap, ambilight). Nunca mezcles los sockets.
-2. **Auto-Alineación:** sync-core detecta el desfase (> 500 ms) y lo reporta a telemetría; el cliente aplica la corrección recibida con `src/lib/drift.ts` y nunca envía telemetría de sync por su cuenta.
+2. **Auto-Alineación:** sync-core detecta el desfase (> 500 ms) y lo reporta a telemetría; el cliente aplica la corrección recibida con `src/lib/drift.ts` y nunca envía telemetría de sync por su cuenta. La única excepción es `BUFFERING` (ver "Analítica"), que viaja por el Canal Sync y lo publica sync-core.
 3. **Throttling UI:** Garantiza que los botones de reacción no permitan más de 5 clics/segundo por usuario (`src/hooks/useThrottle.ts`).
 4. **Accesibilidad:** Controles con `aria-label`, foco visible y contraste AA sobre fondo oscuro.
 5. **TDD & Cobertura:** Todo componente, hook o utilidad debe contar con pruebas unitarias en Vitest escritas **antes** de la implementación (Red → Green → Refactor). Cobertura mínima **85%** (statements, branches, functions, lines) — configurada en `vitest.config.ts`.
@@ -108,3 +119,4 @@ npm run test:coverage   # Vitest + umbral 85%
 | `VITE_SOCIAL_WS_URL` | `ws://localhost:8082/ws/social` | Canal social de social-core (chat, reacciones, láser, encuestas y recap). |
 | `VITE_SYNC_ENCODING` | `json` | Codificación del Canal Sync: `json` o `msgpack` (pide el subprotocolo `tint.sync.msgpack`; si sync-core no lo acepta, sigue en JSON). |
 | `VITE_DEMO_VIDEO_URL` | vacío | Vídeo de respaldo, solo si la sala no tiene vídeo asignado en identity-api (`mediaId: null`). |
+| `VITE_ANALYTICS_API_URL` | `http://localhost:8084/api/v1` | API de lectura de analytics (página `/rooms/:id/analytics`). |

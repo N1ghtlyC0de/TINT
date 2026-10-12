@@ -11,6 +11,7 @@ import {
 } from '../lib/syncCodec';
 import {
   backoffDelay,
+  buildBuffering,
   buildCommand,
   buildSyncCheck,
   buildSyncUrl,
@@ -30,6 +31,7 @@ import {
   type SyncSnapshot,
   type SyncState,
 } from '../lib/syncProtocol';
+import { MIN_STALL_MS } from '../lib/stallTracker';
 
 export const DEFAULT_SYNC_WS_URL = 'ws://localhost:8083/ws/sync';
 
@@ -130,6 +132,11 @@ export interface SyncSocketApi {
    * Devuelve el event_id o null si no se envió.
    */
   sendCommand: (type: CommandType, positionMs: number, extra?: CommandExtra) => string | null;
+  /**
+   * Reporta el fin de un stall (BUFFERING, solo analítica). Cualquier rol puede enviarlo;
+   * devuelve false si el socket no está abierto o el stall es trivial (< 100 ms).
+   */
+  sendBuffering: (positionMs: number, durationMs: number) => boolean;
 }
 
 interface SyncTicket {
@@ -430,6 +437,17 @@ export function useSyncSocket({
     [roomId],
   );
 
+  const sendBuffering = useCallback(
+    (positionMs: number, durationMs: number): boolean => {
+      if (durationMs < MIN_STALL_MS) return false;
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      ws.send(encodeFrame(buildBuffering(roomId, positionMs, durationMs), wireRef.current));
+      return true;
+    },
+    [roomId],
+  );
+
   return {
     connected,
     state,
@@ -447,5 +465,6 @@ export function useSyncSocket({
     volume,
     quality,
     sendCommand,
+    sendBuffering,
   };
 }

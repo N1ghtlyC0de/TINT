@@ -5,6 +5,7 @@ import { useTransientFlag } from '../hooks/useTransientFlag';
 import { applyCorrection, shouldRestoreRate } from '../lib/drift';
 import { readNetworkHints, resolveQuality, type PlaybackQuality } from '../lib/quality';
 import { estimateServerNow, expectedPosition, stepRate, type QualityPref, type SyncSnapshot } from '../lib/syncProtocol';
+import { createStallTracker } from '../lib/stallTracker';
 import { formatRate, formatTime } from '../lib/time';
 import { HostControlBar } from './host/HostControlBar';
 import { SeekBar } from './player/SeekBar';
@@ -88,7 +89,7 @@ export function SyncedPlayer({
   overlay,
   onEnded,
 }: SyncedPlayerProps) {
-  const { state, correction, connected, hostOnline, lastError, lastBroadcast, sendCommand, volume, quality } = sync;
+  const { state, correction, connected, hostOnline, lastError, lastBroadcast, sendCommand, volume, quality, sendBuffering } = sync;
   const [needsGesture, setNeedsGesture] = useState(false);
   const [currentMs, setCurrentMs] = useState(0);
   const [durationMs, setDurationMs] = useState(0);
@@ -107,10 +108,23 @@ export function SyncedPlayer({
   const lastPosRef = useRef(0);
   const cancelRateRef = useRef<(() => void) | null>(null);
 
+  const sendBufferingRef = useRef(sendBuffering);
+
   useEffect(() => {
     nowRef.current = now;
     stateRef.current = state;
+    sendBufferingRef.current = sendBuffering;
   });
+
+  // Stalls (waiting → playing) para la analítica; se ignoran los causados por seeks.
+  const [stalls] = useState(() =>
+    createStallTracker({
+      now: () => nowRef.current(),
+      onStall: ({ positionMs, durationMs }) => {
+        sendBufferingRef.current(positionMs, durationMs);
+      },
+    }),
+  );
 
   const cancelRateCorrection = useCallback(() => {
     cancelRateRef.current?.();
@@ -287,6 +301,11 @@ export function SyncedPlayer({
             onLoadedMetadata={(e) => onLoadedMetadata(e.currentTarget)}
             onDurationChange={(e) => syncProgress(e.currentTarget)}
             onEnded={onEnded}
+            onWaiting={() => stalls.waiting()}
+            onPlaying={(e) => stalls.playing(e.currentTarget.currentTime * 1000)}
+            onSeeking={() => stalls.seeking()}
+            onSeeked={() => stalls.seeked()}
+            onEmptied={() => stalls.reset()}
           />
         ) : (
           <div className="absolute inset-0 grid place-items-center">

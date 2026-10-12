@@ -156,6 +156,21 @@ export interface SyncCheckMessage {
   echo_server_ts: number;
 }
 
+/**
+ * Fin de un stall de reproducción (cliente → servidor). Solo alimenta la analítica:
+ * sync-core no responde ACK ni lo difunde; lo puede enviar cualquier participante.
+ */
+export interface BufferingMessage {
+  event_id: string;
+  type: 'BUFFERING';
+  room_id: string;
+  /** Posición del vídeo (ms) al reanudar. */
+  position_ms: number;
+  /** Duración del stall (ms): de `waiting` al siguiente `playing`. */
+  duration_ms: number;
+  occurred_at: string;
+}
+
 const SERVER_TYPES = new Set<string>([
   'STATE',
   'PLAY',
@@ -239,6 +254,22 @@ export function buildSyncCheck(
     position_ms: Math.round(positionMs),
     occurred_at: now.toISOString(),
     echo_server_ts: echoServerTs,
+  };
+}
+
+export function buildBuffering(
+  roomId: string,
+  positionMs: number,
+  durationMs: number,
+  now: Date = new Date(),
+): BufferingMessage {
+  return {
+    event_id: crypto.randomUUID(),
+    type: 'BUFFERING',
+    room_id: roomId,
+    position_ms: Math.max(0, Math.round(positionMs)),
+    duration_ms: Math.round(durationMs),
+    occurred_at: now.toISOString(),
   };
 }
 
