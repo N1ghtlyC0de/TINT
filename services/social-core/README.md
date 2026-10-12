@@ -502,7 +502,7 @@ Las pruebas usan `miniredis` para los stores y timers inyectados para encuestas 
 ## 10. Enlaces
 
 - [`AGENTS.md`](AGENTS.md): protocolo del Canal Social, autenticación, analítica, variables y reglas (referencia detallada).
-- [`docs/arquitectura.md`](../../docs/arquitectura.md): vista de componentes y conectores (C&C), contratos compartidos y puertos.
+- [`docs/arquitectura.md`](../../docs/arquitectura.md): [vista de componentes y conectores (C&C)](../../docs/arquitectura.md#vista-de-componentes-y-conectores), contratos compartidos y puertos.
 - [`docs/dominio-reproduccion.md`](../../docs/dominio-reproduccion.md): Canal Sync, de donde salen los comandos que lee el recap.
 - [`docs/contrato-eventos-analitica.md`](../../docs/contrato-eventos-analitica.md): contrato de `analytics:events`.
 - [`docs/usuarios-e-identidad.md`](../../docs/usuarios-e-identidad.md#4-esquemas-de-tokens): esquema de los tokens.
