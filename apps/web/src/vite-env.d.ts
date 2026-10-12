@@ -10,6 +10,8 @@ interface ImportMetaEnv {
   readonly VITE_SYNC_ENCODING?: string;
   /** Vídeo de respaldo si la sala no tiene vídeo asignado en identity-api. */
   readonly VITE_DEMO_VIDEO_URL?: string;
+  /** API de lectura de analytics (p. ej. http://localhost:8084/api/v1). */
+  readonly VITE_ANALYTICS_API_URL?: string;
 }
 
 interface ImportMeta {

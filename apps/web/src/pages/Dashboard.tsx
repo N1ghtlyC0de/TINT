@@ -162,6 +162,13 @@ export default function Dashboard() {
                     >
                       Gestionar
                     </Link>
+                    <Link
+                      to={`/rooms/${room.id}/analytics`}
+                      aria-label={`Análisis de ${room.title}`}
+                      className="rounded-full px-3 py-1.5 text-[13px] text-tint-muted transition hover:bg-white/5 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tint-accent"
+                    >
+                      Análisis
+                    </Link>
                     <button
                       type="button"
                       onClick={() => void handleDelete(room)}
