@@ -19,6 +19,7 @@ export function toAbsoluteInviteLink(link: string): string {
  */
 export function inviteClaimErrorMessage(err: unknown): string {
   if (err instanceof ApiError) {
+    if (err.status === 403 && err.message === 'BANNED') return 'El host te bloqueó en esta sala';
     if (err.status === 410) return 'Esta invitación expiró o la sala fue eliminada.';
     if (err.status === 404) return 'Esta invitación no existe o la sala fue eliminada.';
     if (err.status === 409) return 'Esta invitación fue revocada por el host.';

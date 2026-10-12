@@ -43,9 +43,11 @@ describe('InviteLanding', () => {
     await userEvent.type(screen.getByPlaceholderText('Nick'), 'Ana');
     await userEvent.click(screen.getByText('Unirse'));
     await waitFor(() => expect(screen.getByText('Sala lista')).toBeInTheDocument());
+    const deviceId = localStorage.getItem('tint_device_id');
+    expect(deviceId).toMatch(/^[0-9a-f-]{36}$/);
     expect(mockedApi).toHaveBeenCalledWith('/invitations/claim', {
       method: 'POST',
-      body: JSON.stringify({ code: 'ABC123', nick: 'Ana' }),
+      body: JSON.stringify({ code: 'ABC123', nick: 'Ana', deviceId }),
     });
     expect(localStorage.getItem('tint_guest_token')).toBe('guest-tok');
   });
@@ -159,5 +161,28 @@ describe('InviteLanding', () => {
     await userEvent.type(screen.getByPlaceholderText('Nick'), 'Ana');
     await userEvent.click(screen.getByText('Unirse'));
     await waitFor(() => expect(screen.getByText(/revocada/i)).toBeInTheDocument());
+  });
+
+  it('reutiliza el tint_device_id guardado', async () => {
+    const saved = '3f2504e0-4f89-41d3-9a0c-0305e82c3301';
+    localStorage.setItem('tint_device_id', saved);
+    mockedApi.mockResolvedValueOnce({ token: 'guest-tok', roomId: 'r1', nick: 'Ana' });
+    renderInvite();
+    await userEvent.type(screen.getByPlaceholderText('Nick'), 'Ana');
+    await userEvent.click(screen.getByText('Unirse'));
+    await waitFor(() => expect(screen.getByText('Sala lista')).toBeInTheDocument());
+    expect(mockedApi).toHaveBeenCalledWith('/invitations/claim', {
+      method: 'POST',
+      body: JSON.stringify({ code: 'ABC123', nick: 'Ana', deviceId: saved }),
+    });
+  });
+
+  it('si el host lo bloqueó (403 BANNED) lo dice con claridad', async () => {
+    mockedApi.mockRejectedValueOnce(new ApiError(403, 'BANNED'));
+    renderInvite();
+    await userEvent.type(screen.getByPlaceholderText('Nick'), 'Ana');
+    await userEvent.click(screen.getByText('Unirse'));
+    expect(await screen.findByText('El host te bloqueó en esta sala')).toBeInTheDocument();
+    expect(localStorage.getItem('tint_guest_token')).toBeNull();
   });
 });

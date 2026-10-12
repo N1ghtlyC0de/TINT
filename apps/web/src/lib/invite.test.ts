@@ -37,6 +37,10 @@ describe('inviteClaimErrorMessage', () => {
     expect(inviteClaimErrorMessage(new ApiError(404, 'Not found'))).toMatch(/no existe|eliminada/i);
   });
 
+  it('403 BANNED: el host bloqueó al invitado', () => {
+    expect(inviteClaimErrorMessage(new ApiError(403, 'BANNED'))).toBe('El host te bloqueó en esta sala');
+  });
+
   it('409 revocado por el host', () => {
     expect(inviteClaimErrorMessage(new ApiError(409, 'Revoked'))).toMatch(/revocada/i);
   });

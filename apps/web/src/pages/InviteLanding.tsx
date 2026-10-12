@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { apiFetch } from '../lib/api';
 import { inviteClaimErrorMessage } from '../lib/invite';
+import { getDeviceId } from '../lib/deviceId';
 import { Button } from '../components/ui/Button';
 import { Field, ErrorAlert, Card } from '../components/ui/Primitives';
 
@@ -37,10 +38,12 @@ export default function InviteLanding() {
     e.preventDefault();
     setError('');
     setLoading(true);
+    const deviceId = getDeviceId();
     try {
       const res = await apiFetch('/invitations/claim', {
         method: 'POST',
-        body: JSON.stringify({ code, nick }),
+        // deviceId: permite al host bloquear por dispositivo (se omite si no hay UUID).
+        body: JSON.stringify({ code, nick, ...(deviceId ? { deviceId } : {}) }),
       });
       localStorage.removeItem('tint_token');
       localStorage.setItem('tint_guest_token', res.token);
