@@ -48,4 +48,20 @@ describe('App', () => {
     localStorage.clear();
     window.history.pushState({}, '', '/');
   });
+
+  it('renderiza /403 directamente', async () => {
+    window.history.pushState({}, '', '/403?reason=not_host');
+    render(<App />);
+    expect(await screen.findByRole('heading', { name: /solo el host puede acceder a esta sección/i })).toBeInTheDocument();
+    window.history.pushState({}, '', '/');
+  });
+
+  it('un participante con guest token intentando acceder a /dashboard se bloquea y redirige a /403', async () => {
+    localStorage.setItem('tint_guest_token', 'guest-tok');
+    window.history.pushState({}, '', '/dashboard');
+    render(<App />);
+    expect(await screen.findByRole('heading', { name: /solo el host puede acceder a esta sección/i })).toBeInTheDocument();
+    localStorage.clear();
+    window.history.pushState({}, '', '/');
+  });
 });
