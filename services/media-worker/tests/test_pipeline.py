@@ -20,8 +20,6 @@ from media_worker.pipeline import (
 from media_worker.probe import VideoStatus
 from media_worker.storage import ambilight_key
 
-PROBE_2S = '{"format": {"duration": "2.0"}}'
-
 
 def two_red_frames():
     return FakePopen(stdout=solid_frame((255, 0, 0)) * 2)
@@ -46,16 +44,36 @@ PROBE_STREAMS_NORMALIZED = json.dumps(
 )
 
 
-def pipeline_runner(ffmpeg_returncode=0, ffmpeg_error=None, already_normalized=False):
-    """Runner que atiende ffprobe (duración y códecs) y ffmpeg (escribe el MP4 normalizado)."""
+def pipeline_runner(
+    ffmpeg_returncode=0,
+    ffmpeg_error=None,
+    already_normalized=False,
+    height=None,
+    failing_renditions=(),
+):
+    """Runner que atiende ffprobe (duración, altura y códecs) y ffmpeg (normalización y calidades).
+
+    Sin `height` ffprobe no informa la altura y no se generan calidades.
+    """
     seen = []
+    renditions = []
 
     def run(cmd, **kwargs):
         if cmd[0] == "ffprobe":
             if any(arg.startswith("stream=") for arg in cmd):
                 out = PROBE_STREAMS_NORMALIZED if already_normalized else "{}"
                 return SimpleNamespace(returncode=0, stdout=out, stderr="")
-            return SimpleNamespace(returncode=0, stdout=PROBE_2S, stderr="")
+            probe = {"format": {"duration": "2.0"}}
+            if height is not None:
+                probe["streams"] = [{"height": height}]
+            return SimpleNamespace(returncode=0, stdout=json.dumps(probe), stderr="")
+        if "-vf" in cmd:
+            target = int(cmd[cmd.index("-vf") + 1].split(":")[1])
+            renditions.append((target, Path(cmd[cmd.index("-i") + 1])))
+            if target in failing_renditions:
+                return SimpleNamespace(returncode=1, stdout="", stderr="x264 boom")
+            Path(cmd[-1]).write_bytes(f"{target}p-bytes".encode())
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         if ffmpeg_error:
             raise ffmpeg_error
         dest = Path(cmd[-1])
@@ -65,6 +83,7 @@ def pipeline_runner(ffmpeg_returncode=0, ffmpeg_error=None, already_normalized=F
 
     runner = Mock(side_effect=run)
     runner.seen = seen
+    runner.renditions = renditions
     return runner
 
 
@@ -269,3 +288,74 @@ def test_unsupported_format_is_an_error_before_touching_sql_or_bucket(tmp_path):
     with pytest.raises(UnsupportedFormatError, match=r"\.avi"):
         process_video("v1", upload, repo, blobs, runner, FakePopen())
     assert repo.history == [] and blobs.objects == {} and runner.call_args_list == []
+
+
+def test_hd_video_publishes_lower_quality_renditions_from_the_normalized(upload):
+    repo, blobs = setup()
+    runner = pipeline_runner(height=1080)
+    status = process_video("v1", upload, repo, blobs, runner, two_red_frames())
+    assert status is VideoStatus.READY
+    assert blobs.objects["v1/720p.mp4"] == b"720p-bytes"
+    assert blobs.objects["v1/360p.mp4"] == b"360p-bytes"
+    ((_, normalized),) = runner.seen
+    assert [target for target, _ in runner.renditions] == [720, 360]
+    assert all(src == normalized for _, src in runner.renditions)
+
+
+def test_renditions_are_published_after_source_and_ambilight(upload):
+    repo, blobs = setup()
+    process_video("v1", upload, repo, blobs, pipeline_runner(height=720), two_red_frames())
+    assert blobs.puts == ["v1/source.mp4", "v1/ambilight.json", "v1/360p.mp4"]
+
+
+def test_small_video_has_no_renditions(upload):
+    repo, blobs = setup()
+    runner = pipeline_runner(height=360)
+    process_video("v1", upload, repo, blobs, runner, two_red_frames())
+    assert runner.renditions == []
+    assert sorted(blobs.objects) == ["v1/ambilight.json", "v1/source.mp4"]
+
+
+def test_failed_rendition_is_skipped_and_the_video_is_still_ready(upload, caplog):
+    repo, blobs = setup()
+    runner = pipeline_runner(height=1080, failing_renditions={720})
+    with caplog.at_level(logging.WARNING):
+        status = process_video("v1", upload, repo, blobs, runner, two_red_frames())
+    assert status is VideoStatus.READY
+    assert repo.history == [("v1", "processing"), ("v1", "ready")]
+    assert "v1/720p.mp4" not in blobs.objects
+    assert blobs.objects["v1/360p.mp4"] == b"360p-bytes"
+    assert "720" in caplog.text
+
+
+def test_no_renditions_when_normalization_or_ambilight_fails(upload):
+    for runner, popen in (
+        (pipeline_runner(height=1080, ffmpeg_returncode=1), FakePopen()),
+        (pipeline_runner(height=1080), FakePopen(returncode=1, stderr=b"decode error")),
+    ):
+        repo, blobs = setup()
+        assert process_video("v1", upload, repo, blobs, runner, popen) is VideoStatus.FAILED
+        assert runner.renditions == []
+        assert blobs.objects == {}
+
+
+def test_already_normalized_hd_video_renditions_read_the_upload(upload):
+    repo, blobs = setup()
+    runner = pipeline_runner(already_normalized=True, height=720)
+    process_video("v1", upload, repo, blobs, runner, two_red_frames())
+    assert runner.renditions == [(360, upload)]
+    assert blobs.objects["v1/360p.mp4"] == b"360p-bytes"
+
+
+def test_reprocessing_an_hd_video_overwrites_the_same_renditions(upload):
+    repo, blobs = setup()
+    process_video("v1", upload, repo, blobs, pipeline_runner(height=1080), two_red_frames())
+    first = dict(blobs.objects)
+    process_video("v1", upload, repo, blobs, pipeline_runner(height=1080), two_red_frames())
+    assert blobs.objects == first
+    assert sorted(blobs.objects) == [
+        "v1/360p.mp4",
+        "v1/720p.mp4",
+        "v1/ambilight.json",
+        "v1/source.mp4",
+    ]
