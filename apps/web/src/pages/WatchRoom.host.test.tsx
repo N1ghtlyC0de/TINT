@@ -95,7 +95,7 @@ describe('WatchRoom — puntero láser', () => {
     expect(surface.className).toContain('pointer-events-none');
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-pressed', 'true');
-    expect(surface.className).toContain('cursor-crosshair');
+    expect(surface.style.cursor).toContain('url(');
     vi.spyOn(surface, 'getBoundingClientRect').mockReturnValue({
       left: 0,
       top: 0,
@@ -108,7 +108,9 @@ describe('WatchRoom — puntero láser', () => {
       toJSON: () => ({}),
     });
     fireEvent.pointerDown(surface, { clientX: 25, clientY: 50 });
+    fireEvent.pointerMove(surface, { clientX: 50, clientY: 50 });
     expect(social.current.sendLaser).toHaveBeenCalledWith(0.25, 0.5, false);
+    expect(social.current.sendLaser).toHaveBeenLastCalledWith(0.5, 0.5, false);
   });
 
   it('el invitado ve el trazo pero no tiene el botón del láser', async () => {
