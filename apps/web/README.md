@@ -581,7 +581,7 @@ Cómo se prueba lo difícil:
 - [`AGENTS.md`](AGENTS.md): reglas del dominio, modelo de datos, contratos y detalle por pieza.
 - [`AGENTS.md` raíz](../../AGENTS.md): reglas globales, contratos compartidos y gates.
 - [`docs/`](../../docs/README.md): documentación de features.
-- [Arquitectura](../../docs/arquitectura.md): vista de componentes y conectores (C&C) en [§2 Contenedores](../../docs/arquitectura.md#2-contenedores), contratos en [§5](../../docs/arquitectura.md#5-contratos-compartidos-entre-dominios) y puertos en [§6](../../docs/arquitectura.md#6-puertos-locales).
+- [Arquitectura](../../docs/arquitectura.md): [vista de componentes y conectores (C&C)](../../docs/arquitectura.md#vista-de-componentes-y-conectores), contratos en [§5](../../docs/arquitectura.md#5-contratos-compartidos-entre-dominios) y puertos en [§8](../../docs/arquitectura.md#8-puertos-locales).
 - [Dominio de Reproducción](../../docs/dominio-reproduccion.md): Canal Sync v2, reloj maestro y flujos (incluido el [cliente web](../../docs/dominio-reproduccion.md#10-cliente-web)).
 - [Usuarios, identidad y permisos](../../docs/usuarios-e-identidad.md): tokens, invitaciones y bloqueo.
 - [Contrato de eventos de analítica](../../docs/contrato-eventos-analitica.md): `BUFFERING` y la API de KPIs.
