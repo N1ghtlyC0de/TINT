@@ -14,7 +14,14 @@ import { publishAnalyticsEvent } from '../modules/analytics/analytics.events.js'
 import { getMediaSigner } from '../modules/media/media.signer.js';
 import { getMediaStore } from '../modules/media/media.store.js';
 import { enqueueMediaUpload } from '../modules/media/media.queue.js';
-import { create as createVideo, findById as findVideo, transitionStatus as transitionVideoStatus } from '../modules/videos/videos.repo.js';
+import {
+  create as createVideo,
+  findById as findVideo,
+  transitionStatus as transitionVideoStatus,
+  listByUploader as listVideosByUploader,
+  updateTitle as updateVideoTitle,
+  type Video,
+} from '../modules/videos/videos.repo.js';
 import {
   create as createGuestSession,
   findByJti as findGuestSession,
@@ -250,19 +257,36 @@ router.post('/rooms/:id/analytics-ticket', requireAuthHost, requireRoomOwner, as
   res.json({ token, expiresAt: expiresAt.toISOString() });
 });
 
-const setMediaSchema = z.object({
-  mediaKey: z
-    .string()
-    .trim()
-    .min(1)
-    .max(512)
-    .refine((key) => !key.includes('..'), { message: 'mediaKey no puede contener ".."' })
-    .refine((key) => !key.startsWith('/'), { message: 'mediaKey no puede empezar con "/"' }),
-});
+const mediaKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(512)
+  .refine((key) => !key.includes('..'), { message: 'mediaKey no puede contener ".."' })
+  .refine((key) => !key.startsWith('/'), { message: 'mediaKey no puede empezar con "/"' });
+// { mediaKey } (clave manual del bucket) o { videoId } (vídeo de la biblioteca del host), no ambos.
+const setMediaSchema = z.union([
+  z.object({ mediaKey: mediaKeySchema }).strict(),
+  z.object({ videoId: z.string().uuid() }).strict(),
+]);
 router.put('/rooms/:id/media', requireAuthHost, requireRoomOwner, validate(setMediaSchema), requireActiveRoom, async (req, res) => {
   const roomId = paramId(req.params.id);
-  const { mediaKey } = req.body;
-  const mediaId = uuidv4();
+  const body = req.body as { mediaKey: string } | { videoId: string };
+  let mediaId: string;
+  let mediaKey: string;
+  if ('videoId' in body) {
+    // Reuso desde la biblioteca: media_id = videos.id para que playback siga
+    // resolviendo estado, calidades y Ambilight. Solo vídeos propios y no fallidos.
+    const video = await findVideo(body.videoId);
+    if (!video || video.uploadedBy !== req.user!.id || video.status === 'failed') {
+      return res.status(404).json({ error: 'Not found' });
+    }
+    mediaId = video.id;
+    mediaKey = video.storageKey;
+  } else {
+    mediaId = uuidv4();
+    mediaKey = body.mediaKey;
+  }
   const room = await setMedia(roomId, { mediaId, mediaKey });
   if (!room) {
     return res.status(404).json({ error: 'Not found' });
@@ -282,6 +306,12 @@ const EXTENSION_BY_TYPE: Record<string, string> = {
   'video/x-m4v': '.m4v',
   'video/ogg': '.ogv',
 };
+
+/** Título de la biblioteca: el nombre del archivo sin su extensión (o tal cual si no queda nada). */
+function videoTitle(filename: string) {
+  const base = filename.replace(/\.[^./\\]{1,10}$/, '').trim();
+  return base || filename;
+}
 
 function videoExtension(filename: string, contentType: string) {
   const match = /\.[a-z0-9]{1,5}$/i.exec(filename);
@@ -315,6 +345,7 @@ router.post('/rooms/:id/media/uploads', requireAuthHost, requireRoomOwner, valid
     contentType,
     sizeBytes,
     status: 'pending',
+    title: videoTitle(filename),
   });
   const ttl = env.UPLOAD_URL_TTL_SECONDS;
   const uploadUrl = await getMediaSigner().presignPut(storageKey, contentType, ttl);
@@ -419,6 +450,39 @@ router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, asy
     ambilightUrl,
     qualities,
   });
+});
+
+/**
+ * Tarjeta de la biblioteca. previewUrl es una GET firmada para mostrar un
+ * fotograma: la versión 360p si el vídeo está ready y la tiene; si no, storage_key.
+ */
+async function libraryItem(video: Video) {
+  const { id, title, durationMs, status, createdAt, storageKey } = video;
+  const renditions = Array.isArray(video.renditions) ? video.renditions : [];
+  const previewKey = status === 'ready' && renditions.includes(360) ? `${id}/360p.mp4` : storageKey;
+  const previewUrl = await getMediaSigner().presignGet(previewKey, env.PLAYBACK_URL_TTL_SECONDS);
+  return { id, title, durationMs, status, createdAt, previewUrl };
+}
+
+router.get('/videos', requireAuthHost, async (req, res) => {
+  const videos = await listVideosByUploader(req.user!.id);
+  res.json({ videos: await Promise.all(videos.map(libraryItem)) });
+});
+
+const updateVideoSchema = z.object({
+  title: z.string().trim().min(1).max(255),
+});
+router.patch('/videos/:id', requireAuthHost, validate(updateVideoSchema), async (req, res) => {
+  const videoId = paramId(req.params.id);
+  const video = UUID_RE.test(videoId) ? await findVideo(videoId) : null;
+  if (!video || video.uploadedBy !== req.user!.id) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  const updated = await updateVideoTitle(video.id, req.body.title);
+  if (!updated) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  res.json({ video: await libraryItem(updated) });
 });
 
 router.get('/rooms/:id/guests', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {

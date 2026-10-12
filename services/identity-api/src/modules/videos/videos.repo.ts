@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq, ne } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { videos } from '../../db/schema.js';
 
@@ -45,4 +45,22 @@ export async function transitionStatus(id: string, from: VideoStatus, to: VideoS
     .where(and(eq(videos.id, id), eq(videos.status, from)))
     .returning();
   return result[0] || null;
+}
+
+/** Biblioteca del host: sus vídeos sin los `failed`, de más reciente a más antiguo. */
+export async function listByUploader(userId: string) {
+  const rows = await db
+    .select()
+    .from(videos)
+    .where(and(eq(videos.uploadedBy, userId), ne(videos.status, 'failed')))
+    .orderBy(desc(videos.createdAt));
+  return rows.map((row) => ({ ...row, renditions: normalizeRenditions(row.renditions) }));
+}
+
+/** Renombra el vídeo en la biblioteca. Devuelve null si ya no existe. */
+export async function updateTitle(id: string, title: string) {
+  const result = await db.update(videos).set({ title, updatedAt: new Date() }).where(eq(videos.id, id)).returning();
+  const row = result[0];
+  if (!row) return null;
+  return { ...row, renditions: normalizeRenditions(row.renditions) };
 }
