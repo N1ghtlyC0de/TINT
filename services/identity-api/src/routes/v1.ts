@@ -351,10 +351,14 @@ router.post('/rooms/:id/media/uploads/:videoId/complete', requireAuthHost, requi
   current(queued);
 });
 
+/** Alturas que se ofrecen como calidad, de mayor a menor (contrato con media-worker). */
+const PLAYBACK_RENDITION_HEIGHTS = [720, 360] as const;
+type PlaybackQuality = { id: 'source' | `${(typeof PLAYBACK_RENDITION_HEIGHTS)[number]}p`; label: string; url: string };
+
 router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, async (req, res) => {
   const room = req.room!;
   if (!room.mediaId || !room.mediaKey) {
-    return res.json({ mediaId: null, url: null, expiresAt: null, status: null, ambilightUrl: null });
+    return res.json({ mediaId: null, url: null, expiresAt: null, status: null, ambilightUrl: null, qualities: [] });
   }
   // Vídeos subidos por la API tienen fila en `videos` (estado del media-worker);
   // los asignados por clave manual no (status null). Mientras se procesa se
@@ -362,19 +366,29 @@ router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, asy
   // (storage_key la actualiza el worker). Un vídeo failed no se sirve.
   const video = await findVideo(room.mediaId);
   if (video?.status === 'failed') {
-    return res.json({ mediaId: room.mediaId, url: null, expiresAt: null, status: 'failed', ambilightUrl: null });
+    return res.json({ mediaId: room.mediaId, url: null, expiresAt: null, status: 'failed', ambilightUrl: null, qualities: [] });
   }
   const ttl = env.PLAYBACK_URL_TTL_SECONDS;
   const expiresAt = new Date(Date.now() + ttl * 1000);
   const signer = getMediaSigner();
   const url = await signer.presignGet(video?.storageKey ?? room.mediaKey, ttl);
   const ambilightUrl = video?.status === 'ready' ? await signer.presignGet(`${video.id}/ambilight.json`, ttl) : null;
+  // Calidades: el Original siempre (= url); las versiones `{id}/{h}p.mp4` que
+  // media-worker publicó (renditions) solo cuando el vídeo está ready.
+  const qualities: PlaybackQuality[] = [{ id: 'source', label: 'Original', url }];
+  if (video?.status === 'ready') {
+    const published = Array.isArray(video.renditions) ? video.renditions : [];
+    for (const h of PLAYBACK_RENDITION_HEIGHTS.filter((height) => published.includes(height))) {
+      qualities.push({ id: `${h}p`, label: `${h}p`, url: await signer.presignGet(`${video.id}/${h}p.mp4`, ttl) });
+    }
+  }
   res.json({
     mediaId: room.mediaId,
     url,
     expiresAt: expiresAt.toISOString(),
     status: video?.status ?? null,
     ambilightUrl,
+    qualities,
   });
 });
 
