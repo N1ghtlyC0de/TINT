@@ -12,6 +12,7 @@ import {
 import type { ChatSettingsView, SocialChatItem, SocialErrorInfo } from '../../hooks/useSocialSocket';
 import { Button } from '../ui/Button';
 import { Card } from '../ui/Primitives';
+import { useCountdown } from '../../hooks/useCountdown';
 
 export interface ChatPanelProps {
   roomId: string;
@@ -32,22 +33,6 @@ const CHAT_ERRORS = new Set(['SLOW_MODE', 'MUTED', 'RATE_LIMITED']);
 
 function slowModeLabel(seconds: number): string {
   return SLOW_MODE_OPTIONS.find((o) => o.seconds === seconds)?.label ?? `${seconds} s`;
-}
-
-/** Segundos que faltan (redondeo hacia arriba) hasta `until`; se refresca solo. */
-function useCountdown(until: number | null): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    setNow(Date.now());
-    if (until === null || until <= Date.now()) return;
-    const timer = window.setInterval(() => {
-      const t = Date.now();
-      setNow(t);
-      if (t >= until) window.clearInterval(timer);
-    }, 250);
-    return () => window.clearInterval(timer);
-  }, [until]);
-  return until === null ? 0 : Math.max(0, Math.ceil((until - now) / 1000));
 }
 
 /**

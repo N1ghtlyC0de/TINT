@@ -9,6 +9,7 @@ import { PollPanel } from '../components/PollPanel';
 import { RecapScreen } from '../components/RecapScreen';
 import { CopyButton } from '../components/CopyButton';
 import { ChatPanel } from '../components/chat/ChatPanel';
+import { TriviaPanel, TriviaPopup } from '../components/quiz/TriviaPanel';
 import { SyncedPlayer } from '../components/SyncedPlayer';
 import { ChangeVideoPanel } from '../components/host/ChangeVideoPanel';
 import { ParticipantsPanel } from '../components/host/ParticipantsPanel';
@@ -101,6 +102,12 @@ export default function WatchRoom() {
     chatCooldownUntil,
     setSlowMode,
     muteUser,
+    trivia,
+    triviaSchedule,
+    scheduleTrivia,
+    deleteTrivia,
+    answerTrivia,
+    dismissTrivia,
   } = useSocialSocket(hasAccess ? roomId : undefined, { role: hostToken ? 'host' : 'guest' });
   // Si hay sesión de host, manda el host aunque queden restos de invitado
   // (p. ej. guest token de una visita anterior al login). Coherente con
@@ -406,6 +413,13 @@ export default function WatchRoom() {
                 overlay={<LaserOverlay points={laser} drawing={laserDrawing} onPoint={sendLaser} />}
               />
               <ReactionOverlay reactions={reactions} />
+              <TriviaPopup
+                trivia={trivia}
+                isHost={!isGuest}
+                onAnswer={answerTrivia}
+                onDismiss={dismissTrivia}
+                error={socialError?.code ?? null}
+              />
             </div>
             <div aria-hidden="true" className="h-1.5 bg-gradient-to-r from-tint-accentDark via-tint-accent to-tint-accentDark opacity-70 blur-[6px]" />
             <div className="flex flex-wrap items-center justify-between gap-4 p-4">
@@ -454,10 +468,14 @@ export default function WatchRoom() {
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
             <Card className="p-5">
-              <h2 className="text-[15px] font-semibold text-white">Trivia</h2>
-              <p className="mt-1 text-[13px] leading-relaxed">
-                Las preguntas de social-core aparecerán aquí durante la reproducción.
-              </p>
+              <TriviaPanel
+                isHost={!isGuest}
+                schedule={triviaSchedule}
+                getCurrentMs={getPositionMs}
+                onSchedule={scheduleTrivia}
+                onDelete={deleteTrivia}
+                error={socialError?.code ?? null}
+              />
             </Card>
             <Card className="p-5">
               <h2 className="text-[15px] font-semibold text-white">Ambilight</h2>
