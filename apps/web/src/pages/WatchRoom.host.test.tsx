@@ -69,7 +69,7 @@ beforeEach(() => {
   localStorage.clear();
   MockWebSocket.reset();
   vi.stubGlobal('WebSocket', MockWebSocket);
-  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
+  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addListener: vi.fn(), removeListener: vi.fn() })));
   vi.stubEnv('VITE_SYNC_ENCODING', 'json');
   mockedApiFetch.mockReset();
   mockedApiFetch.mockImplementation(routeApi as typeof apiFetch);

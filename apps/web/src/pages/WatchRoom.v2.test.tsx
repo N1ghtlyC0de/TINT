@@ -103,7 +103,7 @@ beforeEach(() => {
   localStorage.clear();
   MockWebSocket.reset();
   vi.stubGlobal('WebSocket', MockWebSocket);
-  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
+  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addListener: vi.fn(), removeListener: vi.fn() })));
   vi.stubEnv('VITE_SYNC_ENCODING', 'json');
   playbackByCall = [{ mediaId: 'm1', url: 'https://minio/m1?sig=1', expiresAt: '2099-01-01T00:00:00Z' }];
   mockedApiFetch.mockReset();

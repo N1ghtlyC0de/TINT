@@ -66,7 +66,7 @@ function withDuration(seconds: number) {
 beforeEach(() => {
   vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
   vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
-  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false })));
+  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: false, addListener: vi.fn(), removeListener: vi.fn() })));
 });
 
 afterEach(() => {
@@ -236,7 +236,7 @@ describe('SyncedPlayer — fundido al corregir', () => {
   });
 
   it('con prefers-reduced-motion no hay fundido', () => {
-    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addListener: vi.fn(), removeListener: vi.fn() })));
     renderPlayer({
       sync: makeSync({ correction: { seq: 1, target_ms: 42_000, strategy: 'seek', drift_ms: 900, version: 1 } }),
     });
