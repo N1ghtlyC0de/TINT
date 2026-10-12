@@ -33,7 +33,7 @@ def test_incoming_prefix_is_the_staging_area():
     assert INCOMING_PREFIX == "incoming/"
 
 
-def test_downloads_the_staged_upload_and_runs_the_pipeline_with_its_extension():
+def test_downloads_the_staged_upload_and_runs_the_pipeline_with_its_original_name():
     blobs = Blobs({STAGED: b"bytes del navegador"})
     repo = repo_with(("processing", STAGED))
     seen = {}
@@ -44,7 +44,6 @@ def test_downloads_the_staged_upload_and_runs_the_pipeline_with_its_extension():
         return VideoStatus.READY
 
     assert handle_upload(VIDEO_ID, repo, blobs, process=process) is VideoStatus.READY
-    # La extensión del original decide la clave publicada ({id}/source.<ext>).
     assert seen == {
         "video_id": VIDEO_ID,
         "name": "original.MP4",
@@ -120,3 +119,15 @@ def test_default_process_is_the_pipeline(monkeypatch):
     blobs = Blobs({STAGED: b"x"})
     assert handle_upload(VIDEO_ID, repo_with(("processing", STAGED)), blobs) is VideoStatus.FAILED
     called.assert_called_once()
+
+
+def test_unsupported_extension_marks_failed_without_downloading():
+    key = f"{INCOMING_PREFIX}{VIDEO_ID}/original.avi"
+    blobs = Blobs({key: b"x"})
+    blobs.download = Mock()
+    repo = repo_with(("processing", key))
+    process = Mock()
+    assert handle_upload(VIDEO_ID, repo, blobs, process=process) is VideoStatus.FAILED
+    repo.mark_failed.assert_called_once_with(VIDEO_ID)
+    blobs.download.assert_not_called()
+    process.assert_not_called()

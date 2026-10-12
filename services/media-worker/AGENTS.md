@@ -15,6 +15,7 @@ Eres el agente responsable del procesamiento multimedia asíncrono de **TINT**. 
 ## Responsabilidades
 
 - Inspección de vídeos subidos (`src/media_worker/probe.py`).
+- Normalización a MP4 H.264 + AAC (`src/media_worker/normalize.py`).
 - Extracción de paleta Ambilight por bordes (`src/media_worker/ambilight.py`).
 - Preprocesamiento del vídeo recibido (validación, normalización y Ambilight) antes de publicarlo en el bucket.
 - Transición de estado del vídeo y publicación de artefactos en el bucket.
@@ -32,7 +33,7 @@ Eres el agente responsable del procesamiento multimedia asíncrono de **TINT**. 
 | :--- | :--- | :--- |
 | `videos` | PostgreSQL | `id`, `storage_key` (lo escribe el worker al publicar), `duration_ms`, `status` (`processing` → `ready` \| `failed`), `updated_at` |
 | `incoming/{video_id}/original.*` | MinIO (`tint-media`) | Original subido por el navegador (staging; lo lee el worker, caduca a los 2 días) |
-| `{video_id}/source.*` | MinIO (`tint-media`) | Vídeo preprocesado (nunca el original sin preprocesar) |
+| `{video_id}/source.mp4` | MinIO (`tint-media`) | Vídeo normalizado (MP4 H.264 + AAC) (nunca el original sin preprocesar) |
 | `media:uploads` | Redis Stream (grupo `media-workers`) | Evento `{video_id}` que publica identity-api al confirmar la subida |
 | `{video_id}/ambilight.json` | MinIO (`tint-media`) | `[{ "t_ms", "top", "bottom", "left", "right" }]` colores hex a 1 FPS |
 

@@ -3,8 +3,9 @@
 identity-api firma un PUT a `incoming/{video_id}/original.<ext>` (zona de staging, nunca la clave
 publicada) y guarda esa clave en `videos.storage_key`. Aquí se descarga a un archivo temporal y se
 pasa a `pipeline.process_video` sin modificarlo: solo si el vídeo es válido se publica en
-`{video_id}/source.<ext>` y `mark_ready` actualiza `storage_key`. El staging lo limpia la regla de
-ciclo de vida del bucket (`minio-init`), así no se corta a quien ya lo está reproduciendo.
+`{video_id}/source.mp4` (ya normalizado) y `mark_ready` actualiza `storage_key`. El staging lo
+limpia la regla de ciclo de vida del bucket (`minio-init`), así no se corta a quien ya lo está
+reproduciendo.
 """
 
 from __future__ import annotations
@@ -14,7 +15,13 @@ import tempfile
 import uuid
 from pathlib import Path, PurePosixPath
 
-from media_worker.pipeline import InvalidVideoIdError, VideoNotFoundError, process_video
+from media_worker.pipeline import (
+    InvalidVideoIdError,
+    UnsupportedFormatError,
+    VideoNotFoundError,
+    process_video,
+    validate_extension,
+)
 from media_worker.probe import VideoStatus
 from media_worker.storage import BlobNotFoundError
 
@@ -48,6 +55,14 @@ def handle_upload(video_id: str, repo, blobs, process=None) -> VideoStatus | Non
     if status == VideoStatus.READY.value and not key.startswith(INCOMING_PREFIX):
         logger.info("vídeo %s ya publicado en %s; evento duplicado", video_id, key)
         return VideoStatus.READY
+
+    try:
+        validate_extension(key)
+    except UnsupportedFormatError as exc:
+        # Reintentar no cambia la extensión: se marca failed sin descargar el archivo.
+        logger.warning("vídeo %s rechazado: %s", video_id, exc)
+        repo.mark_failed(video_id)
+        return VideoStatus.FAILED
 
     process = process or process_video
     with tempfile.TemporaryDirectory(prefix="tint-media-") as workdir:
