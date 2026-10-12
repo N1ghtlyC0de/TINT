@@ -88,7 +88,7 @@ export function InvitePopover({ identity, inviteLink, className = '' }: InvitePo
                   <span className="min-w-0 flex-1 truncate text-tint-muted" title={toAbsoluteInviteLink(inviteLink)}>
                     {toAbsoluteInviteLink(inviteLink)}
                   </span>
-                  <CopyButton link={inviteLink} className="min-h-10 px-4" />
+                  <CopyButton link={inviteLink} className="px-4" />
                 </div>
               </div>
             )}

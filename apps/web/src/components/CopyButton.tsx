@@ -40,7 +40,7 @@ export function CopyButton({ link, className, resetMs = COPIED_RESET_MS }: CopyB
   const style =
     state === 'copied'
       ? 'border-tint-success/40 bg-tint-success/10 text-tint-success'
-      : 'border-white/15 bg-white/5 text-white hover:bg-white/10';
+      : 'tint-glass text-white hover:bg-white/[0.09]';
 
   return (
     <button
