@@ -8,6 +8,7 @@ import { LaserOverlay } from '../components/LaserOverlay';
 import { PollPanel } from '../components/PollPanel';
 import { RecapScreen } from '../components/RecapScreen';
 import { CopyButton } from '../components/CopyButton';
+import { ChatPanel } from '../components/chat/ChatPanel';
 import { SyncedPlayer } from '../components/SyncedPlayer';
 import { ChangeVideoPanel } from '../components/host/ChangeVideoPanel';
 import { ParticipantsPanel } from '../components/host/ParticipantsPanel';
@@ -19,7 +20,6 @@ import { Button } from '../components/ui/Button';
 import { Card, Field } from '../components/ui/Primitives';
 import { apiFetch } from '../lib/api';
 import { toAbsoluteInviteLink, pickLatestActiveInvitation, parseInviteCode } from '../lib/invite';
-import { formatChatTime, noticeText } from '../lib/socialSocket';
 import { getLocalIdentity, guestTokenGrantsRoom } from '../lib/identity';
 import { useRoomPlayback, type MediaStatus } from '../hooks/useRoomPlayback';
 import { useRecapGate } from '../hooks/useRecapGate';
@@ -97,6 +97,10 @@ export default function WatchRoom() {
     closePoll,
     requestRecap,
     status,
+    chatSettings,
+    chatCooldownUntil,
+    setSlowMode,
+    muteUser,
   } = useSocialSocket(hasAccess ? roomId : undefined, { role: hostToken ? 'host' : 'guest' });
   // Si hay sesión de host, manda el host aunque queden restos de invitado
   // (p. ej. guest token de una visita anterior al login). Coherente con
@@ -175,18 +179,12 @@ export default function WatchRoom() {
     await apiFetch(`/rooms/${encodeURIComponent(roomId ?? '')}`, { method: 'DELETE' }, 'host');
     navigate('/dashboard');
   };
-  const [chat, setChat] = useState('');
   const [invite, setInvite] = useState('');
   const [inviteHint, setInviteHint] = useState('');
   const [roomTitle, setRoomTitle] = useState<string | null>(null);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
 
-  const sendChat = (e: React.FormEvent) => {
-    e.preventDefault();
-    const text = chat.trim();
-    if (!text) return;
-    if (send(text)) setChat('');
-  };
+
 
   // Título y link de invitación: el host los pide al backend; el invitado
   // usa los guardados al canjear (su token no tiene auth de host).
@@ -224,20 +222,6 @@ export default function WatchRoom() {
   const chatStatus =
     status === 'open' ? 'Chat conectado' : status === 'closed' ? 'Chat desconectado' : 'Chat reconectando…';
 
-  // Auto-scroll inteligente: baja al fondo solo si el usuario ya estaba abajo,
-  // para no robar la lectura de mensajes antiguos cuando llegan nuevos.
-  const listRef = useRef<HTMLUListElement | null>(null);
-  const stickRef = useRef(true);
-
-  const onListScroll = (e: React.UIEvent<HTMLUListElement>) => {
-    const el = e.currentTarget;
-    stickRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 64;
-  };
-
-  useEffect(() => {
-    const el = listRef.current;
-    if (el && stickRef.current) el.scrollTop = el.scrollHeight;
-  }, [messages]);
 
   const handleGateJoin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -504,73 +488,18 @@ export default function WatchRoom() {
         </section>
 
         <aside aria-label="Social" className="flex min-h-0 flex-col gap-4">
-          <Card className="flex h-[560px] min-h-0 flex-col p-5 lg:h-[calc(100dvh-7rem)]">
-            <h2 className="text-[15px] font-semibold text-white">Chat en vivo</h2>
-            {messages.length === 0 ? (
-              <p className="mt-3 flex-1 rounded-xl border border-dashed border-white/15 bg-white/[0.02] p-4 text-[13px] leading-relaxed">
-                Sin mensajes aún. Saluda y prueba la sincronía con tu grupo.
-              </p>
-            ) : (
-              <ul
-                ref={listRef}
-                onScroll={onListScroll}
-                className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto"
-                aria-live="polite"
-              >
-                {messages.map((m) => {
-                  if (m.type === 'notice') {
-                    return (
-                      <li
-                        key={m.event_id}
-                        className="mx-auto w-fit px-3 py-1 text-center text-[12px] italic text-tint-muted/80"
-                      >
-                        {noticeText(m)}
-                      </li>
-                    );
-                  }
-                  const isMine = identity !== null && m.user_id === identity.sub;
-                  return (
-                    <li
-                      key={m.event_id}
-                      className={
-                        isMine
-                          ? 'ml-auto w-fit max-w-[85%] rounded-xl bg-tint-accent/20 px-3 py-2 text-right text-[13px] break-words'
-                          : 'mr-auto w-fit max-w-[85%] rounded-xl bg-white/5 px-3 py-2 text-[13px] break-words'
-                      }
-                    >
-                      {!isMine && <span className="font-semibold text-white">{m.nick}: </span>}
-                      <span>{m.text}</span>{' '}
-                      {formatChatTime(m.occurred_at) && (
-                        <time dateTime={m.occurred_at} className="text-[11px] text-tint-muted/70">
-                          {formatChatTime(m.occurred_at)}
-                        </time>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-            <form onSubmit={sendChat} className="mt-4 flex gap-2">
-              <label htmlFor="chat-input" className="sr-only">
-                Escribe un mensaje
-              </label>
-              <input
-                id="chat-input"
-                value={chat}
-                onChange={(e) => setChat(e.target.value)}
-                placeholder="Escribe un mensaje"
-                maxLength={280}
-                autoComplete="off"
-                className="min-w-0 flex-1 rounded-xl border border-white/10 bg-tint-bg px-3 py-2 text-sm text-white placeholder:text-tint-muted/50 focus:border-tint-accent focus:outline-none"
-              />
-              <button
-                type="submit"
-                className="shrink-0 rounded-full bg-tint-accent px-4 py-2 text-sm font-semibold text-tint-bg transition hover:bg-tint-accentHover active:scale-[0.98]"
-              >
-                Enviar
-              </button>
-            </form>
-          </Card>
+          <ChatPanel
+            roomId={roomId ?? ''}
+            messages={messages}
+            identity={identity}
+            isHost={!isGuest}
+            send={send}
+            chatSettings={chatSettings}
+            cooldownUntil={chatCooldownUntil}
+            lastError={socialError}
+            onSetSlowMode={setSlowMode}
+            onMuteUser={muteUser}
+          />
         </aside>
       </main>
 
