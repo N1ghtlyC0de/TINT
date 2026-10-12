@@ -240,7 +240,7 @@ No se guarda: la web pide uno nuevo en cada (re)conexión del WebSocket.
 | Revocable | En Firebase | ✅ (`guest_sessions` + `token:revoked:{jti}`) | No (vida corta) | No (vida corta) |
 | Dónde vive en la web | `localStorage.tint_token` | `localStorage.tint_guest_token` | Memoria | Memoria |
 
-> `JWT_SECRET`, `JWT_ISSUER` y `JWT_AUDIENCE` **deben ser idénticos** en identity-api y sync-core.
+> `JWT_SECRET`, `JWT_ISSUER` y `JWT_AUDIENCE` **deben ser idénticos** en identity-api, sync-core, social-core y analytics.
 
 ---
 
