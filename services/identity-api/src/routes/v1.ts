@@ -22,7 +22,17 @@ import {
   setRevoked as setGuestSessionRevoked,
   listActiveByRoom as listActiveGuestSessions,
   setRevokedMany as setGuestSessionsRevoked,
+  listByRoomAndSub as listGuestSessionsBySub,
+  type GuestSession,
 } from '../modules/guests/guestSessions.repo.js';
+import {
+  create as createBan,
+  findByRoomAndDevice as findBanByDevice,
+  findByRoomAndSub as findBanBySub,
+  listByRoom as listBans,
+  removeById as removeBan,
+  type RoomBan,
+} from '../modules/bans/roomBans.repo.js';
 import { markTokenRevoked, publishRevoked } from '../modules/tokens/revocation.js';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -433,6 +443,83 @@ router.post('/rooms/:id/guests/:jti/revoke', requireAuthHost, requireRoomOwner, 
   res.json({ success: true });
 });
 
+// Bloqueo por dispositivo. Los invitados son anónimos: el bloqueo se ata al
+// deviceId que la web guarda en el navegador, así que borrar los datos del
+// navegador lo evade (ver docs/usuarios-e-identidad.md §2.4).
+const createBanSchema = z
+  .object({
+    jti: z.string().uuid().optional(),
+    sub: z.string().trim().min(1).max(128).optional(),
+  })
+  .refine((body) => (body.jti === undefined) !== (body.sub === undefined), { message: 'Envía jti o sub (solo uno)' });
+
+const banView = ({ id, nick, createdAt }: RoomBan) => ({ id, nick, createdAt });
+
+/** Inserta (o recupera, si ya existía) el bloqueo de cada dispositivo del invitado. */
+async function upsertBans(roomId: string, sessions: GuestSession[], createdBy: string) {
+  const { sub, nick } = sessions[0];
+  const devices = [...new Set(sessions.map((s) => s.deviceId).filter((d): d is string => !!d))];
+  if (devices.length === 0) {
+    // Cliente viejo sin deviceId: queda registrado por sub (no impide volver a entrar).
+    return (await findBanBySub(roomId, sub)) ?? (await createBan({ roomId, deviceId: null, sub, nick, createdBy }));
+  }
+  const bans: (RoomBan | null)[] = [];
+  for (const deviceId of devices) {
+    bans.push((await createBan({ roomId, deviceId, sub, nick, createdBy })) ?? (await findBanByDevice(roomId, deviceId)));
+  }
+  return bans.find((b): b is RoomBan => !!b) ?? null;
+}
+
+router.post('/rooms/:id/bans', requireAuthHost, requireRoomOwner, validate(createBanSchema), requireActiveRoom, async (req, res) => {
+  const roomId = req.room!.id;
+  const { jti, sub } = req.body as { jti?: string; sub?: string };
+  let guestSub = sub;
+  if (jti) {
+    const session = await findGuestSession(jti);
+    guestSub = session?.roomId === roomId ? session.sub : undefined;
+  }
+  const sessions = guestSub ? await listGuestSessionsBySub(roomId, guestSub) : [];
+  if (sessions.length === 0) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  // El bloqueo se guarda antes de revocar: si Redis falla, el dispositivo ya no
+  // puede volver a entrar y el reintento (idempotente) termina de revocar.
+  const ban = await upsertBans(roomId, sessions, req.user!.id);
+  if (!ban) {
+    return res.status(503).json({ error: 'Service unavailable' });
+  }
+  const now = Date.now();
+  const live = sessions.filter((s) => s.expiresAt.getTime() > now);
+  try {
+    for (const s of live) {
+      await markTokenRevoked(s.jti, Math.floor(s.expiresAt.getTime() / 1000));
+      await publishRevoked(roomId, s.jti);
+    }
+  } catch (err) {
+    console.error('[bans] no se pudieron revocar las sesiones del invitado bloqueado:', (err as Error).message);
+    return res.status(503).json({ error: 'Service unavailable' });
+  }
+  for (const s of live) {
+    await setGuestSessionRevoked(s.jti);
+  }
+  res.json({ ban: banView(ban) });
+});
+
+router.get('/rooms/:id/bans', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
+  const bans = await listBans(req.room!.id);
+  // Ni device_id ni sub salen de identity-api.
+  res.json({ bans: bans.map(banView) });
+});
+
+router.delete('/rooms/:id/bans/:banId', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
+  const banId = paramId(req.params.banId);
+  const removed = UUID_RE.test(banId) ? await removeBan(req.room!.id, banId) : null;
+  if (!removed) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  res.json({ success: true });
+});
+
 router.post('/invitations/:code/revoke', requireAuthHost, async (req, res) => {
   const rawCode = req.params.code;
   const code = Array.isArray(rawCode) ? rawCode[0] : rawCode;
@@ -454,9 +541,11 @@ router.post('/invitations/:code/revoke', requireAuthHost, async (req, res) => {
 const claimSchema = z.object({
   code: z.string().trim(),
   nick: z.string().trim().min(1).max(64),
+  // Identificador anónimo del navegador (bloqueo por dispositivo). Opcional: los clientes viejos no lo envían.
+  deviceId: z.string().uuid().optional(),
 });
 router.post('/invitations/claim', validate(claimSchema), async (req, res) => {
-  const { code, nick } = req.body;
+  const { code, nick, deviceId } = req.body as { code: string; nick: string; deviceId?: string };
   const invitation = await findByCode(code);
   if (!invitation) {
     return res.status(404).json({ error: 'Not found' });
@@ -471,6 +560,9 @@ router.post('/invitations/claim', validate(claimSchema), async (req, res) => {
   if (room && room.status === 'deleted') {
     return res.status(410).json({ error: 'Deleted' });
   }
+  if (deviceId && (await findBanByDevice(invitation.roomId, deviceId))) {
+    return res.status(403).json({ error: 'BANNED' });
+  }
   const { token, payload } = issueGuestToken(invitation.roomId, nick);
   // Registrar la sesión antes de entregar el token: un token sin fila no se podría listar ni revocar.
   await createGuestSession({
@@ -480,6 +572,7 @@ router.post('/invitations/claim', validate(claimSchema), async (req, res) => {
     nick: payload.nick,
     joinedAt: new Date(payload.iat * 1000),
     expiresAt: new Date(payload.exp * 1000),
+    deviceId: deviceId ?? null,
   });
   res.json({ token, roomId: invitation.roomId, nick, roomTitle: room?.title ?? null });
   void publishAnalyticsEvent('invitation_claimed', { room_id: payload.room_id, user_id: payload.sub });

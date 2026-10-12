@@ -499,6 +499,7 @@ describe('rutas v1', () => {
       nick: 'Ana',
       joinedAt: new Date(decoded.iat * 1000),
       expiresAt: new Date(decoded.exp * 1000),
+      deviceId: null,
     });
   });
 

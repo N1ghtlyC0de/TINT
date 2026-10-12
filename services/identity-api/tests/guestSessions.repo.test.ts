@@ -24,7 +24,7 @@ vi.mock('../src/db/client.js', () => ({
   pool: { end: () => Promise.resolve() },
 }));
 
-import { create, findByJti, listByRoom, setRevoked, listActiveByRoom, setRevokedMany } from '../src/modules/guests/guestSessions.repo.js';
+import { create, findByJti, listByRoom, setRevoked, listActiveByRoom, setRevokedMany, listByRoomAndSub } from '../src/modules/guests/guestSessions.repo.js';
 
 const session = {
   jti: '22222222-2222-4222-8222-222222222222',
@@ -81,5 +81,11 @@ describe('guestSessions.repo', () => {
     setMock.mockClear();
     await expect(setRevokedMany([])).resolves.toEqual([]);
     expect(setMock).not.toHaveBeenCalled();
+  });
+
+  it('listByRoomAndSub devuelve las sesiones de ese invitado en la sala', async () => {
+    whereMock.mockReturnValueOnce([session]);
+    await expect(listByRoomAndSub('r1', 'guest:x')).resolves.toEqual([session]);
+    expect(whereMock).toHaveBeenCalledTimes(1);
   });
 });
