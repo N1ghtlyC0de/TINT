@@ -39,6 +39,10 @@ const (
 	// Revoked solo viaja por el bus entre réplicas (lo publica identity-api):
 	// cierra las conexiones del token revocado y nunca llega a los clientes.
 	Revoked Type = "REVOKED"
+
+	// Buffering (cliente → servidor) informa un stall del reproductor. Solo
+	// alimenta la telemetría: sin ACK, sin broadcast y sin tocar el estado.
+	Buffering Type = "BUFFERING"
 )
 
 // Límites de los comandos RATE, LOAD y VOLUME.
@@ -56,6 +60,11 @@ const (
 	QualitySource = "source"
 	Quality720p   = "720p"
 	Quality360p   = "360p"
+)
+
+// MaxBufferingMs es la duración máxima aceptada en BUFFERING (2 min).
+const (
+	MaxBufferingMs = 120_000
 )
 
 // Códigos de error enviados en mensajes ERROR.
@@ -110,6 +119,8 @@ type Event struct {
 	Holder     string `json:"holder,omitempty"`
 	// Token revocado (REVOKED, solo bus).
 	JTI string `json:"jti,omitempty"`
+	// Duración del stall en BUFFERING (solo cliente → servidor).
+	DurationMs int64 `json:"duration_ms,omitempty"`
 }
 
 var (
@@ -123,6 +134,7 @@ var (
 	ErrInvalidMedia     = errors.New("media_id es obligatorio y de máximo 128 caracteres")
 	ErrInvalidVolume    = errors.New("volume es obligatorio y debe estar entre 0 y 1")
 	ErrInvalidQuality   = errors.New("quality debe ser auto, source, 720p o 360p")
+	ErrInvalidBuffering = errors.New("duration_ms debe estar entre 0 y 120000")
 )
 
 // Validate verifica que un evento completo (ya sellado por el servidor)
@@ -132,7 +144,7 @@ func (e Event) Validate() error {
 		return err
 	}
 	switch e.Type {
-	case Play, Pause, Seek, Rate, Load, Volume, Quality, Heartbeat, SyncCheck, State, SyncCorrection, HostStatus, Ack, Error, Control, Revoked:
+	case Play, Pause, Seek, Rate, Load, Volume, Quality, Heartbeat, SyncCheck, State, SyncCorrection, HostStatus, Ack, Error, Control, Revoked, Buffering:
 	default:
 		return fmt.Errorf("%w: %q", ErrUnsupportedType, e.Type)
 	}
@@ -153,7 +165,7 @@ func (e Event) ValidateInbound() error {
 		return err
 	}
 	switch e.Type {
-	case Play, Pause, Seek, Rate, Load, Volume, Quality, SyncCheck:
+	case Play, Pause, Seek, Rate, Load, Volume, Quality, SyncCheck, Buffering:
 	default:
 		return fmt.Errorf("%w: %q", ErrUnsupportedType, e.Type)
 	}
@@ -163,7 +175,7 @@ func (e Event) ValidateInbound() error {
 	return e.validateArgs()
 }
 
-// validateArgs valida los argumentos propios de RATE, LOAD, VOLUME y QUALITY.
+// validateArgs valida los argumentos propios de RATE, LOAD, VOLUME, QUALITY y BUFFERING.
 func (e Event) validateArgs() error {
 	switch e.Type {
 	case Rate:
@@ -177,6 +189,10 @@ func (e Event) validateArgs() error {
 		return ValidateVolume(*e.Volume)
 	case Quality:
 		return ValidateQuality(e.Quality)
+	case Buffering:
+		if e.DurationMs < 0 || e.DurationMs > MaxBufferingMs {
+			return ErrInvalidBuffering
+		}
 	}
 	return nil
 }

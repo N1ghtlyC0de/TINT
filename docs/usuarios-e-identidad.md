@@ -236,7 +236,7 @@ No se guarda: la web pide uno nuevo en cada (re)conexión del WebSocket.
 | Redis | `room:{id}:hosts_online` | Ids de conexión de host/cohost | 12 h; cuenta 5 s |
 | Redis | `room:{id}:delegate` | `sub` del invitado con control | 12 h |
 | Redis | `room:{id}:sync_state.host_id` | `sub` del último Host conectado | 12 h |
-| Redis Stream | `analytics:events` | Eventos de analítica ([contrato](contrato-eventos-analitica.md)). Los de identity-api (`user_login`, `room_created`, `room_closed`, `invitation_claimed`) llevan como `user_id` el `sub` (`provider_sub` o `guest:<uuid>`), nunca email, nombre, `nick` ni token | `MAXLEN ~100000` |
+| Redis Stream | `analytics:events` | Eventos de analítica ([contrato](contrato-eventos-analitica.md)). Los de identity-api (`user_login`, `room_created`, `room_closed`, `invitation_claimed`) llevan como `user_id` el `sub` (`provider_sub` o `guest:<uuid>`), nunca email, nombre, `nick` ni token; los de sync-core (`playback_command`, `drift_correction`, `buffering`) van **sin** `sub`, `nick` ni token | `MAXLEN ~100000` |
 | Navegador | `localStorage.tint_token` / `tint_guest_token` | Tokens del usuario | Hasta cerrar sesión, revocación (4001) o expiración |
 | Navegador | `localStorage.tint_room_title` / `tint_invite_link` | Título y link que recibe el invitado al reclamar la invitación (el invitado no puede pedirlos a la API de host) | Hasta el siguiente claim |
 

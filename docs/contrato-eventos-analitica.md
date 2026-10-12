@@ -72,9 +72,9 @@ evalúa respuestas de trivia todavía.
 
 | `type` | Cuándo | Campos propios | Sirve para |
 | :--- | :--- | :--- | :--- |
-| `playback_command` | Se acepta un comando de reproducción (no duplicado) | `role`, `command` (`PLAY`, `PAUSE`, `SEEK`, `RATE`, `LOAD`), `position_ms` | Cómo se conduce la sesión |
-| `drift_correction` | Se detecta un desfase mayor a 500 ms | `role`, `drift_ms`, `position_ms` (+ `rtt_ms`, `strategy`) | Calidad de sincronización (REQ-28) |
-| `buffering` | Un cliente termina de recargar el video | `role`, `duration_ms`, `position_ms` | QoE |
+| `playback_command` | Se aplica un comando de quien tiene el control (no los duplicados ni los rechazados) | `command` (`PLAY`, `PAUSE`, `SEEK`, `RATE`, `LOAD`, `VOLUME`, `QUALITY`), `position_ms` (ancla resultante), `role` | Cómo se conduce la sesión |
+| `drift_correction` | Se detecta un desfase mayor a 500 ms y se envía `SYNC_CORRECTION` | `drift_ms`, `position_ms` (posición maestra a la que se corrige), `rtt_ms`, `strategy` (`rate`, `seek`), `role` | Calidad de sincronización (REQ-28) |
+| `buffering` | Un cliente termina de recargar el video (mensaje `BUFFERING` del Canal Sync) | `duration_ms` (0–120000), `position_ms`, `role` | QoE |
 
 `drift_correction` **reemplaza a `sync_drift`**, el nombre que usaba antes la telemetría de sync-core.
 
@@ -85,6 +85,11 @@ Origen de `buffering`: el navegador mide el atasco (evento `waiting` del `<video
 conexión y solo publica el evento: no responde `ACK` ni hace broadcast.
 
 Los latidos (`HEARTBEAT`) no se publican: son demasiados y no aportan a ningún KPI.
+
+**Excepción de `user_id`:** sync-core no publica `user_id` (su `AGENTS.md` prohíbe enviar `sub` a
+la telemetría); en su lugar envía `role` (`host`, `cohost`, `participant`). `playback_command` y
+`buffering` reutilizan el `event_id` del mensaje del cliente si es un UUID (si no, se genera uno);
+`drift_correction` siempre lleva uno nuevo. `buffering` se limita a 1 por segundo y conexión.
 
 ### `media-worker`
 
@@ -139,6 +144,6 @@ Para agregar un tipo o un campo: PR a este archivo.
 | :--- | :--- |
 | `social-core` | `chat_message`, `presence` y `reaction` completos; `trivia_answer` no (aún no hay trivia en el servidor) |
 | `identity-api` | `user_login`, `room_created`, `room_closed` (`reason=deleted`, solo el primer borrado) e `invitation_claimed`, con todos los campos comunes. Además entrega el analytics-ticket (`POST /rooms/:id/analytics-ticket`) |
-| `sync-core` | Nada (el servicio aún no tiene WebSocket) |
+| `sync-core` | `playback_command`, `drift_correction` (antes `sync_drift`) y `buffering`, con `source`, `role` y sin `user_id` |
 | `media-worker` | Nada |
 | `analytics` (consumidor) | Consume `analytics:events` (grupo `analytics-workers`), persiste en `telemetry_events`, consolida `room_kpis` con `room_closed`, purga a los 90 días y sirve la API de lectura. `room_id` solo se exige fuera de `user_login` y `media_processed` |
