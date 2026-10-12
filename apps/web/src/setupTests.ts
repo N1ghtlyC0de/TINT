@@ -1,4 +1,16 @@
 import '@testing-library/jest-dom/vitest';
+import { vi } from 'vitest';
+import { MotionGlobalConfig } from 'framer-motion';
+
+// Las animaciones terminan al instante en las pruebas (AnimatePresence desmonta sin esperar).
+MotionGlobalConfig.skipAnimations = true;
+
+// En la app `m.*` recibe sus features de LazyMotion (MotionProvider en App). Las pruebas
+// renderizan componentes sueltos: `m` usa `motion` para tener exit/hover/tap sin provider.
+vi.mock('framer-motion', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('framer-motion')>();
+  return { ...actual, m: actual.motion };
+});
 
 interface GlobalWithJsdom {
   jsdom?: {

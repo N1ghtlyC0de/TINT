@@ -29,7 +29,7 @@ func TestScore(t *testing.T) {
 }
 
 func TestLeaderboardKey(t *testing.T) {
-	if got := LeaderboardKey("r1", 3); got != "room:r1:trivia:3:leaderboard" {
+	if got := LeaderboardKey("r1", "3"); got != "room:r1:trivia:3:leaderboard" {
 		t.Errorf("LeaderboardKey() = %q", got)
 	}
 }

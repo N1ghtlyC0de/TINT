@@ -1,7 +1,12 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import { m, useReducedMotion } from 'framer-motion';
 import { AppShell } from '../components/layout/AppShell';
 import { BackLink } from '../components/ui/BackLink';
+import { Button } from '../components/ui/Button';
+import { CountUp } from '../components/motion/CountUp';
+import { StaggerItem, StaggerList } from '../components/motion/Stagger';
+import { fadeUp } from '../lib/motion';
 import { Card, EmptyState, ErrorAlert, Skeleton } from '../components/ui/Primitives';
 import { ReactionBars } from '../components/analytics/ReactionBars';
 import { ReactionHeatmap } from '../components/analytics/ReactionHeatmap';
@@ -53,15 +58,40 @@ function hasActivity({ kpis, heatmap, timeline }: AnalyticsData): boolean {
   );
 }
 
-function KpiTile({ label, value, hint }: { label: string; value: string; hint?: string }) {
+function KpiTile({ label, value, hint }: { label: string; value: ReactNode; hint?: string }) {
   return (
-    <li>
+    <StaggerItem>
       <Card className="flex h-full flex-col gap-1 p-4">
         <p className="text-[13px] text-tint-muted">{label}</p>
         <p className="text-2xl font-semibold tracking-tight text-white">{value}</p>
         {hint && <p className="text-[12px] text-tint-muted">{hint}</p>}
       </Card>
-    </li>
+    </StaggerItem>
+  );
+}
+
+const integer = (n: number) => formatNumber(n, 0);
+const oneDecimal = (n: number) => formatNumber(n);
+const milliseconds = (n: number) => `${formatNumber(n, 0)} ms`;
+const bufferingEvents = (n: number) => `${formatNumber(n, 0)} ${n === 1 ? 'evento' : 'eventos'}`;
+const percent = (n: number) => `${formatNumber(n)} %`;
+
+/** Punto de "En vivo" con un anillo que se expande y desvanece (estático con movimiento reducido). */
+function LiveDot() {
+  const reduced = useReducedMotion();
+  return (
+    <span aria-hidden="true" className="relative grid h-2 w-2 place-items-center">
+      {!reduced && (
+        <m.span
+          data-testid="live-ring"
+          className="absolute inset-0 rounded-full bg-tint-success"
+          initial={{ scale: 1, opacity: 0.6 }}
+          animate={{ scale: 2.6, opacity: 0 }}
+          transition={{ duration: 1.8, ease: 'easeOut', repeat: Infinity }}
+        />
+      )}
+      <span className="relative h-2 w-2 rounded-full bg-tint-success" />
+    </span>
   );
 }
 
@@ -69,7 +99,7 @@ function StatusBadge({ kpis }: { kpis: RoomKpis }) {
   if (kpis.live && !kpis.closed_at) {
     return (
       <span className="inline-flex items-center gap-2 rounded-full border border-tint-success/30 bg-tint-success/10 px-3 py-1 text-[12px] font-medium text-white">
-        <span aria-hidden="true" className="h-2 w-2 rounded-full bg-tint-success motion-safe:animate-pulse" />
+        <LiveDot />
         En vivo
       </span>
     );
@@ -152,14 +182,15 @@ export default function RoomAnalytics() {
   return (
     <AppShell
       actions={
-        <button
+        <Button
           type="button"
+          variant="quiet"
           onClick={() => setReload((n) => n + 1)}
           disabled={loading}
-          className="rounded-full px-4 py-2.5 text-sm text-tint-muted transition hover:bg-white/5 hover:text-white disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tint-accent"
+          className="font-normal"
         >
           Actualizar
-        </button>
+        </Button>
       }
     >
       <div className="pt-8">
@@ -202,25 +233,34 @@ export default function RoomAnalytics() {
 
         {data && kpis && hasActivity(data) && (
           <div className={`mt-8 flex flex-col gap-6 transition-opacity ${loading ? 'opacity-60' : ''}`} aria-busy={loading}>
-            <ul aria-label="Indicadores de la sesión" className="grid grid-cols-2 gap-4 md:grid-cols-4">
-              <KpiTile label="Pico de espectadores" value={formatNumber(kpis.peak_users, 0)} />
-              <KpiTile label="Promedio de espectadores" value={formatNumber(kpis.avg_users)} />
-              <KpiTile label="Drift promedio" value={`${formatNumber(kpis.avg_drift_ms, 0)} ms`} hint="Desfase medio corregido" />
-              <KpiTile label="Mensajes" value={formatNumber(kpis.messages, 0)} />
-              <KpiTile label="Reacciones" value={formatNumber(kpis.reactions, 0)} />
-              <KpiTile label="Comandos de reproducción" value={formatNumber(kpis.playback_commands, 0)} />
+            <StaggerList aria-label="Indicadores de la sesión" className="grid grid-cols-2 gap-4 md:grid-cols-4">
+              <KpiTile label="Pico de espectadores" value={<CountUp value={kpis.peak_users} format={integer} />} />
+              <KpiTile label="Promedio de espectadores" value={<CountUp value={kpis.avg_users} format={oneDecimal} decimals={1} />} />
+              <KpiTile
+                label="Drift promedio"
+                value={<CountUp value={kpis.avg_drift_ms} format={milliseconds} />}
+                hint="Desfase medio corregido"
+              />
+              <KpiTile label="Mensajes" value={<CountUp value={kpis.messages} format={integer} />} />
+              <KpiTile label="Reacciones" value={<CountUp value={kpis.reactions} format={integer} />} />
+              <KpiTile label="Comandos de reproducción" value={<CountUp value={kpis.playback_commands} format={integer} />} />
               <KpiTile
                 label="Buffering"
-                value={`${formatNumber(kpis.buffering_events, 0)} ${kpis.buffering_events === 1 ? 'evento' : 'eventos'}`}
+                value={<CountUp value={kpis.buffering_events} format={bufferingEvents} />}
                 hint={kpis.buffering_events > 0 ? `promedio ${formatNumber(kpis.avg_buffering_ms, 0)} ms` : undefined}
               />
-              <KpiTile label="Aciertos de trivia" value={`${formatNumber(kpis.trivia_accuracy_pct)} %`} />
-            </ul>
-            <ViewersChart points={data.timeline.points} />
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-              <ReactionBars data={data.heatmap.by_emoji} />
-              <ReactionHeatmap heatmap={data.heatmap} />
-            </div>
+              <KpiTile
+                label="Aciertos de trivia"
+                value={<CountUp value={kpis.trivia_accuracy_pct} format={percent} decimals={1} />}
+              />
+            </StaggerList>
+            <m.div variants={fadeUp} initial="hidden" animate="show" className="flex flex-col gap-6">
+              <ViewersChart points={data.timeline.points} />
+              <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+                <ReactionBars data={data.heatmap.by_emoji} />
+                <ReactionHeatmap heatmap={data.heatmap} />
+              </div>
+            </m.div>
           </div>
         )}
       </div>

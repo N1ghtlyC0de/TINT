@@ -1,10 +1,7 @@
 // Package trivia calcula puntajes de trivias con bonificación por velocidad.
 package trivia
 
-import (
-	"strconv"
-	"time"
-)
+import "time"
 
 const (
 	// BasePoints se otorga por cualquier respuesta correcta.
@@ -33,7 +30,8 @@ func Score(correct bool, elapsed time.Duration) int {
 	return BasePoints + int(int64(MaxSpeedBonus)*int64(remaining)/int64(BonusWindow))
 }
 
-// LeaderboardKey devuelve la clave del Sorted Set de Redis de una trivia.
-func LeaderboardKey(roomID string, triviaID int) string {
-	return "room:" + roomID + ":trivia:" + strconv.Itoa(triviaID) + ":leaderboard"
+// LeaderboardKey devuelve la clave del Sorted Set de Redis de una trivia
+// (triviaID es el id que asigna el servidor al programarla).
+func LeaderboardKey(roomID, triviaID string) string {
+	return "room:" + roomID + ":trivia:" + triviaID + ":leaderboard"
 }

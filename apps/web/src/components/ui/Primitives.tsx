@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { forwardRef, type InputHTMLAttributes, type ReactNode } from 'react';
 
 export function Card({ children, className = '' }: { children: ReactNode; className?: string }) {
   return (
@@ -68,5 +68,19 @@ export function EmptyState({
 }
 
 export function Skeleton({ className = '' }: { className?: string }) {
-  return <div aria-hidden="true" className={`animate-pulse rounded-xl bg-white/10 ${className}`} />;
+  return <div aria-hidden="true" className={`tint-shimmer rounded-xl ${className}`} />;
 }
+
+/** Input de TINT: translúcido, rounded-xl y con anillo de foco cálido y suave. */
+export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputElement>>(function Input(
+  { className = '', ...rest },
+  ref,
+) {
+  return (
+    <input
+      ref={ref}
+      {...rest}
+      className={`w-full rounded-xl border border-white/10 bg-white/[0.03] px-4 py-2.5 text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.03)] backdrop-blur-sm transition-[border-color,box-shadow,background-color] duration-200 placeholder:text-tint-muted/50 hover:border-white/15 focus:border-tint-accent/60 focus:bg-white/[0.05] focus:outline-none focus:ring-2 focus:ring-tint-accent/25 ${className}`}
+    />
+  );
+});

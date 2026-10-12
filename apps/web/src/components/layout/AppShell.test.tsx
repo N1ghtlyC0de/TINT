@@ -15,4 +15,32 @@ describe('AppShell', () => {
     expect(screen.getByText('Hola')).toBeInTheDocument();
     expect(screen.getByText('Crear sala')).toBeInTheDocument();
   });
+
+  it('la marca usa el logo SVG dentro del enlace de inicio', () => {
+    render(
+      <MemoryRouter>
+        <AppShell>
+          <p>Hola</p>
+        </AppShell>
+      </MemoryRouter>,
+    );
+    const home = screen.getByRole('link', { name: 'TINT inicio' });
+    const logo = home.querySelector('svg[data-variant]');
+    expect(logo).not.toBeNull();
+    // El enlace ya nombra la marca: el logo es decorativo.
+    expect(logo).toHaveAttribute('aria-hidden', 'true');
+  });
+});
+
+describe('AppShell — fondo ambiental', () => {
+  it('incluye el fondo decorativo oculto a lectores', () => {
+    const { container } = render(
+      <MemoryRouter>
+        <AppShell>
+          <p>Hola</p>
+        </AppShell>
+      </MemoryRouter>,
+    );
+    expect(container.querySelector('[aria-hidden="true"] [data-orb]')).not.toBeNull();
+  });
 });

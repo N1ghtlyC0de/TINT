@@ -45,3 +45,20 @@ describe('Primitives', () => {
     expect(container.firstChild).toHaveAttribute('aria-hidden', 'true');
   });
 });
+
+describe('Input', () => {
+  it('es un input translúcido que reenvía props y clases', async () => {
+    const { Input } = await import('./Primitives');
+    render(<Input aria-label="Nick" className="extra" placeholder="Nick" />);
+    const input = screen.getByRole('textbox', { name: 'Nick' });
+    expect(input).toHaveClass('rounded-xl', 'extra');
+    expect(input).toHaveAttribute('placeholder', 'Nick');
+  });
+
+  it('Skeleton usa el shimmer en vez de pulse', async () => {
+    const { Skeleton } = await import('./Primitives');
+    const { container } = render(<Skeleton className="h-4" />);
+    expect(container.firstChild).toHaveClass('tint-shimmer');
+    expect(container.firstChild).not.toHaveClass('animate-pulse');
+  });
+});

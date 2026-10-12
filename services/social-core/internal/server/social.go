@@ -17,10 +17,12 @@ import (
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/analytics"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/auth"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/chat"
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/moderation"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/polls"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/reactions"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/recap"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/socialevent"
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/trivia"
 )
 
 // Deps son las dependencias del endpoint social (inyectables en tests).
@@ -82,6 +84,19 @@ type Deps struct {
 	// Recap acumula las métricas de la sala en Redis. Nil (modo memoria) =
 	// no se cuentan y recap_request responde UNAVAILABLE.
 	Recap *recap.Store
+	// Moderation guarda modo lento y silenciados en Redis. Nil (modo
+	// memoria) = chat sin moderación y chat_slow_mode/chat_mute responden
+	// UNAVAILABLE.
+	Moderation *moderation.Store
+	// Trivia guarda las trivias programadas en Redis. Nil (modo memoria) =
+	// los mensajes de trivia responden UNAVAILABLE.
+	Trivia *trivia.Store
+	// TrackTrivia publica trivia_answer en analytics:events (nil = no).
+	TrackTrivia func(analytics.TriviaAnswer)
+	// triviaArms es el timer de disparo por sala; triviaClosers, el de
+	// cierre por pregunta (ver trivia.go).
+	triviaArms    map[string]*triviaArm
+	triviaClosers map[string]func() bool
 	// syncHook observa cada evento de sync procesado (solo tests).
 	syncHook func(recap.Kind)
 	// pollTimers es el timer de cierre de la encuesta vigente por sala.
@@ -356,11 +371,11 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 	c.SetReadLimit(8 * 1024)
 
 	connID := d.newID()
-	untrack := d.trackConn(roomID, connID, claims.JTI, func() {
-		go func() { _ = c.Close(StatusRevoked, "token revocado") }()
-	})
-	defer untrack()
 	send := make(chan []byte, 64)
+	untrack := d.trackConn(roomID, connID, liveConn{jti: claims.JTI, sub: claims.Subject, send: send, close: func() {
+		go func() { _ = c.Close(StatusRevoked, "token revocado") }()
+	}})
+	defer untrack()
 	d.Hub.Join(roomID, connID, send)
 	defer d.Hub.Leave(roomID, connID)
 
@@ -381,8 +396,12 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 	}
 	histRaw, _ := json.Marshal(socialevent.HistoryEnvelope{Type: socialevent.TypeHistory, RoomID: roomID, Messages: recent})
 	_ = writeMsg(ctx, c, histRaw, d.writeTimeout())
+	// Estado de moderación del chat (modo lento y silenciados).
+	d.sendChatSettingsOnJoin(ctx, c, roomID)
 	// Encuesta vigente (con el voto de este usuario), si la hay.
 	d.sendPollOnJoin(ctx, c, roomID, claims.Subject)
+	// Trivias: la lista (solo moderadores) y la pregunta abierta, si la hay.
+	d.sendTriviaOnJoin(ctx, c, roomID, claims)
 
 	// Aviso de entrada (solo en vivo, tras el historial). Se perdona el
 	// reingreso dentro de la gracia (StrictMode, refresh, flap).
@@ -455,6 +474,24 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		case socialevent.TypeRecapRequest:
 			d.handleRecapRequest(ctx, c, roomID, raw, claims, actionLimiter)
 			continue
+		case socialevent.TypeChatSlowMode:
+			d.handleSlowMode(ctx, c, roomID, claims, raw)
+			continue
+		case socialevent.TypeChatMute:
+			d.handleMute(ctx, c, roomID, claims, raw)
+			continue
+		case socialevent.TypeTriviaSchedule:
+			d.handleTriviaSchedule(ctx, c, roomID, claims, raw)
+			continue
+		case socialevent.TypeTriviaDelete:
+			d.handleTriviaDelete(ctx, c, roomID, claims, raw)
+			continue
+		case socialevent.TypeTriviaList:
+			d.handleTriviaList(ctx, c, roomID, claims, raw)
+			continue
+		case socialevent.TypeTriviaAnswer:
+			d.handleTriviaAnswer(ctx, c, roomID, claims, raw, actionLimiter)
+			continue
 		}
 		var in socialevent.ChatSend
 		if err := json.Unmarshal(raw, &in); err != nil {
@@ -480,11 +517,20 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 			writeError(ctx, c, "RATE_LIMITED", in.EventID)
 			continue
 		}
+		// Silencio y modo lento al final: el freno solo se toma si el
+		// mensaje es válido y pasó el límite de tasa.
+		if code, retry := d.admitChat(ctx, roomID, claims); code == "SLOW_MODE" {
+			writeSlowMode(ctx, c, in.EventID, retry)
+			continue
+		} else if code != "" {
+			writeError(ctx, c, code, in.EventID)
+			continue
+		}
 		text := trimText(in.Text)
 		received := d.now()
 		out := socialevent.ChatMessage{
 			EventID: d.newID(), Type: socialevent.TypeChatMessage, RoomID: roomID,
-			UserID: claims.Subject, Nick: claims.Nick, Text: text,
+			UserID: claims.Subject, Nick: claims.Nick, Text: text, Spoiler: in.Spoiler,
 			OccurredAt: socialevent.ClampOccurred(in.OccurredAt, received), ReceivedAt: received,
 		}
 		if err := out.Validate(); err != nil {

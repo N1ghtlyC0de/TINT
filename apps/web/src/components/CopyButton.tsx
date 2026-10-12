@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
+import { AnimatePresence, m } from 'framer-motion';
 import { toAbsoluteInviteLink } from '../lib/invite';
+import { ease } from '../lib/motion';
 
 /** Tiempo que se muestra la confirmación antes de volver a `Copiar`. */
 export const COPIED_RESET_MS = 3000;
@@ -38,16 +40,28 @@ export function CopyButton({ link, className, resetMs = COPIED_RESET_MS }: CopyB
   const style =
     state === 'copied'
       ? 'border-tint-success/40 bg-tint-success/10 text-tint-success'
-      : 'border-white/15 bg-white/5 text-white hover:bg-white/10';
+      : 'tint-glass text-white hover:bg-white/[0.09]';
 
   return (
     <button
       type="button"
       onClick={() => void copy()}
       aria-live="polite"
-      className={`shrink-0 rounded-full border px-3 py-1 text-[12px] font-medium transition active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tint-accent ${style} ${className ?? ''}`}
+      className={`relative inline-flex min-h-10 shrink-0 items-center justify-center overflow-hidden rounded-full border px-3 py-1 text-[12px] font-medium transition-[background-color,border-color,color] duration-300 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tint-accent sm:min-h-0 ${style} ${className ?? ''}`}
     >
-      {label}
+      <AnimatePresence mode="popLayout" initial={false}>
+        <m.span
+          key={state}
+          className="inline-flex items-center gap-1"
+          initial={{ opacity: 0, y: 6 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -6 }}
+          transition={{ duration: 0.2, ease }}
+        >
+          {state === 'copied' && <span aria-hidden="true">✓</span>}
+          {label}
+        </m.span>
+      </AnimatePresence>
     </button>
   );
 }

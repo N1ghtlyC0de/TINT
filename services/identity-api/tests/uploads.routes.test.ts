@@ -81,7 +81,19 @@ describe('POST /rooms/:id/media/uploads', () => {
       contentType: 'video/mp4',
       sizeBytes: 5_000_000,
       status: 'pending',
+      title: 'Mi Peli',
     });
+  });
+
+  it.each([
+    ['Mi Peli.MP4', 'Mi Peli'],
+    ['sin-extension', 'sin-extension'],
+    ['vacaciones.2025.mkv', 'vacaciones.2025'],
+    ['.mp4', '.mp4'],
+    ['  Clip final .webm ', 'Clip final'],
+  ])('guarda el título de la biblioteca a partir de %j', async (filename, title) => {
+    await start({ filename, contentType: 'video/mp4', sizeBytes: 1 });
+    expect(createVideo).toHaveBeenCalledWith(expect.objectContaining({ title }));
   });
 
   it.each([

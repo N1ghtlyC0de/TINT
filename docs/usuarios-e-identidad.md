@@ -64,6 +64,9 @@ El rol **no** se guarda en la tabla `users`: se deriva del contexto.
 | Asignar vídeo (`PUT /rooms/:id/media`) | ✅ (dueño) | ❌ | ❌ | ❌ | ❌ |
 | Ver URL de reproducción (`GET /rooms/:id/playback`) | ✅ (dueño) | ❌ | ✅ (su sala) | ✅ | ❌ |
 | Listar y retirar invitados | ✅ (dueño) | ❌ | ❌ | ❌ | ❌ |
+| Bloquear, listar bloqueos y desbloquear (`POST`/`GET /rooms/:id/bans`, `DELETE /rooms/:id/bans/:banId`) | ✅ (dueño) | ❌ | ❌ | ❌ | ❌ |
+| Ver **su** biblioteca de vídeos (`GET /videos`) y renombrar (`PATCH /videos/:id`) | ✅ (quien lo subió) | ❌ | ❌ | ❌ | ❌ |
+| Reusar un vídeo propio en su sala (`PUT /rooms/:id/media { videoId }`) | ✅ (dueño de la sala **y** del vídeo) | ❌ | ❌ | ❌ | ❌ |
 | Conectarse al Canal Sync | ✅ | ✅ | ✅ | ✅ | ❌ |
 | `PLAY`/`PAUSE`/`SEEK`/`RATE`/`LOAD` | ✅ | ✅ | ❌ `FORBIDDEN` | ✅ | ❌ |
 | Recibir estado, latidos y correcciones | ✅ | ✅ | ✅ | ✅ | ❌ |
@@ -82,6 +85,8 @@ erDiagram
     rooms ||--o{ invitations : "room_id (cascade)"
     rooms ||--o{ guest_sessions : "room_id (cascade)"
     rooms ||--o{ videos : "room_id (cascade)"
+    rooms ||--o{ room_bans : "room_id (cascade)"
+    users ||--o{ room_bans : "created_by (set null)"
 
     users {
         uuid id PK "gen_random_uuid()"
@@ -120,6 +125,16 @@ erDiagram
         timestamptz joined_at
         timestamptz expires_at "exp del token"
         boolean revoked "false"
+        uuid device_id "nullable, 0007; deviceId del navegador"
+    }
+    room_bans {
+        uuid id PK
+        uuid room_id FK
+        uuid device_id "nullable; UK (room_id, device_id)"
+        text sub "guest:uuid del invitado bloqueado"
+        varchar nick "máx. 64"
+        timestamptz created_at
+        uuid created_by FK "nullable"
     }
     videos {
         uuid id PK "= video_id de media:uploads"
@@ -130,6 +145,7 @@ erDiagram
         bigint size_bytes
         integer duration_ms "lo escribe media-worker"
         varchar status "pending | processing | ready | failed"
+        varchar title "nullable, máx. 255; 0007"
         jsonb renditions "[] por defecto; alturas publicadas, p. ej. [720, 360]"
         timestamptz created_at
         timestamptz updated_at
@@ -141,8 +157,9 @@ erDiagram
 | `users` | `0000_shiny_quasimodo.sql` y `0005_users_provider_unique.sql` | Se crea en el primer `requireAuthHost` con un *upsert* atómico (`INSERT … ON CONFLICT (provider, provider_sub) DO UPDATE`) que en cada login refresca `email`, `display_name` y `avatar_url`. El índice único `users_provider_sub_unique` (`0005`) impide duplicados por logins concurrentes; la migración fusiona antes los duplicados existentes (conserva el más antiguo y le reasigna salas, invitaciones y vídeos). |
 | `rooms` | `0000`, `0001_add-room-status.sql` y `0002_room_media.sql` | `DELETE /rooms/:id` es un **borrado lógico** (`status = 'deleted'`): la sala desaparece de los listados y sus rutas responden 410. Además revoca todas las sesiones de invitado activas (ver §6.5). Si se borra el usuario, se borran sus salas. |
 | `invitations` | `0000` | El código `nanoid(12)` es la URL `/invite/:code`. Una invitación sirve para muchos invitados. |
-| `guest_sessions` | `0003_guest_sessions.sql` | Una fila por guest token emitido. Permite listar y revocar. |
-| `videos` | `0004_videos.sql` y `0006_video_renditions.sql` | Vídeos subidos a MinIO. identity-api crea la fila (`pending`) y, al confirmar la subida, la pasa a `processing` con un `UPDATE … WHERE status = 'pending'` (solo esa transición encola); media-worker la deja en `ready`/`failed`. `renditions` (`jsonb NOT NULL DEFAULT '[]'`, `0006`) lista las alturas de las calidades que el worker publicó en `{id}/{h}p.mp4` (`720`, `360`); identity-api ignora cualquier otro valor y las ofrece en `qualities` de `GET /rooms/:id/playback` solo si el vídeo está `ready`. |
+| `guest_sessions` | `0003_guest_sessions.sql` y `0007_bans_video_library.sql` | Una fila por guest token emitido. Permite listar y revocar. `device_id` (`0007`, nullable) guarda el `deviceId` que la web envió al reclamar; los clientes viejos no lo envían. |
+| `room_bans` | `0007_bans_video_library.sql` | Bloqueos de invitados por dispositivo (§6.6). Índice único `room_bans_room_device_unique (room_id, device_id)`; como `NULL` no choca con `NULL`, los bloqueos sin dispositivo se deduplican por `sub` en la aplicación. Nunca se exponen `device_id` ni `sub`. |
+| `videos` | `0004_videos.sql` y `0006_video_renditions.sql` | Vídeos subidos a MinIO. identity-api crea la fila (`pending`) y, al confirmar la subida, la pasa a `processing` con un `UPDATE … WHERE status = 'pending'` (solo esa transición encola); media-worker la deja en `ready`/`failed`. `renditions` (`jsonb NOT NULL DEFAULT '[]'`, `0006`) lista las alturas de las calidades que el worker publicó en `{id}/{h}p.mp4` (`720`, `360`); identity-api ignora cualquier otro valor y las ofrece en `qualities` de `GET /rooms/:id/playback` solo si el vídeo está `ready`. `title` (`0007`, nullable: los vídeos anteriores no lo tienen) es el nombre de la biblioteca: el `filename` sin extensión al reservar, renombrable con `PATCH /videos/:id`. |
 
 Las migraciones se generan con `drizzle-kit generate` y se aplican con `npx drizzle-kit migrate`, usando `DATABASE_URL`.
 
@@ -305,13 +322,15 @@ sequenceDiagram
     participant SC as sync-core
 
     I->>W: abre el link y escribe su nick
-    W->>API: POST /invitations/claim { code, nick }
+    W->>API: POST /invitations/claim { code, nick, deviceId }
     API->>PG: SELECT invitations WHERE code
     alt no existe · revocada · vencida
         API-->>W: 404 · 409 · 410
+    else deviceId bloqueado en la sala (room_bans, §6.6)
+        API-->>W: 403 { error: "BANNED" }
     else válida
         API->>API: firma guest token (sub guest:uuid, jti)
-        API->>PG: INSERT guest_sessions
+        API->>PG: INSERT guest_sessions (con device_id)
         API-->>W: { token, roomId, nick, roomTitle }
         W->>W: borra tint_token y guarda tint_guest_token
         W-->>I: /watch/:roomId
@@ -347,6 +366,44 @@ Ver la secuencia completa en [Dominio de Reproducción §6.6](dominio-reproducci
 
 **Borrar la sala** (`DELETE /rooms/:id`) hace lo mismo con todas sus sesiones no revocadas y no vencidas: `SET token:revoked:{jti}` + `REVOKED` por cada `jti` y, solo cuando Redis lo acepta todo, `guest_sessions.revoked = true`. Falla cerrado: si Redis falla, la sala queda borrada pero se responde **503**; repetir el `DELETE` sobre la sala ya borrada vuelve a revocar las sesiones pendientes y responde 410.
 
+### 6.6 Bloquear a un invitado (por dispositivo)
+
+Retirar (§6.5) corta la sesión, pero el invitado puede volver a entrar con el mismo link. **Bloquear** además impide que ese navegador vuelva a reclamar una invitación de la sala.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor H as Host
+    participant API as identity-api
+    participant PG as PostgreSQL
+    participant R as Redis
+    actor I as Invitado
+
+    Note over I,API: al entrar, la web envía su deviceId (UUID en localStorage)
+    I->>API: POST /invitations/claim { code, nick, deviceId }
+    API->>PG: INSERT guest_sessions (… device_id)
+    H->>API: POST /rooms/:id/bans { jti } o { sub }
+    API->>PG: sesiones del invitado (room_id, sub)
+    API->>PG: INSERT room_bans por cada device_id (ON CONFLICT DO NOTHING)
+    API->>R: SET token:revoked:{jti} EXAT exp + PUBLISH REVOKED (cada sesión vigente)
+    alt Redis falla
+        API-->>H: 503 (el ban ya está guardado; repetir el POST termina de revocar)
+    else
+        API->>PG: guest_sessions.revoked = true
+        API-->>H: { ban: { id, nick, createdAt } }
+    end
+    Note over I: sync-core y social-core cierran con 4001
+    I->>API: POST /invitations/claim { code, nick, deviceId }
+    API-->>I: 403 { error: "BANNED" }
+```
+
+- **Identificación:** los invitados son anónimos (cada claim crea un `sub` nuevo), así que el bloqueo no se puede atar a una persona. Se ata al `deviceId`, un UUID aleatorio que la web genera y guarda en `localStorage` y envía en cada claim.
+- **Idempotente:** bloquear de nuevo devuelve el mismo ban y vuelve a publicar `REVOKED`. Falla cerrado como el borrado de sala: el ban se inserta **antes** de tocar Redis, así que un 503 nunca deja entrar al invitado.
+- **Desbloquear:** `DELETE /rooms/:id/bans/:banId` borra la fila; el invitado puede volver a reclamar (con un token nuevo: los revocados no se reactivan).
+- **Privacidad:** `GET /rooms/:id/bans` solo devuelve `{ id, nick, createdAt }`; `device_id` y `sub` no salen de identity-api.
+
+> ⚠️ **Limitación (documentada y aceptada):** el bloqueo es por navegador, no por persona. **Borrar los datos del navegador**, usar una ventana privada u otro navegador u otro dispositivo genera un `deviceId` nuevo y **evade el bloqueo**; también se puede enviar un `deviceId` inventado, porque el cliente lo elige. Es una barrera contra la reentrada casual, no un control de seguridad. Además, si la sesión venía de un cliente viejo sin `deviceId`, el ban se guarda solo por `sub` (`device_id = NULL`): corta la sesión actual pero no impide volver a entrar, porque cada claim genera un `sub` nuevo. Un claim sin `deviceId` no se comprueba contra los bloqueos.
+
 ---
 
 ## 7. Ciclos de vida
@@ -362,6 +419,7 @@ stateDiagram-v2
     state "Sesión de invitado" as GS {
         [*] --> Vigente: claim de una invitación activa
         Vigente --> Retirada: revoke del host (cierre 4001)
+        Vigente --> Bloqueada: ban del host (cierre 4001, el deviceId no puede volver)
         Vigente --> Expirada: pasa exp (4 h)
     }
     INV --> GS: cada claim crea una sesión
@@ -400,6 +458,7 @@ Respuestas de error de identity-api: `{ "error": "<texto>" }`. Los 400 de zod a�
 - **El invitado es anónimo:** su `sub` es un uuid aleatorio por cada claim y no se vincula con ninguna cuenta.
 - **Analítica:** `analytics:events` nunca lleva `sub`, `nick`, email ni tokens. El servicio de analítica descarta además los campos de texto libre (`sanitize.py`).
 - **`GET /rooms/:id/guests`** no expone el `sub`.
+- **Bloqueos:** `guest_sessions.device_id` y `room_bans.device_id` son UUID aleatorios del navegador, sin relación con hardware ni cuentas. `GET /rooms/:id/bans` no expone `device_id` ni `sub`.
 - **Borrado en cascada:** al borrar un usuario se borran sus salas, y con ellas sus invitaciones y sesiones de invitado.
 
 ---
@@ -413,6 +472,7 @@ Respuestas de error de identity-api: `{ "error": "<texto>" }`. Los 400 de zod a�
 | ID token de Firebase | Se guarda en `localStorage` y no se renueva solo (~1 h) | Al vencer, la API responde 401 y hay que volver a iniciar sesión |
 | Cohost | sync-core lo acepta, pero no hay endpoint ni UI que lo emita | Funcionalidad incompleta |
 | Revocar una invitación | No retira a los invitados que ya entraron con ella | Hay que retirarlos uno por uno |
+| Bloqueo por dispositivo | Se ata a un `deviceId` en `localStorage` que elige el cliente (§6.6) | Borrar los datos del navegador, otra ventana privada u otro dispositivo lo evaden; sesiones sin `deviceId` solo quedan registradas por `sub` |
 | CORS | `cors()` sin lista de orígenes | Conviene restringirlo en producción |
 | Manejador de errores | Devuelve `err.message` en los 500 | Puede filtrar detalles internos |
 | Usuario sin token en `/watch` | La web lo trata como Host y pide un ticket (falla si no es el dueño) | Mensaje de error poco claro |

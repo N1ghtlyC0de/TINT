@@ -140,6 +140,9 @@ func TestPollCreateBroadcastsAndRejectsSecond(t *testing.T) {
 	defer h.Close(websocket.StatusNormalClosure, "")
 	g, colG := joinCol(t, url, guestTokenAs(t, secret, "guest:beto", "Beto", "r1", exp0()))
 	defer g.Close(websocket.StatusNormalClosure, "")
+	// Su aviso de entrada llega tras la instantánea de entrada (historial,
+	// chat_settings, encuesta): así la encuesta no se cruza con el join.
+	nextOfType(t, colG, "notice")
 
 	// Un participante no puede crear ni cerrar.
 	createPoll(t, g, 30)
@@ -192,6 +195,9 @@ func TestPollVoteCoalescedAndMyVote(t *testing.T) {
 	defer h.Close(websocket.StatusNormalClosure, "")
 	g, colG := joinCol(t, url, guestTokenAs(t, secret, "guest:beto", "Beto", "r1", exp0()))
 	defer g.Close(websocket.StatusNormalClosure, "")
+	// Su aviso de entrada llega tras la instantánea de entrada (historial,
+	// chat_settings, encuesta): así la encuesta no se cruza con el join.
+	nextOfType(t, colG, "notice")
 	createPoll(t, h, 60)
 	pollID := nextOfType(t, colG, "poll_state")["poll_id"].(string)
 	nextOfType(t, colH, "poll_state")
@@ -286,6 +292,7 @@ func TestPollAutoClosesByTimeAcrossReplicasOnce(t *testing.T) {
 	defer h.Close(websocket.StatusNormalClosure, "")
 	g, colG := joinCol(t, urlB, guestTokenAs(t, secret, "guest:beto", "Beto", "r1", exp0()))
 	defer g.Close(websocket.StatusNormalClosure, "")
+	nextOfType(t, colG, "notice") // instantánea de entrada completa
 	waitSubs(t, mr, chat.ChannelKey("r1"), 2)
 
 	createPoll(t, h, 10)

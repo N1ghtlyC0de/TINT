@@ -61,12 +61,12 @@ el Canal Sync no necesita identificar a la persona y así se publica lo mínimo.
 | `chat_message` | Se acepta un mensaje de chat | `message_length` | Engagement |
 | `presence` | Alguien entra o sale de la sala (los mismos avisos `joined`/`left`) | `kind` (`joined`, `left`), `connected_users` (conectados después del cambio) | Pico y promedio de espectadores |
 | `reaction` | Se acepta una reacción (después del límite de 5/s) | `emoji`, `position_ms` | Heatmap (REQ-21 a REQ-23) |
-| `trivia_answer` | Se evalúa una respuesta de trivia | `question_id`, `correct` (`true`/`false`), `response_ms` | % de aciertos (REQ-32) |
+| `trivia_answer` | Se acepta y evalúa una respuesta de trivia (una por usuario y pregunta; no las rechazadas) | `question_id` (el `trivia_id`), `correct` (`true`/`false`), `response_ms` (respuesta − apertura, ambos con el reloj del servidor) | % de aciertos (REQ-32) |
 
 `connected_users` es el conteo **de la réplica que publica**: la presencia de `social-core` vive en
 memoria y no se comparte entre réplicas. Con una réplica (el despliegue actual) es el total de la
-sala; con varias, cada réplica publica el suyo. `trivia_answer` aún no se publica: el servidor no
-evalúa respuestas de trivia todavía.
+sala; con varias, cada réplica publica el suyo. `trivia_answer` lleva un `event_id` propio (no hay
+broadcast de la respuesta) y `occurred_at` = `received_at` = la hora del servidor al evaluarla.
 
 ### `sync-core`
 
@@ -145,7 +145,7 @@ Para agregar un tipo o un campo: PR a este archivo.
 
 | Servicio | Publica hoy |
 | :--- | :--- |
-| `social-core` | `chat_message`, `presence` y `reaction` completos; `trivia_answer` no (aún no hay trivia en el servidor) |
+| `social-core` | `chat_message`, `presence`, `reaction` y `trivia_answer` completos |
 | `identity-api` | `user_login`, `room_created`, `room_closed` (`reason=deleted`, solo el primer borrado) e `invitation_claimed`, con todos los campos comunes. Además entrega el analytics-ticket (`POST /rooms/:id/analytics-ticket`) |
 | `sync-core` | `playback_command`, `drift_correction` (antes `sync_drift`) y `buffering`, con `source`, `role` y sin `user_id` |
 | `media-worker` | `media_processed` completo |

@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="120 120 272 272" role="img" aria-label="TINT">
+  <defs>
+    <linearGradient id="tint-logo-g" gradientUnits="userSpaceOnUse" x1="150" y1="380" x2="380" y2="140">
+      <stop offset="0" stop-color="#FFC93C"/>
+      <stop offset="0.55" stop-color="#FFB02E"/>
+      <stop offset="1" stop-color="#FF8A1A"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke="url(#tint-logo-g)" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+    <!-- Anillo abierto: hueco abajo a la izquierda y otro arriba a la derecha para la llama. -->
+    <path d="M206.6 365.0 A120 120 0 0 1 320.0 154.4"/>
+    <path d="M369.6 219.8 A120 120 0 0 1 252 376"/>
+    <!-- "T" en línea doble con trazo redondeado; el remate de la barra sube hacia la llama. -->
+    <path d="M212 188 H314 Q338 188 352 172 Q342 214 304 216 H284 Q270 216 270 230 V318 A14 14 0 0 1 242 318 V230 Q242 216 228 216 H212 A14 14 0 0 1 212 188 Z"/>
+    <!-- Cola del trazo: el pie de la T se curva hacia el anillo. -->
+    <path d="M242 340 C238 360 240 372 252 376"/>
+  </g>
+  <!-- Llama u hoja. -->
+  <path fill="url(#tint-logo-g)" d="M330 190 C346 172 368 168 380 144 C396 176 386 204 352 207 C344 207 336 201 330 190 Z"/>
+</svg>

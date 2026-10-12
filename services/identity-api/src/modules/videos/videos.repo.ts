@@ -1,4 +1,4 @@
-import { and, eq } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { videos } from '../../db/schema.js';
 
@@ -45,4 +45,25 @@ export async function transitionStatus(id: string, from: VideoStatus, to: VideoS
     .where(and(eq(videos.id, id), eq(videos.status, from)))
     .returning();
   return result[0] || null;
+}
+
+/** Estados reutilizables desde la biblioteca: subida confirmada y no fallida. */
+export const LIBRARY_STATUSES: VideoStatus[] = ['processing', 'ready'];
+
+/** Biblioteca del host: sus vídeos confirmados (processing/ready), de más reciente a más antiguo. */
+export async function listByUploader(userId: string) {
+  const rows = await db
+    .select()
+    .from(videos)
+    .where(and(eq(videos.uploadedBy, userId), inArray(videos.status, LIBRARY_STATUSES)))
+    .orderBy(desc(videos.createdAt));
+  return rows.map((row) => ({ ...row, renditions: normalizeRenditions(row.renditions) }));
+}
+
+/** Renombra el vídeo en la biblioteca. Devuelve null si ya no existe. */
+export async function updateTitle(id: string, title: string) {
+  const result = await db.update(videos).set({ title, updatedAt: new Date() }).where(eq(videos.id, id)).returning();
+  const row = result[0];
+  if (!row) return null;
+  return { ...row, renditions: normalizeRenditions(row.renditions) };
 }
