@@ -376,3 +376,32 @@ func TestLoadStateWithoutVolumeField(t *testing.T) {
 		t.Error("volume corrupto debe fallar")
 	}
 }
+
+func TestApplyPersistsQuality(t *testing.T) {
+	s, mr, _ := setup(t)
+	ctx := context.Background()
+	st, err := s.Init(ctx, room, "host-1", t0)
+	if err != nil || st.Quality != "auto" {
+		t.Fatalf("Init = %+v (%v), calidad inicial auto", st, err)
+	}
+	if _, _, err := s.Apply(ctx, room, "e1", master.Command{Type: syncevent.Quality, Quality: "360p"}, t0+1, 0, encodeVersion); err != nil {
+		t.Fatal(err)
+	}
+	st, err = s.Load(ctx, room)
+	if err != nil || st.Quality != "360p" || st.Version != 1 {
+		t.Errorf("estado = %+v (%v)", st, err)
+	}
+	if got := mr.HGet(syncevent.StateKey(room), "quality"); got != "360p" {
+		t.Errorf("hash quality = %q", got)
+	}
+}
+
+// Estados escritos antes de existir quality se leen con calidad auto.
+func TestLoadStateWithoutQualityField(t *testing.T) {
+	s, mr, _ := setup(t)
+	mr.HSet(syncevent.StateKey(room), "status", "paused", "position_ms", "5", "updated_at_ms", "1", "rate", "1", "version", "2", "host_id", "h")
+	st, err := s.Load(context.Background(), room)
+	if err != nil || st.Quality != "auto" {
+		t.Errorf("estado = %+v (%v)", st, err)
+	}
+}

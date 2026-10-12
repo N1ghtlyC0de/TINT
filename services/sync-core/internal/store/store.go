@@ -306,6 +306,7 @@ func fields(s master.State) map[string]any {
 		"host_id":       s.HostID,
 		"media_id":      s.MediaID,
 		"volume":        strconv.FormatFloat(s.Volume, 'f', -1, 64),
+		"quality":       s.Quality,
 	}
 }
 
@@ -334,6 +335,10 @@ func parse(m map[string]string) (master.State, error) {
 		if st.Volume, err = strconv.ParseFloat(v, 64); err != nil {
 			return master.State{}, fmt.Errorf("estado corrupto (volume): %w", err)
 		}
+	}
+	// Igual con QUALITY: sin el campo, calidad automática.
+	if st.Quality = m["quality"]; st.Quality == "" {
+		st.Quality = master.DefaultQuality
 	}
 	return st, nil
 }

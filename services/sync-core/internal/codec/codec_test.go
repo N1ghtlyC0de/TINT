@@ -173,3 +173,24 @@ func TestMsgPackVolume(t *testing.T) {
 		}
 	}
 }
+
+func TestMsgPackQuality(t *testing.T) {
+	ev := sample()
+	ev.Quality = "source"
+	raw, err := MsgPack.Encode(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got syncevent.Event
+	if err := MsgPack.Decode(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, ev) {
+		t.Errorf("ida y vuelta = %+v", got)
+	}
+	var m map[string]any
+	_ = msgpack.Unmarshal(raw, &m)
+	if m["quality"] != "source" {
+		t.Errorf("quality en msgpack = %#v", m["quality"])
+	}
+}

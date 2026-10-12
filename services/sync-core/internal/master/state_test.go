@@ -234,3 +234,34 @@ func TestApplyVolume(t *testing.T) {
 		t.Errorf("LOAD cambió el volumen: %+v", got)
 	}
 }
+
+func TestApplyQuality(t *testing.T) {
+	if s := Initial("h", t0); s.Quality != DefaultQuality || DefaultQuality != "auto" {
+		t.Errorf("calidad inicial = %q, want auto", s.Quality)
+	}
+	recv := t0 + 2_000
+	playing := State{Status: Playing, PositionMs: 1000, UpdatedAtMs: t0, Rate: 2, Version: 3, HostID: "h", MediaID: "m1", Volume: 0.5, Quality: "auto"}
+
+	got, err := playing.Apply(Command{Type: syncevent.Quality, PositionMs: 1, Quality: "720p"}, recv, 300)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := State{Status: Playing, PositionMs: 5000, UpdatedAtMs: recv, Rate: 2, Version: 4, HostID: "h", MediaID: "m1", Volume: 0.5, Quality: "720p"}
+	if got != want {
+		t.Errorf("Apply QUALITY =\n %+v\nwant\n %+v", got, want)
+	}
+	if got.PositionAt(recv+500) != playing.PositionAt(recv+500) {
+		t.Error("QUALITY alteró la posición")
+	}
+
+	got, err = playing.Apply(Command{Type: syncevent.Quality, Quality: "4k"}, recv, 0)
+	if !errors.Is(err, syncevent.ErrInvalidQuality) || got != playing {
+		t.Errorf("QUALITY inválida = %+v (%v)", got, err)
+	}
+
+	// Los demás comandos conservan la calidad.
+	got, _ = playing.Apply(Command{Type: syncevent.Volume, Volume: 1}, recv, 0)
+	if got.Quality != "auto" {
+		t.Errorf("VOLUME cambió la calidad: %+v", got)
+	}
+}

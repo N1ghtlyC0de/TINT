@@ -20,6 +20,8 @@ const (
 	Load  Type = "LOAD" // carga otro vídeo (media_id) y pausa
 	// Volume fija el volumen de la sala (volume ∈ [0, 1]).
 	Volume Type = "VOLUME"
+	// Quality fija la calidad de reproducción de la sala (ver Qualities).
+	Quality Type = "QUALITY"
 
 	// Latido servidor → cliente; el cliente responde con SYNC_CHECK.
 	Heartbeat Type = "HEARTBEAT"
@@ -46,6 +48,14 @@ const (
 	MaxMediaIDLen = 128
 	MinVolume     = 0.0
 	MaxVolume     = 1.0
+)
+
+// Calidades aceptadas por QUALITY.
+const (
+	QualityAuto   = "auto"
+	QualitySource = "source"
+	Quality720p   = "720p"
+	Quality360p   = "360p"
 )
 
 // Códigos de error enviados en mensajes ERROR.
@@ -90,6 +100,8 @@ type Event struct {
 	// Volumen de la sala (VOLUME, STATE, broadcasts y SYNC_CORRECTION).
 	// Puntero: 0 (silencio) es válido y debe viajar explícito.
 	Volume *float64 `json:"volume,omitempty"`
+	// Calidad de la sala (QUALITY, STATE, broadcasts y SYNC_CORRECTION).
+	Quality string `json:"quality,omitempty"`
 	// RTT suavizado de este cliente (HEARTBEAT).
 	RTTMs int64 `json:"rtt_ms,omitempty"`
 	// Delegación de control: can_control va al cliente; holder (sub del
@@ -110,6 +122,7 @@ var (
 	ErrInvalidRate      = errors.New("rate debe estar entre 0.25 y 4")
 	ErrInvalidMedia     = errors.New("media_id es obligatorio y de máximo 128 caracteres")
 	ErrInvalidVolume    = errors.New("volume es obligatorio y debe estar entre 0 y 1")
+	ErrInvalidQuality   = errors.New("quality debe ser auto, source, 720p o 360p")
 )
 
 // Validate verifica que un evento completo (ya sellado por el servidor)
@@ -119,7 +132,7 @@ func (e Event) Validate() error {
 		return err
 	}
 	switch e.Type {
-	case Play, Pause, Seek, Rate, Load, Volume, Heartbeat, SyncCheck, State, SyncCorrection, HostStatus, Ack, Error, Control, Revoked:
+	case Play, Pause, Seek, Rate, Load, Volume, Quality, Heartbeat, SyncCheck, State, SyncCorrection, HostStatus, Ack, Error, Control, Revoked:
 	default:
 		return fmt.Errorf("%w: %q", ErrUnsupportedType, e.Type)
 	}
@@ -140,7 +153,7 @@ func (e Event) ValidateInbound() error {
 		return err
 	}
 	switch e.Type {
-	case Play, Pause, Seek, Rate, Load, Volume, SyncCheck:
+	case Play, Pause, Seek, Rate, Load, Volume, Quality, SyncCheck:
 	default:
 		return fmt.Errorf("%w: %q", ErrUnsupportedType, e.Type)
 	}
@@ -150,7 +163,7 @@ func (e Event) ValidateInbound() error {
 	return e.validateArgs()
 }
 
-// validateArgs valida los argumentos propios de RATE, LOAD y VOLUME.
+// validateArgs valida los argumentos propios de RATE, LOAD, VOLUME y QUALITY.
 func (e Event) validateArgs() error {
 	switch e.Type {
 	case Rate:
@@ -162,8 +175,19 @@ func (e Event) validateArgs() error {
 			return ErrInvalidVolume
 		}
 		return ValidateVolume(*e.Volume)
+	case Quality:
+		return ValidateQuality(e.Quality)
 	}
 	return nil
+}
+
+// ValidateQuality verifica que la calidad sea una de las aceptadas.
+func ValidateQuality(q string) error {
+	switch q {
+	case QualityAuto, QualitySource, Quality720p, Quality360p:
+		return nil
+	}
+	return ErrInvalidQuality
 }
 
 // ValidateVolume verifica que el volumen esté en [MinVolume, MaxVolume].
@@ -206,7 +230,7 @@ func (e Event) validateBase() error {
 // IsCommand indica si el evento es un comando de reproducción del Host.
 func (e Event) IsCommand() bool {
 	switch e.Type {
-	case Play, Pause, Seek, Rate, Load, Volume:
+	case Play, Pause, Seek, Rate, Load, Volume, Quality:
 		return true
 	}
 	return false

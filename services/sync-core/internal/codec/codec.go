@@ -98,6 +98,7 @@ type wire struct {
 	Duplicate    bool     `msgpack:"duplicate,omitempty"`
 	MediaID      string   `msgpack:"media_id,omitempty"`
 	Volume       *float64 `msgpack:"volume,omitempty"`
+	Quality      string   `msgpack:"quality,omitempty"`
 	RTTMs        int64    `msgpack:"rtt_ms,omitempty"`
 	CanControl   *bool    `msgpack:"can_control,omitempty"`
 	Holder       string   `msgpack:"holder,omitempty"`
@@ -112,7 +113,7 @@ func toWire(e syncevent.Event) wire {
 		EchoServerTs: e.EchoServerTs, TargetMs: e.TargetMs, Strategy: e.Strategy, DriftMs: e.DriftMs,
 		Online: e.Online, RefEventID: e.RefEventID, Code: e.Code, Duplicate: e.Duplicate,
 		MediaID: e.MediaID, RTTMs: e.RTTMs, CanControl: e.CanControl, Holder: e.Holder, JTI: e.JTI,
-		Volume: e.Volume,
+		Volume: e.Volume, Quality: e.Quality,
 	}
 }
 
@@ -132,7 +133,7 @@ func fromWire(w wire) (syncevent.Event, error) {
 		EchoServerTs: w.EchoServerTs, TargetMs: w.TargetMs, Strategy: w.Strategy, DriftMs: w.DriftMs,
 		Online: w.Online, RefEventID: w.RefEventID, Code: w.Code, Duplicate: w.Duplicate,
 		MediaID: w.MediaID, RTTMs: w.RTTMs, CanControl: w.CanControl, Holder: w.Holder, JTI: w.JTI,
-		Volume: w.Volume,
+		Volume: w.Volume, Quality: w.Quality,
 	}, nil
 }
 

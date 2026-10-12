@@ -297,3 +297,36 @@ func TestJSONVolume(t *testing.T) {
 		t.Errorf("volume=0 debe serializarse: %s", raw)
 	}
 }
+
+func TestValidateInboundQuality(t *testing.T) {
+	for _, q := range []string{"auto", "source", "720p", "360p"} {
+		e := validEvent()
+		e.Type, e.Quality = Quality, q
+		if err := e.ValidateInbound(); err != nil {
+			t.Errorf("quality %q: %v", q, err)
+		}
+	}
+	for _, q := range []string{"", "1080p", "AUTO", "720"} {
+		e := validEvent()
+		e.Type, e.Quality = Quality, q
+		if err := e.ValidateInbound(); !errors.Is(err, ErrInvalidQuality) {
+			t.Errorf("quality %q = %v, want ErrInvalidQuality", q, err)
+		}
+	}
+	e := validEvent()
+	e.Type = Quality
+	if err := e.Validate(); err != nil {
+		t.Errorf("QUALITY debe ser un tipo válido: %v", err)
+	}
+	if !(Event{Type: Quality}).IsCommand() {
+		t.Error("QUALITY debe ser comando")
+	}
+	e = validEvent()
+	e.Quality = "720p"
+	raw, _ := json.Marshal(e)
+	var m map[string]any
+	_ = json.Unmarshal(raw, &m)
+	if m["quality"] != "720p" {
+		t.Errorf("quality debe serializarse: %s", raw)
+	}
+}

@@ -722,3 +722,84 @@ func TestDeliverWithoutVolumeDefaultsToOne(t *testing.T) {
 		t.Errorf("caché = %+v", st)
 	}
 }
+
+func TestQualityBroadcastAndState(t *testing.T) {
+	e := newEnv(t)
+	a := e.newHub(t)
+	b := e.newHub(t)
+	hc := connect(t, a, host)
+	if st := next(t, hc); st.Quality != "auto" {
+		t.Errorf("STATE inicial debe llevar quality=auto: %q", st.Quality)
+	}
+	g := connect(t, b, guest) // otra réplica
+	next(t, g)
+	e.waitSubscribers(t, 2)
+
+	q := cmd("e-q", syncevent.Quality, 0)
+	q["quality"] = "720p"
+	send(t, a, hc, q)
+	if ack := collect(t, hc, syncevent.Ack)[syncevent.Ack]; ack.RefEventID != "e-q" || ack.Version != 1 {
+		t.Errorf("ACK = %+v", ack)
+	}
+	ev := nextOf(t, g, syncevent.Quality)
+	if ev.Quality != "720p" || ev.Status != "paused" || ev.Version != 1 || ev.Volume == nil || *ev.Volume != 1 {
+		t.Errorf("broadcast QUALITY en réplica B = %+v", ev)
+	}
+	if st, ok := b.cached(room); !ok || st.Quality != "720p" {
+		t.Errorf("la caché de B debe reflejar la calidad: %+v", st)
+	}
+	send(t, a, hc, cmd("e-play", syncevent.Play, 0))
+	if ev := nextOf(t, g, syncevent.Play); ev.Quality != "720p" {
+		t.Errorf("PLAY debe llevar quality: %q", ev.Quality)
+	}
+	g2 := connect(t, b, guestTwo)
+	if st := next(t, g2); st.Quality != "720p" {
+		t.Errorf("STATE debe llevar quality: %q", st.Quality)
+	}
+	e.clock.advance(time.Second)
+	send(t, b, g2, cmd("c1", syncevent.SyncCheck, 60_000))
+	if corr := nextOf(t, g2, syncevent.SyncCorrection); corr.Quality != "720p" {
+		t.Errorf("SYNC_CORRECTION debe llevar quality: %q", corr.Quality)
+	}
+
+	bad := cmd("e-bad", syncevent.Quality, 0)
+	bad["quality"] = "1080p"
+	send(t, a, hc, bad)
+	if ev := nextOf(t, hc, syncevent.Error); ev.Code != syncevent.CodeInvalid || ev.RefEventID != "e-bad" {
+		t.Errorf("QUALITY inválida = %+v", ev)
+	}
+}
+
+func TestParticipantQualityIsForbidden(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	hc := connect(t, h, host)
+	next(t, hc)
+	g := connect(t, h, guest)
+	next(t, g)
+
+	q := cmd("e-evil", syncevent.Quality, 0)
+	q["quality"] = "360p"
+	send(t, h, g, q)
+	if ev := nextOf(t, g, syncevent.Error); ev.Code != syncevent.CodeForbidden || ev.RefEventID != "e-evil" {
+		t.Errorf("ERROR = %+v", ev)
+	}
+	expectSilence(t, hc)
+	if st, _ := h.store.Load(context.Background(), room); st.Version != 0 || st.Quality != "auto" {
+		t.Errorf("el estado maestro debe quedar intacto: %+v", st)
+	}
+}
+
+// Un broadcast de una réplica sin quality (versión anterior) se cachea como auto.
+func TestDeliverWithoutQualityDefaultsToAuto(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	g := connect(t, h, guest)
+	next(t, g)
+	ev := stateEvent(syncevent.Seek, room, master.State{Status: master.Paused, PositionMs: 1, Rate: 1, Version: 5}, e.clock.now())
+	ev.Quality = ""
+	h.Deliver(room, mustJSON(ev))
+	if st, ok := h.cached(room); !ok || st.Quality != "auto" || st.Version != 5 {
+		t.Errorf("caché = %+v", st)
+	}
+}

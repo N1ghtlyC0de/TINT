@@ -517,6 +517,7 @@ func (h *Hub) Deliver(roomID string, payload []byte) {
 		r.update(master.State{
 			Status: master.Status(ev.Status), PositionMs: ev.PositionMs, UpdatedAtMs: ev.UpdatedAtMs,
 			Rate: ev.Rate, Version: ev.Version, MediaID: ev.MediaID, Volume: volumeOf(ev),
+			Quality: qualityOf(ev),
 		}, h.now().UnixMilli())
 	}
 	// El bus siempre viaja en JSON; para los clientes MessagePack se
@@ -579,7 +580,7 @@ func (h *Hub) handleCommand(ctx context.Context, c *Client, ev syncevent.Event, 
 		out.OccurredAt = ev.OccurredAt
 		return json.Marshal(out)
 	}
-	cmd := master.Command{Type: ev.Type, PositionMs: ev.PositionMs, Rate: ev.Rate, MediaID: ev.MediaID}
+	cmd := master.Command{Type: ev.Type, PositionMs: ev.PositionMs, Rate: ev.Rate, MediaID: ev.MediaID, Quality: ev.Quality}
 	if ev.Volume != nil {
 		cmd.Volume = *ev.Volume
 	}
@@ -589,7 +590,7 @@ func (h *Hub) handleCommand(ctx context.Context, c *Client, ev syncevent.Event, 
 	if err != nil {
 		code, result := syncevent.CodeInternal, "error"
 		if errors.Is(err, syncevent.ErrNegativePosition) || errors.Is(err, syncevent.ErrInvalidRate) || errors.Is(err, syncevent.ErrInvalidMedia) ||
-			errors.Is(err, syncevent.ErrInvalidVolume) {
+			errors.Is(err, syncevent.ErrInvalidVolume) || errors.Is(err, syncevent.ErrInvalidQuality) {
 			code, result = syncevent.CodeInvalid, "invalid"
 		} else {
 			log.Printf("hub: comando %s en sala %s: %v", ev.Type, room, err)
@@ -651,6 +652,7 @@ func (h *Hub) handleSyncCheck(ctx context.Context, c *Client, ev syncevent.Event
 	out.Rate = st.Rate
 	out.MediaID = st.MediaID
 	out.Volume = syncevent.Float64(st.Volume)
+	out.Quality = st.Quality
 	c.enqueueEvent(out)
 	h.tel.EmitDrift(telemetry.DriftSample{
 		RoomID: room, DriftMs: corr.DriftMs, RTTMs: rtt, Strategy: string(corr.Strategy),
@@ -819,6 +821,7 @@ func stateEvent(typ syncevent.Type, room string, st master.State, now time.Time)
 	ev.ServerTimeMs = now.UnixMilli()
 	ev.MediaID = st.MediaID
 	ev.Volume = syncevent.Float64(st.Volume)
+	ev.Quality = st.Quality
 	return ev
 }
 
@@ -829,6 +832,14 @@ func volumeOf(ev syncevent.Event) float64 {
 		return master.DefaultVolume
 	}
 	return *ev.Volume
+}
+
+// qualityOf lee la calidad de un broadcast (auto si la réplica no la envía).
+func qualityOf(ev syncevent.Event) string {
+	if ev.Quality == "" {
+		return master.DefaultQuality
+	}
+	return ev.Quality
 }
 
 func errorEvent(room, ref, code string, now time.Time) syncevent.Event {
