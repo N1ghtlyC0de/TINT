@@ -34,7 +34,7 @@ var benchState = master.State{Status: master.Playing, PositionMs: 120_000, Updat
 
 // benchHub crea un hub con n clientes listos en la sala (cada msgpackEvery-
 // ésimo usa MessagePack; 0 = todos JSON, 1 = todos MessagePack).
-func benchHub(b *testing.B, s StateStore, n, msgpackEvery int) (*Hub, []*Client) {
+func benchHub(b testing.TB, s StateStore, n, msgpackEvery int) (*Hub, []*Client) {
 	b.Helper()
 	clock := &fakeClock{}
 	clock.ms.Store(t0.UnixMilli())

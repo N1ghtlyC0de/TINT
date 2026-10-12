@@ -111,10 +111,15 @@ type Hub struct {
 	reg *metrics.Registry
 	m   hubMetrics
 
-	// mu protege rooms. Se mantiene durante Subscribe/Unsubscribe para que
-	// un join y un leave concurrentes de la misma sala no se desordenen.
+	// mu protege rooms. Nunca se mantiene durante I/O de red: Deliver,
+	// latidos y barridos de todas las salas lo necesitan.
 	mu    sync.Mutex
 	rooms map[string]*roomEntry
+	// subMu serializa Subscribe/Unsubscribe del bus (orden: subMu → mu)
+	// para que un join y un leave concurrentes de la misma sala no se
+	// desordenen. El cliente Pub/Sub de go-redis ya serializa esas
+	// operaciones sobre su única conexión, así que no se pierde paralelismo.
+	subMu sync.Mutex
 }
 
 // roomEntry son los clientes locales de una sala y la caché de su estado.
@@ -754,20 +759,60 @@ func (h *Hub) release(c *Client) {
 	c.held = nil
 }
 
+// join registra al cliente en su sala y, si es la primera conexión local,
+// suscribe la réplica a la sala. Invariante: una sala está en h.rooms solo
+// mientras la suscripción del bus está activa (se inserta después de
+// Subscribe y se borra antes de Unsubscribe).
 func (h *Hub) join(ctx context.Context, c *Client) error {
+	if h.addToRoom(c) { // camino rápido: la sala ya está suscrita
+		return nil
+	}
+	h.subMu.Lock()
+	defer h.subMu.Unlock()
+	// Re-comprobar: otro join pudo crear la sala mientras esperábamos subMu.
+	if h.addToRoom(c) {
+		return nil
+	}
+	// Sin h.mu: un Subscribe lento no frena a las demás salas. Un mensaje
+	// publicado antes de insertar la sala se pierde, pero Connect lee el
+	// estado (Init) después de join y ese estado ya lo incluye.
+	room := c.claims.RoomID
+	if err := h.bus.Subscribe(ctx, room); err != nil {
+		return err
+	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	room := c.claims.RoomID
-	r, ok := h.rooms[room]
-	if !ok {
-		if err := h.bus.Subscribe(ctx, room); err != nil {
-			return err
-		}
-		r = &roomEntry{clients: make(map[*Client]struct{})}
-		h.rooms[room] = r
-	}
-	r.clients[c] = struct{}{}
+	h.rooms[room] = &roomEntry{clients: map[*Client]struct{}{c: {}}}
 	return nil
+}
+
+// addToRoom registra al cliente si su sala ya existe.
+func (h *Hub) addToRoom(c *Client) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	r, ok := h.rooms[c.claims.RoomID]
+	if ok {
+		r.clients[c] = struct{}{}
+	}
+	return ok
+}
+
+// unsubscribeIfEmpty desuscribe la sala si nadie volvió a crearla desde que
+// leave la borró. Con subMu tomado ningún join puede suscribirla a la vez.
+func (h *Hub) unsubscribeIfEmpty(room string) {
+	h.subMu.Lock()
+	defer h.subMu.Unlock()
+	h.mu.Lock()
+	_, recreated := h.rooms[room]
+	h.mu.Unlock()
+	if recreated {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), ioTimeout)
+	defer cancel()
+	if err := h.bus.Unsubscribe(ctx, room); err != nil {
+		log.Printf("hub: unsubscribe sala %s: %v", room, err)
+	}
 }
 
 // leftInfo describe la sala que deja un cliente.
@@ -778,18 +823,28 @@ type leftInfo struct {
 
 // leave quita al cliente; ok es false si ya no estaba registrado.
 func (h *Hub) leave(c *Client) (leftInfo, bool) {
+	info, ok, empty := h.removeFromRoom(c)
+	if empty {
+		h.unsubscribeIfEmpty(c.claims.RoomID) // fuera de h.mu: es I/O de red
+	}
+	return info, ok
+}
+
+// removeFromRoom quita al cliente; empty indica que la sala quedó vacía y
+// se borró de h.rooms.
+func (h *Hub) removeFromRoom(c *Client) (info leftInfo, ok, empty bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	room := c.claims.RoomID
-	r, ok := h.rooms[room]
-	if !ok {
-		return leftInfo{}, false
+	r, found := h.rooms[room]
+	if !found {
+		return leftInfo{}, false, false
 	}
-	if _, ok := r.clients[c]; !ok {
-		return leftInfo{}, false
+	if _, found := r.clients[c]; !found {
+		return leftInfo{}, false, false
 	}
 	delete(r.clients, c)
-	info := leftInfo{delegate: r.delegate}
+	info = leftInfo{delegate: r.delegate}
 	for other := range r.clients {
 		if other.claims.Sub == c.claims.Sub {
 			info.sameSub = true
@@ -798,13 +853,9 @@ func (h *Hub) leave(c *Client) (leftInfo, bool) {
 	}
 	if len(r.clients) == 0 {
 		delete(h.rooms, room)
-		ctx, cancel := context.WithTimeout(context.Background(), ioTimeout)
-		defer cancel()
-		if err := h.bus.Unsubscribe(ctx, room); err != nil {
-			log.Printf("hub: unsubscribe sala %s: %v", room, err)
-		}
+		empty = true
 	}
-	return info, true
+	return info, true, empty
 }
 
 // cache guarda st si es más nuevo que lo cacheado y devuelve el estado
