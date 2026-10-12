@@ -1,4 +1,4 @@
-/** Contrato del Canal Social (/ws/social): chat, reacciones, puntero láser, encuestas y recap. */
+/** Contrato del Canal Social (/ws/social): chat (con moderación y spoilers), reacciones, láser, encuestas, trivia y recap. */
 
 export const CHAT_MAX_LENGTH = 280;
 export const CHAT_HISTORY_LIMIT = 50;
@@ -10,6 +10,8 @@ export interface ChatMessage {
   user_id: string;
   nick: string;
   text: string;
+  /** Opcional y retrocompatible: el texto se muestra difuminado hasta revelarlo. */
+  spoiler?: boolean;
   occurred_at: string;
   received_at: string;
 }
@@ -24,6 +26,102 @@ export interface SocialError {
   type: 'error';
   code: string;
   event_id_ref?: string;
+  /** SLOW_MODE: cuánto falta para poder volver a escribir. */
+  retry_after_ms?: number;
+}
+
+/** Ajustes del chat (autoritativos en social-core); llegan al unirse y en cada cambio. */
+export interface ChatSettings {
+  type: 'chat_settings';
+  slow_mode_s: number;
+  muted_user_ids: string[];
+}
+
+export const SLOW_MODE_OPTIONS = [
+  { seconds: 0, label: 'Apagado' },
+  { seconds: 5, label: '5 s' },
+  { seconds: 10, label: '10 s' },
+  { seconds: 30, label: '30 s' },
+  { seconds: 60, label: '1 min' },
+] as const;
+
+/** Pregunta lanzada a todos (sin `correct`). `*_at_ms` son del reloj del servidor. */
+export interface TriviaQuestion {
+  type: 'trivia_question';
+  trivia_id: string;
+  question: string;
+  options: string[];
+  opens_at_ms: number;
+  closes_at_ms: number;
+}
+
+/** Confirmación de la respuesta propia. */
+export interface TriviaAck {
+  type: 'trivia_ack';
+  trivia_id: string;
+  option: number;
+  score: number;
+}
+
+export interface TriviaRankEntry {
+  user_id: string;
+  nick: string;
+  score: number;
+}
+
+/** Cierre de la pregunta: correcta, top 10 y el puntaje propio. */
+export interface TriviaResult {
+  type: 'trivia_result';
+  trivia_id: string;
+  correct: number;
+  top: TriviaRankEntry[];
+  my_score?: number;
+}
+
+/** Pregunta programada por el host (solo el host la recibe, con `correct`). */
+export interface ScheduledTrivia {
+  trivia_id: string;
+  at_ms: number;
+  question: string;
+  options: string[];
+  correct: number;
+  answer_window_s: number;
+}
+
+export interface TriviaScheduleState {
+  type: 'trivia_schedule_state';
+  questions: ScheduledTrivia[];
+}
+
+export interface TriviaDraft {
+  atMs: number;
+  question: string;
+  options: string[];
+  correct: number;
+  answerWindowS: number;
+}
+
+export const TRIVIA_QUESTION_MAX = 140;
+export const TRIVIA_OPTION_MAX = 60;
+export const TRIVIA_MIN_OPTIONS = 2;
+export const TRIVIA_MAX_OPTIONS = 4;
+export const TRIVIA_WINDOW_MIN_S = 10;
+export const TRIVIA_WINDOW_MAX_S = 60;
+export const TRIVIA_WINDOW_DEFAULT_S = 20;
+
+const SOCIAL_ERROR_MESSAGES: Record<string, string> = {
+  SLOW_MODE: 'El chat está en modo lento: espera un momento para volver a escribir.',
+  MUTED: 'El host te silenció; puedes leer el chat.',
+  TRIVIA_NOT_FOUND: 'Esa pregunta ya no existe.',
+  TRIVIA_CLOSED: 'Se acabó el tiempo para responder.',
+  ALREADY_ANSWERED: 'Ya respondiste esta pregunta.',
+  FORBIDDEN: 'No tienes permiso para hacer eso.',
+  RATE_LIMITED: 'Vas muy rápido: ve más despacio.',
+};
+
+/** Mensaje simple para un `error{code}` del canal social. */
+export function socialErrorMessage(code: string): string {
+  return SOCIAL_ERROR_MESSAGES[code] ?? 'No se pudo completar la acción. Inténtalo de nuevo.';
 }
 
 export type NoticeKind = 'joined' | 'left';
@@ -122,6 +220,11 @@ export type SocialIncoming =
   | LaserBroadcast
   | PollState
   | RecapMessage
+  | ChatSettings
+  | TriviaQuestion
+  | TriviaAck
+  | TriviaResult
+  | TriviaScheduleState
   | SocialError;
 
 export function newEventId(): string {
@@ -206,19 +309,80 @@ export function buildSocialUrl(base: string, roomId: string, token: string): str
   return `${base}${sep}room_id=${encodeURIComponent(roomId)}&token=${encodeURIComponent(token)}`;
 }
 
-export function buildChatSend(roomId: string, text: string): string {
-  const trimmed = text.trim();
-  const eventId =
-    typeof crypto !== 'undefined' && 'randomUUID' in crypto
-      ? crypto.randomUUID()
-      : `c-${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
-  return JSON.stringify({
-    event_id: eventId,
+export function buildChatSend(roomId: string, text: string, spoiler = false): string {
+  const frame: Record<string, unknown> = {
+    event_id: newEventId(),
     type: 'chat_send',
     room_id: roomId,
-    text: trimmed,
+    text: text.trim(),
     occurred_at: new Date().toISOString(),
+  };
+  if (spoiler) frame.spoiler = true;
+  return JSON.stringify(frame);
+}
+
+export function buildChatSlowMode(roomId: string, seconds: number, eventId = newEventId()): string {
+  return JSON.stringify({ type: 'chat_slow_mode', event_id: eventId, room_id: roomId, seconds });
+}
+
+export function buildChatMute(roomId: string, userId: string, muted: boolean, eventId = newEventId()): string {
+  return JSON.stringify({ type: 'chat_mute', event_id: eventId, room_id: roomId, user_id: userId, muted });
+}
+
+/** Pre-validación de una pregunta de trivia (social-core decide); null si es válida. */
+export function validateTriviaDraft(draft: TriviaDraft): string | null {
+  const q = draft.question.trim();
+  if (!q) return 'Escribe la pregunta.';
+  if (q.length > TRIVIA_QUESTION_MAX) return `La pregunta admite hasta ${TRIVIA_QUESTION_MAX} caracteres.`;
+  if (draft.options.length < TRIVIA_MIN_OPTIONS || draft.options.length > TRIVIA_MAX_OPTIONS) {
+    return `Añade entre ${TRIVIA_MIN_OPTIONS} y ${TRIVIA_MAX_OPTIONS} opciones.`;
+  }
+  const opts = draft.options.map((o) => o.trim());
+  if (opts.some((o) => !o)) return 'Completa todas las opciones.';
+  if (opts.some((o) => o.length > TRIVIA_OPTION_MAX)) return `Cada opción admite hasta ${TRIVIA_OPTION_MAX} caracteres.`;
+  if (new Set(opts.map((o) => o.toLowerCase())).size !== opts.length) return 'Las opciones deben ser distintas.';
+  if (!Number.isInteger(draft.correct) || draft.correct < 0 || draft.correct >= opts.length) {
+    return 'Marca la respuesta correcta.';
+  }
+  if (!Number.isFinite(draft.atMs) || draft.atMs < 0) return 'Indica un momento válido del vídeo (mm:ss).';
+  if (draft.answerWindowS < TRIVIA_WINDOW_MIN_S || draft.answerWindowS > TRIVIA_WINDOW_MAX_S) {
+    return `El tiempo para responder debe estar entre ${TRIVIA_WINDOW_MIN_S} y ${TRIVIA_WINDOW_MAX_S} s.`;
+  }
+  return null;
+}
+
+/** "mm:ss" (o segundos sueltos) → ms; null si no es válido. */
+export function parseMmSs(value: string): number | null {
+  const v = value.trim();
+  if (/^\d+$/.test(v)) return Number(v) * 1000;
+  const m = /^(\d{1,4}):([0-5]\d)$/.exec(v);
+  if (!m) return null;
+  return (Number(m[1]) * 60 + Number(m[2])) * 1000;
+}
+
+export function buildTriviaSchedule(roomId: string, draft: TriviaDraft, eventId = newEventId()): string {
+  return JSON.stringify({
+    type: 'trivia_schedule',
+    event_id: eventId,
+    room_id: roomId,
+    at_ms: Math.max(0, Math.round(draft.atMs)),
+    question: draft.question.trim(),
+    options: draft.options.map((o) => o.trim()),
+    correct: draft.correct,
+    answer_window_s: draft.answerWindowS,
   });
+}
+
+export function buildTriviaDelete(roomId: string, triviaId: string, eventId = newEventId()): string {
+  return JSON.stringify({ type: 'trivia_delete', event_id: eventId, room_id: roomId, trivia_id: triviaId });
+}
+
+export function buildTriviaList(roomId: string, eventId = newEventId()): string {
+  return JSON.stringify({ type: 'trivia_list', event_id: eventId, room_id: roomId });
+}
+
+export function buildTriviaAnswer(roomId: string, triviaId: string, option: number, eventId = newEventId()): string {
+  return JSON.stringify({ type: 'trivia_answer', event_id: eventId, room_id: roomId, trivia_id: triviaId, option });
 }
 
 /** Devuelve el mensaje parseado o null si no es un evento social conocido. */
@@ -239,7 +403,12 @@ export function parseSocialMessage(raw: string): SocialIncoming | null {
     type === 'reaction' ||
     type === 'laser' ||
     type === 'poll_state' ||
-    type === 'recap'
+    type === 'recap' ||
+    type === 'chat_settings' ||
+    type === 'trivia_question' ||
+    type === 'trivia_ack' ||
+    type === 'trivia_result' ||
+    type === 'trivia_schedule_state'
   ) {
     return data as SocialIncoming;
   }

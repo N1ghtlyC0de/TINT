@@ -3,7 +3,21 @@ import { apiFetch } from '../lib/api';
 import { errorStatus } from '../lib/errorStatus';
 import { getLocalIdentity } from '../lib/identity';
 import {
+  buildChatMute,
   buildChatSend,
+  buildChatSlowMode,
+  buildTriviaAnswer,
+  buildTriviaDelete,
+  buildTriviaList,
+  buildTriviaSchedule,
+  SLOW_MODE_OPTIONS,
+  validateTriviaDraft,
+  type ChatSettings,
+  type ScheduledTrivia,
+  type TriviaAck,
+  type TriviaDraft,
+  type TriviaQuestion,
+  type TriviaResult,
   buildLaserPoint,
   buildPollClose,
   buildPollCreate,
@@ -41,6 +55,31 @@ export type SocialStatus = 'connecting' | 'open' | 'reconnecting' | 'closed';
 export interface SocialErrorInfo {
   code: string;
   event_id_ref?: string;
+  retry_after_ms?: number;
+}
+
+export type ChatSettingsView = Omit<ChatSettings, 'type'>;
+
+/** Trivia activa: `receivedAt` (reloj local) ancla la cuenta regresiva sin comparar relojes. */
+export interface TriviaView {
+  question: TriviaQuestion | null;
+  receivedAt: number | null;
+  ack: TriviaAck | null;
+  result: TriviaResult | null;
+  /** Opción elegida (optimista hasta el ack). */
+  myOption: number | null;
+}
+
+const EMPTY_TRIVIA: TriviaView = { question: null, receivedAt: null, ack: null, result: null, myOption: null };
+const DEFAULT_CHAT_SETTINGS: ChatSettingsView = { slow_mode_s: 0, muted_user_ids: [] };
+
+function normalizeChatSettings(msg: Partial<ChatSettings>): ChatSettingsView {
+  return {
+    slow_mode_s: typeof msg.slow_mode_s === 'number' && msg.slow_mode_s > 0 ? msg.slow_mode_s : 0,
+    muted_user_ids: Array.isArray(msg.muted_user_ids)
+      ? msg.muted_user_ids.filter((id): id is string => typeof id === 'string')
+      : [],
+  };
 }
 
 interface UseSocialSocketOptions {
@@ -86,6 +125,13 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
   const [poll, setPoll] = useState<PollView | null>(null);
   const [lastError, setLastError] = useState<SocialErrorInfo | null>(null);
   const [recap, setRecap] = useState<RecapMessage | null>(null);
+  const [chatSettings, setChatSettings] = useState<ChatSettingsView>(DEFAULT_CHAT_SETTINGS);
+  const chatSettingsRef = useRef(chatSettings);
+  chatSettingsRef.current = chatSettings;
+  /** Hasta cuándo (reloj local) el modo lento impide escribir; null = libre. */
+  const [chatCooldownUntil, setChatCooldownUntil] = useState<number | null>(null);
+  const [trivia, setTrivia] = useState<TriviaView>(EMPTY_TRIVIA);
+  const [triviaSchedule, setTriviaSchedule] = useState<ScheduledTrivia[]>([]);
   /** Último voto propio visto por poll_id: los broadcasts no traen my_vote. */
   const myVotesRef = useRef<Map<string, number>>(new Map());
   const wsRef = useRef<WebSocket | null>(null);
@@ -191,6 +237,8 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
       ws.onopen = () => {
         attemptRef.current = 0;
         setStatus('open');
+        // Solo el host recibe la agenda de trivia (con las respuestas correctas).
+        if (role === 'host') ws.send(buildTriviaList(roomId));
       };
       ws.onmessage = (event: MessageEvent) => {
         const parsed = parseSocialMessage(String(event.data));
@@ -208,8 +256,24 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
           applyPoll(parsed);
         } else if (parsed.type === 'recap') {
           setRecap(parsed);
+        } else if (parsed.type === 'chat_settings') {
+          setChatSettings(normalizeChatSettings(parsed));
+        } else if (parsed.type === 'trivia_question') {
+          setTrivia({ ...EMPTY_TRIVIA, question: parsed, receivedAt: Date.now() });
+        } else if (parsed.type === 'trivia_ack') {
+          setTrivia((prev) =>
+            prev.question?.trivia_id === parsed.trivia_id ? { ...prev, ack: parsed, myOption: parsed.option } : prev,
+          );
+        } else if (parsed.type === 'trivia_result') {
+          setTrivia((prev) => (prev.question?.trivia_id === parsed.trivia_id ? { ...prev, result: parsed } : prev));
+        } else if (parsed.type === 'trivia_schedule_state') {
+          const list = Array.isArray(parsed.questions) ? parsed.questions : [];
+          setTriviaSchedule([...list].sort((a, b) => a.at_ms - b.at_ms));
         } else if (parsed.type === 'error') {
-          setLastError({ code: parsed.code, event_id_ref: parsed.event_id_ref });
+          setLastError({ code: parsed.code, event_id_ref: parsed.event_id_ref, retry_after_ms: parsed.retry_after_ms });
+          if (parsed.code === 'SLOW_MODE' && typeof parsed.retry_after_ms === 'number') {
+            setChatCooldownUntil(Date.now() + parsed.retry_after_ms);
+          }
         }
       };
       ws.onclose = () => {
@@ -240,15 +304,18 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
   }, [roomId, role, pushMessage, pushReaction, pushLaser, applyPoll, remember]);
 
   const send = useCallback(
-    (text: string) => {
+    (text: string, sendOpts: { spoiler?: boolean } = {}) => {
       const trimmed = text.trim();
       if (!trimmed || !roomId) return false;
       const ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) return false;
-      ws.send(buildChatSend(roomId, trimmed));
+      ws.send(buildChatSend(roomId, trimmed, sendOpts.spoiler === true));
+      // Pre-validación del modo lento (el host está exento; social-core decide).
+      const slow = chatSettingsRef.current.slow_mode_s;
+      if (slow > 0 && role !== 'host') setChatCooldownUntil(Date.now() + slow * 1000);
       return true;
     },
-    [roomId],
+    [roomId, role],
   );
 
   const sendReaction = useCallback(
@@ -324,6 +391,51 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
 
   const requestRecap = useCallback(() => sendFrame((room) => buildRecapRequest(room)), [sendFrame]);
 
+  const setSlowMode = useCallback(
+    (seconds: number) => {
+      if (!SLOW_MODE_OPTIONS.some((o) => o.seconds === seconds)) return false;
+      return sendFrame((room) => buildChatSlowMode(room, seconds));
+    },
+    [sendFrame],
+  );
+
+  const muteUser = useCallback(
+    (userId: string, muted: boolean) => sendFrame((room) => buildChatMute(room, userId, muted)),
+    [sendFrame],
+  );
+
+  const listTrivia = useCallback(() => sendFrame((room) => buildTriviaList(room)), [sendFrame]);
+
+  const scheduleTrivia = useCallback(
+    (draft: TriviaDraft) => {
+      if (validateTriviaDraft(draft)) return false;
+      const ok = sendFrame((room) => buildTriviaSchedule(room, draft));
+      if (ok) listTrivia();
+      return ok;
+    },
+    [sendFrame, listTrivia],
+  );
+
+  const deleteTrivia = useCallback(
+    (triviaId: string) => {
+      const ok = sendFrame((room) => buildTriviaDelete(room, triviaId));
+      if (ok) listTrivia();
+      return ok;
+    },
+    [sendFrame, listTrivia],
+  );
+
+  const answerTrivia = useCallback(
+    (triviaId: string, option: number) => {
+      const ok = sendFrame((room) => buildTriviaAnswer(room, triviaId, option));
+      if (ok) setTrivia((prev) => (prev.question?.trivia_id === triviaId ? { ...prev, myOption: option } : prev));
+      return ok;
+    },
+    [sendFrame],
+  );
+
+  const dismissTrivia = useCallback(() => setTrivia(EMPTY_TRIVIA), []);
+
   return {
     status,
     messages,
@@ -339,5 +451,16 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     votePoll,
     closePoll,
     requestRecap,
+    chatSettings,
+    chatCooldownUntil,
+    setSlowMode,
+    muteUser,
+    trivia,
+    triviaSchedule,
+    scheduleTrivia,
+    deleteTrivia,
+    listTrivia,
+    answerTrivia,
+    dismissTrivia,
   };
 }
