@@ -12,22 +12,34 @@ DEFAULT_TIMEOUT_S = 4 * 3600
 
 PROBE_TIMEOUT_S = 30
 
+# Un remux solo copia paquetes: aun para una película basta con mucho menos que re-codificar.
+REMUX_TIMEOUT_S = 3600
+
+# Bitrate total (bit/s) máximo para publicar con remux un original ya H.264 + AAC; por encima
+# (p. ej. 4K de móvil a 50 Mbps) se re-codifica con el tope VBV de `source.mp4`.
+MAX_REMUX_BITRATE = 12_000_000
+
 
 class NormalizeError(Exception):
     """No se pudo normalizar el vídeo."""
 
 
 def is_normalized(src: Path, runner=subprocess.run, timeout: float = PROBE_TIMEOUT_S) -> bool:
-    """True si `src` ya es MP4 con primer vídeo H.264 `yuv420p` y primer audio AAC (si hay).
+    """True si `src` se puede publicar con un remux (`-c copy`) en vez de re-codificarlo.
 
-    Cualquier duda (ffprobe falla, salida ilegible) devuelve False: se normaliza como siempre.
+    Exige MP4 real (ni extensión `.mov` ni major brand `qt  `: ffprobe informa los QuickTime de
+    móvil como `mov,mp4,...`), primer vídeo H.264 `yuv420p`, primer audio AAC (si hay) y un
+    bitrate total conocido de como mucho `MAX_REMUX_BITRATE`. Cualquier duda (ffprobe falla,
+    salida ilegible, bitrate desconocido) devuelve False: se re-codifica.
     """
+    if src.suffix.lower() == ".mov":
+        return False
     cmd = [
         "ffprobe",
         "-v",
         "error",
         "-show_entries",
-        "stream=codec_type,codec_name,pix_fmt:format=format_name",
+        "stream=codec_type,codec_name,pix_fmt:format=format_name,bit_rate:format_tags=major_brand",
         "-of",
         "json",
         str(src),
@@ -37,7 +49,10 @@ def is_normalized(src: Path, runner=subprocess.run, timeout: float = PROBE_TIMEO
         if result.returncode != 0:
             return False
         info = json.loads(result.stdout)
-        containers = info["format"]["format_name"].split(",")
+        fmt = info["format"]
+        containers = fmt["format_name"].split(",")
+        bit_rate = int(fmt["bit_rate"])
+        brand = (fmt.get("tags") or {}).get("major_brand", "").strip()
         streams = info["streams"]
     except (subprocess.TimeoutExpired, OSError, ValueError, KeyError, TypeError, AttributeError):
         return False
@@ -45,6 +60,8 @@ def is_normalized(src: Path, runner=subprocess.run, timeout: float = PROBE_TIMEO
     audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
     return (
         "mp4" in containers
+        and brand != "qt"
+        and bit_rate <= MAX_REMUX_BITRATE
         and video is not None
         and video.get("codec_name") == "h264"
         and video.get("pix_fmt") == "yuv420p"
@@ -119,13 +136,34 @@ def ffmpeg_normalize_cmd(src: str, dest: str) -> list[str]:
     ]
 
 
-def normalize_video(
-    src: Path, dest: Path, runner=subprocess.run, timeout: float = DEFAULT_TIMEOUT_S
-) -> None:
-    """Escribe en `dest` la versión MP4 H.264 + AAC de `src`; trabaja de archivo a archivo."""
+def ffmpeg_remux_cmd(src: str, dest: str) -> list[str]:
+    """Comando FFmpeg que copia el primer vídeo y audio a un MP4 nuevo con `+faststart`.
+
+    No cambia el intervalo de keyframes del original: es el precio de no re-codificar un
+    original que ya cumple códecs y bitrate.
+    """
+    return [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-nostdin",
+        "-y",
+        "-i",
+        src,
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0?",
+        "-c",
+        "copy",
+        *mp4_output_args(dest),
+    ]
+
+
+def _run_ffmpeg(cmd: list[str], runner, timeout: float) -> None:
     try:
         result = runner(
-            ffmpeg_normalize_cmd(str(src), str(dest)),
+            cmd,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
             text=True,
@@ -138,3 +176,17 @@ def normalize_video(
         raise NormalizeError(f"no se pudo ejecutar ffmpeg: {exc}") from exc
     if result.returncode != 0:
         raise NormalizeError((result.stderr or "").strip() or "ffmpeg falló")
+
+
+def normalize_video(
+    src: Path, dest: Path, runner=subprocess.run, timeout: float = DEFAULT_TIMEOUT_S
+) -> None:
+    """Escribe en `dest` la versión MP4 H.264 + AAC de `src`; trabaja de archivo a archivo."""
+    _run_ffmpeg(ffmpeg_normalize_cmd(str(src), str(dest)), runner, timeout)
+
+
+def remux_video(
+    src: Path, dest: Path, runner=subprocess.run, timeout: float = REMUX_TIMEOUT_S
+) -> None:
+    """Escribe en `dest` un MP4 con `moov` al principio copiando los streams de `src`."""
+    _run_ffmpeg(ffmpeg_remux_cmd(str(src), str(dest)), runner, timeout)

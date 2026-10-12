@@ -9,10 +9,14 @@ from fakes import fake_run
 from media_worker.normalize import (
     DEFAULT_TIMEOUT_S,
     KEYFRAME_INTERVAL_S,
+    MAX_REMUX_BITRATE,
+    REMUX_TIMEOUT_S,
     NormalizeError,
     ffmpeg_normalize_cmd,
+    ffmpeg_remux_cmd,
     is_normalized,
     normalize_video,
+    remux_video,
     x264_args,
 )
 
@@ -118,24 +122,46 @@ def test_normalize_raises_if_ffmpeg_cannot_start():
         normalize_video(Path("in.mp4"), Path("out.mp4"), runner)
 
 
-def probe_json(container="mov,mp4,m4a,3gp,3g2,mj2", video="h264", audio="aac", pix_fmt="yuv420p"):
+def probe_json(
+    container="mov,mp4,m4a,3gp,3g2,mj2",
+    video="h264",
+    audio="aac",
+    pix_fmt="yuv420p",
+    bit_rate="5000000",
+    major_brand="isom",
+):
     streams = []
     if video:
         streams.append({"codec_type": "video", "codec_name": video, "pix_fmt": pix_fmt})
     if audio:
         streams.append({"codec_type": "audio", "codec_name": audio})
-    return json.dumps({"streams": streams, "format": {"format_name": container}})
+    fmt = {"format_name": container}
+    if bit_rate is not None:
+        fmt["bit_rate"] = bit_rate
+    if major_brand is not None:
+        fmt["tags"] = {"major_brand": major_brand}
+    return json.dumps({"streams": streams, "format": fmt})
 
 
 def test_is_normalized_for_mp4_h264_aac():
     runner = fake_run(stdout=probe_json())
     assert is_normalized(Path("in.mp4"), runner) is True
-    assert runner.call_args.args[0][0] == "ffprobe"
-    assert runner.call_args.args[0][-1] == "in.mp4"
+    cmd = runner.call_args.args[0]
+    assert cmd[0] == "ffprobe"
+    assert cmd[-1] == "in.mp4"
+    entries = cmd[cmd.index("-show_entries") + 1]
+    assert "format=format_name,bit_rate" in entries
+    assert "format_tags=major_brand" in entries
 
 
 def test_is_normalized_accepts_video_without_audio():
     assert is_normalized(Path("in.mp4"), fake_run(stdout=probe_json(audio=None))) is True
+
+
+def test_is_normalized_accepts_bitrate_at_the_limit_and_no_brand():
+    output = probe_json(bit_rate=str(MAX_REMUX_BITRATE), major_brand=None)
+    assert MAX_REMUX_BITRATE == 12_000_000
+    assert is_normalized(Path("in.mp4"), fake_run(stdout=output)) is True
 
 
 @pytest.mark.parametrize(
@@ -146,12 +172,21 @@ def test_is_normalized_accepts_video_without_audio():
         probe_json(audio="ac3"),
         probe_json(pix_fmt="yuv444p"),
         probe_json(video=None),
+        probe_json(bit_rate="12000001"),  # demasiado pesado para streaming: se re-codifica
+        probe_json(bit_rate=None),  # bitrate desconocido: ante la duda, re-codificar
+        probe_json(bit_rate="N/A"),
+        probe_json(major_brand="qt  "),  # QuickTime (.mov de móvil) que ffprobe ve como mp4
         "no es json",
         "{}",
     ],
 )
 def test_is_normalized_false_when_something_differs(output):
     assert is_normalized(Path("in.mp4"), fake_run(stdout=output)) is False
+
+
+def test_is_normalized_false_for_mov_extension_even_with_mp4_brand():
+    runner = fake_run(stdout=probe_json())
+    assert is_normalized(Path("clip.MOV"), runner) is False
 
 
 @pytest.mark.parametrize(
@@ -164,3 +199,46 @@ def test_is_normalized_false_when_something_differs(output):
 )
 def test_is_normalized_false_when_probe_fails(runner):
     assert is_normalized(Path("in.mp4"), runner) is False
+
+
+def test_remux_cmd_copies_streams_with_faststart():
+    assert ffmpeg_remux_cmd("in.mp4", "out.mp4") == [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-nostdin",
+        "-y",
+        "-i",
+        "in.mp4",
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0?",
+        "-c",
+        "copy",
+        "-movflags",
+        "+faststart",
+        "-f",
+        "mp4",
+        "out.mp4",
+    ]
+
+
+def test_remux_runs_ffmpeg_with_timeout():
+    runner = fake_run()
+    remux_video(Path("in.mp4"), Path("out.mp4"), runner)
+    assert runner.call_args.args[0] == ffmpeg_remux_cmd("in.mp4", "out.mp4")
+    assert runner.call_args.kwargs["timeout"] == REMUX_TIMEOUT_S
+
+
+@pytest.mark.parametrize(
+    ("runner", "message"),
+    [
+        (fake_run(returncode=1, stderr="moov roto"), "moov roto"),
+        (Mock(side_effect=subprocess.TimeoutExpired("ffmpeg", 1)), "tiempo límite"),
+        (Mock(side_effect=FileNotFoundError("ffmpeg")), "no se pudo ejecutar"),
+    ],
+)
+def test_remux_raises_normalize_error_on_failure(runner, message):
+    with pytest.raises(NormalizeError, match=message):
+        remux_video(Path("in.mp4"), Path("out.mp4"), runner)
