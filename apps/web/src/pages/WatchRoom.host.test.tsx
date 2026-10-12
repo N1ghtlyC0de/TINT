@@ -30,6 +30,8 @@ function baseSocial(over: Record<string, unknown> = {}) {
     createPoll: vi.fn(() => true),
     votePoll: vi.fn(() => true),
     closePoll: vi.fn(() => true),
+    recap: null,
+    requestRecap: vi.fn(() => true),
     ...over,
   };
 }
@@ -149,5 +151,45 @@ describe('WatchRoom — encuestas', () => {
     fireEvent.click(screen.getByRole('button', { name: /^B/ }));
     expect(social.current.votePoll).toHaveBeenCalledWith('p1', 1);
     expect(screen.getByText('La encuesta ya está cerrada.')).toBeInTheDocument();
+  });
+});
+
+describe('WatchRoom — Watch Party Recap', () => {
+  const recap = {
+    type: 'recap',
+    room_id: 'r1',
+    top_emoji_user: { user_id: 'u1', nick: 'Ana', count: 12 },
+    most_paused: null,
+    peak_reactions: null,
+    totals: { reactions: 12, pauses: 0, rewinds: 0, polls: 0 },
+  };
+
+  it('al terminar el vídeo pide el recap y muestra la pantalla', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    const { rerender } = renderWatch();
+    await flush();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    fireEvent.ended(screen.getByLabelText('Vídeo de la sala'));
+    expect(social.current.requestRecap).toHaveBeenCalled();
+    expect(screen.getByText('Preparando el recap de la sesión…')).toBeInTheDocument();
+    social.current = { ...social.current, recap };
+    rerender(
+      <MemoryRouter initialEntries={['/watch/r1']}>
+        <Routes>
+          <Route path="/watch/:roomId" element={<WatchRoom />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('Ana')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Cerrar recap' }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('un recap que llega sin pedirlo también se muestra', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    social.current = baseSocial({ recap });
+    renderWatch();
+    await flush();
+    expect(screen.getByRole('dialog', { name: 'Watch Party Recap' })).toBeInTheDocument();
   });
 });

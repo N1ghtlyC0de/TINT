@@ -103,6 +103,17 @@ export const POLL_QUESTION_MAX = 140;
 export const POLL_OPTION_MAX = 60;
 export const POLL_DURATIONS_S = [30, 60, 120, 300] as const;
 
+/** Infografía "Watch Party Recap" calculada por social-core (cada bloque puede ser null). */
+export interface RecapMessage {
+  type: 'recap';
+  room_id: string;
+  event_id_ref?: string;
+  top_emoji_user: { user_id: string; nick: string; count: number } | null;
+  most_paused: { position_ms: number; count: number } | null;
+  peak_reactions: { position_ms: number; count: number; laughs: number } | null;
+  totals: { reactions: number; pauses: number; rewinds: number; polls: number };
+}
+
 export type SocialIncoming =
   | ChatMessage
   | HistoryEnvelope
@@ -110,6 +121,7 @@ export type SocialIncoming =
   | ReactionBroadcast
   | LaserBroadcast
   | PollState
+  | RecapMessage
   | SocialError;
 
 export function newEventId(): string {
@@ -173,6 +185,16 @@ export function buildPollClose(roomId: string, pollId: string, eventId = newEven
   return JSON.stringify({ type: 'poll_close', event_id: eventId, room_id: roomId, poll_id: pollId });
 }
 
+export function buildRecapRequest(roomId: string, eventId = newEventId()): string {
+  return JSON.stringify({ type: 'recap_request', event_id: eventId, room_id: roomId });
+}
+
+/** Posición del vídeo como mm:ss (los minutos pasan de 59 en vídeos largos). */
+export function formatMmSs(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+}
+
 export function buildLaserPoint(roomId: string, x: number, y: number, end = false, eventId = newEventId()): string {
   const frame: Record<string, unknown> = { type: 'laser_point', event_id: eventId, room_id: roomId, x: round4(x), y: round4(y) };
   if (end) frame.end = true;
@@ -216,7 +238,8 @@ export function parseSocialMessage(raw: string): SocialIncoming | null {
     type === 'notice' ||
     type === 'reaction' ||
     type === 'laser' ||
-    type === 'poll_state'
+    type === 'poll_state' ||
+    type === 'recap'
   ) {
     return data as SocialIncoming;
   }

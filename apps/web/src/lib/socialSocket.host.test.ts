@@ -4,6 +4,8 @@ import {
   buildPollClose,
   buildPollCreate,
   buildPollVote,
+  buildRecapRequest,
+  formatMmSs,
   clamp01,
   parseSocialMessage,
   pollPercentages,
@@ -86,5 +88,31 @@ describe('canal social — encuestas', () => {
     [[3, 0, 1], [75, 0, 25]],
   ])('pollPercentages(%j) → %j', (counts, out) => {
     expect(pollPercentages(counts)).toEqual(out);
+  });
+});
+
+describe('canal social — recap', () => {
+  it('parsea recap y arma recap_request', () => {
+    const recap = {
+      type: 'recap',
+      room_id: 'r1',
+      event_id_ref: 'e1',
+      top_emoji_user: null,
+      most_paused: null,
+      peak_reactions: null,
+      totals: { reactions: 0, pauses: 0, rewinds: 0, polls: 0 },
+    };
+    expect(parseSocialMessage(JSON.stringify(recap))).toEqual(recap);
+    expect(JSON.parse(buildRecapRequest('r1', 'e9'))).toEqual({ type: 'recap_request', event_id: 'e9', room_id: 'r1' });
+    expect(typeof JSON.parse(buildRecapRequest('r1')).event_id).toBe('string');
+  });
+
+  it.each([
+    [0, '00:00'],
+    [-10, '00:00'],
+    [65_400, '01:05'],
+    [3_725_000, '62:05'],
+  ])('formatMmSs(%i) → %s', (ms, out) => {
+    expect(formatMmSs(ms)).toBe(out);
   });
 });

@@ -6,6 +6,7 @@ import {
   buildPollClose,
   buildPollCreate,
   buildPollVote,
+  buildRecapRequest,
   buildReactionSend,
   buildSocialUrl,
   CHAT_HISTORY_LIMIT,
@@ -18,6 +19,7 @@ import {
   type LaserPoint,
   type PollState,
   type PollView,
+  type RecapMessage,
   type PresenceNotice,
   type ReactionBroadcast,
   type ReactionEmoji,
@@ -72,6 +74,7 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
   const [laser, setLaser] = useState<LaserPoint[]>([]);
   const [poll, setPoll] = useState<PollView | null>(null);
   const [lastError, setLastError] = useState<SocialErrorInfo | null>(null);
+  const [recap, setRecap] = useState<RecapMessage | null>(null);
   /** Último voto propio visto por poll_id: los broadcasts no traen my_vote. */
   const myVotesRef = useRef<Map<string, number>>(new Map());
   const wsRef = useRef<WebSocket | null>(null);
@@ -164,6 +167,8 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
           pushLaser({ ...parsed, end: parsed.end === true });
         } else if (parsed.type === 'poll_state') {
           applyPoll(parsed);
+        } else if (parsed.type === 'recap') {
+          setRecap(parsed);
         } else if (parsed.type === 'error') {
           setLastError({ code: parsed.code, event_id_ref: parsed.event_id_ref });
         }
@@ -283,12 +288,15 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     [sendFrame],
   );
 
+  const requestRecap = useCallback(() => sendFrame((room) => buildRecapRequest(room)), [sendFrame]);
+
   return {
     status,
     messages,
     reactions,
     laser,
     poll,
+    recap,
     lastError,
     send,
     sendReaction,
@@ -296,5 +304,6 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     createPoll,
     votePoll,
     closePoll,
+    requestRecap,
   };
 }

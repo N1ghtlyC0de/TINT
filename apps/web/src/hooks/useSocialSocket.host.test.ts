@@ -179,3 +179,34 @@ describe('useSocialSocket — encuestas', () => {
     expect(result.current.lastError).toEqual({ code: 'FORBIDDEN', event_id_ref: undefined });
   });
 });
+
+describe('useSocialSocket — recap', () => {
+  const recap = {
+    type: 'recap',
+    room_id: 'r1',
+    top_emoji_user: { user_id: 'u1', nick: 'Ana', count: 12 },
+    most_paused: { position_ms: 65_000, count: 3 },
+    peak_reactions: null,
+    totals: { reactions: 40, pauses: 5, rewinds: 2, polls: 1 },
+  };
+
+  it('requestRecap envía recap_request y expone el recap recibido', () => {
+    const { result, ws } = connected();
+    expect(result.current.recap).toBeNull();
+    let ok = false;
+    act(() => {
+      ok = result.current.requestRecap();
+    });
+    expect(ok).toBe(true);
+    expect(ws.sentJson()[0]).toMatchObject({ type: 'recap_request', room_id: 'r1' });
+    act(() => ws.receive(recap));
+    expect(result.current.recap).toMatchObject({ top_emoji_user: { nick: 'Ana' }, totals: { reactions: 40 } });
+  });
+
+  it('requestRecap con el socket cerrado devuelve false', () => {
+    const { result } = renderHook(() =>
+      useSocialSocket('r1', { createSocket: (url) => new FakeSocket(url) as unknown as WebSocket }),
+    );
+    expect(result.current.requestRecap()).toBe(false);
+  });
+});

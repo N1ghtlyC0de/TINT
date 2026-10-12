@@ -174,3 +174,12 @@ describe('SyncedPlayer — barra de controles del host', () => {
     expect(onOpenPoll).toHaveBeenCalled();
   });
 });
+
+describe('SyncedPlayer — fin del vídeo', () => {
+  it('avisa con onEnded cuando el vídeo termina', () => {
+    const onEnded = vi.fn();
+    renderPlayer({ onEnded });
+    fireEvent.ended(video());
+    expect(onEnded).toHaveBeenCalledTimes(1);
+  });
+});

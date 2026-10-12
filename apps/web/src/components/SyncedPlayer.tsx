@@ -32,6 +32,8 @@ export interface SyncedPlayerProps {
   onOpenPoll?: () => void;
   /** Capas sobre el área del vídeo (p. ej. el puntero láser). */
   overlay?: ReactNode;
+  /** El vídeo llegó al final (evento `ended`). */
+  onEnded?: () => void;
 }
 
 const RATE_CHECK_INTERVAL_MS = 200;
@@ -84,6 +86,7 @@ export function SyncedPlayer({
   onToggleLaser,
   onOpenPoll,
   overlay,
+  onEnded,
 }: SyncedPlayerProps) {
   const { state, correction, connected, hostOnline, lastError, lastBroadcast, sendCommand, volume, quality } = sync;
   const [needsGesture, setNeedsGesture] = useState(false);
@@ -283,6 +286,7 @@ export function SyncedPlayer({
             onProgress={(e) => syncProgress(e.currentTarget)}
             onLoadedMetadata={(e) => onLoadedMetadata(e.currentTarget)}
             onDurationChange={(e) => syncProgress(e.currentTarget)}
+            onEnded={onEnded}
           />
         ) : (
           <div className="absolute inset-0 grid place-items-center">
