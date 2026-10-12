@@ -659,6 +659,12 @@ func (h *Hub) handleSyncCheck(ctx context.Context, c *Client, ev syncevent.Event
 		}
 		st = h.cache(room, loaded, nowMs)
 	}
+	if ev.Version > 0 && ev.Version < st.Version {
+		// El cliente midió su posición antes de aplicar el último broadcast
+		// (p. ej. justo tras un SEEK/LOAD del host): corregirlo produciría un
+		// seek duplicado. Ni corrección ni drift; el próximo latido lo mide.
+		return
+	}
 	rtt := c.RTT()
 	driftMs, corr := drift.Check(st, ev.PositionMs, nowMs, rtt, h.now().UnixMilli())
 	c.lastDriftMs.Store(driftMs)
