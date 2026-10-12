@@ -345,3 +345,34 @@ func TestApplyCountsConflicts(t *testing.T) {
 		t.Errorf("Conflicts = %d, want 1", s.Conflicts())
 	}
 }
+
+func TestApplyPersistsVolume(t *testing.T) {
+	s, _, _ := setup(t)
+	ctx := context.Background()
+	st, err := s.Init(ctx, room, "host-1", t0)
+	if err != nil || st.Volume != 1 {
+		t.Fatalf("Init = %+v (%v), volumen inicial 1", st, err)
+	}
+	if _, _, err := s.Apply(ctx, room, "e1", master.Command{Type: syncevent.Volume, Volume: 0}, t0+1, 0, encodeVersion); err != nil {
+		t.Fatal(err)
+	}
+	st, err = s.Load(ctx, room)
+	if err != nil || st.Volume != 0 || st.Version != 1 {
+		t.Errorf("estado = %+v (%v)", st, err)
+	}
+}
+
+// Estados escritos antes de existir volume se leen con volumen 1; un valor
+// corrupto es un error.
+func TestLoadStateWithoutVolumeField(t *testing.T) {
+	s, mr, _ := setup(t)
+	mr.HSet(syncevent.StateKey(room), "status", "paused", "position_ms", "5", "updated_at_ms", "1", "rate", "1", "version", "2", "host_id", "h")
+	st, err := s.Load(context.Background(), room)
+	if err != nil || st.Volume != 1 {
+		t.Errorf("estado = %+v (%v)", st, err)
+	}
+	mr.HSet(syncevent.StateKey(room), "volume", "fuerte")
+	if _, err := s.Load(context.Background(), room); err == nil {
+		t.Error("volume corrupto debe fallar")
+	}
+}

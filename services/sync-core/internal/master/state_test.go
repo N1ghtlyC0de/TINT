@@ -187,3 +187,50 @@ func TestApplyV2(t *testing.T) {
 		})
 	}
 }
+
+func TestInitialVolume(t *testing.T) {
+	if s := Initial("h", t0); s.Volume != 1 {
+		t.Errorf("volumen inicial = %v, want 1", s.Volume)
+	}
+}
+
+func TestApplyVolume(t *testing.T) {
+	recv := t0 + 2_000
+	playing := State{Status: Playing, PositionMs: 1000, UpdatedAtMs: t0, Rate: 1.5, Version: 3, HostID: "h", MediaID: "m1", Volume: 1}
+
+	// Reproduciendo: conserva status, velocidad y media; re-ancla en la
+	// posición maestra de la recepción (sin saltos) e incrementa version.
+	got, err := playing.Apply(Command{Type: syncevent.Volume, PositionMs: 99_999, Volume: 0.25}, recv, 400)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := State{Status: Playing, PositionMs: 4000, UpdatedAtMs: recv, Rate: 1.5, Version: 4, HostID: "h", MediaID: "m1", Volume: 0.25}
+	if got != want {
+		t.Errorf("Apply VOLUME =\n %+v\nwant\n %+v", got, want)
+	}
+	for _, at := range []int64{recv, recv + 1_000} {
+		if got.PositionAt(at) != playing.PositionAt(at) {
+			t.Errorf("VOLUME alteró la posición en %d: %d vs %d", at, got.PositionAt(at), playing.PositionAt(at))
+		}
+	}
+
+	// En pausa y silencio (0) también es válido.
+	paused := playing
+	paused.Status = Paused
+	got, err = paused.Apply(Command{Type: syncevent.Volume, Volume: 0}, recv, 0)
+	if err != nil || got.Status != Paused || got.PositionMs != 1000 || got.Volume != 0 || got.Version != 4 {
+		t.Errorf("VOLUME en pausa = %+v (%v)", got, err)
+	}
+
+	// Fuera de rango: estado intacto.
+	got, err = playing.Apply(Command{Type: syncevent.Volume, Volume: 1.5}, recv, 0)
+	if !errors.Is(err, syncevent.ErrInvalidVolume) || got != playing {
+		t.Errorf("VOLUME fuera de rango = %+v (%v)", got, err)
+	}
+
+	// Los demás comandos conservan el volumen.
+	got, _ = playing.Apply(Command{Type: syncevent.Load, MediaID: "m2"}, recv, 0)
+	if got.Volume != 1 {
+		t.Errorf("LOAD cambió el volumen: %+v", got)
+	}
+}

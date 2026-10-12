@@ -305,6 +305,7 @@ func fields(s master.State) map[string]any {
 		"version":       s.Version,
 		"host_id":       s.HostID,
 		"media_id":      s.MediaID,
+		"volume":        strconv.FormatFloat(s.Volume, 'f', -1, 64),
 	}
 }
 
@@ -326,6 +327,13 @@ func parse(m map[string]string) (master.State, error) {
 	}
 	if st.Rate, err = strconv.ParseFloat(m["rate"], 64); err != nil {
 		return master.State{}, fmt.Errorf("estado corrupto (rate): %w", err)
+	}
+	// Estados anteriores a VOLUME no tienen el campo: volumen por defecto.
+	st.Volume = master.DefaultVolume
+	if v, ok := m["volume"]; ok {
+		if st.Volume, err = strconv.ParseFloat(v, 64); err != nil {
+			return master.State{}, fmt.Errorf("estado corrupto (volume): %w", err)
+		}
 	}
 	return st, nil
 }

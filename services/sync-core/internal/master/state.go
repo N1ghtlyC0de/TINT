@@ -20,6 +20,10 @@ const (
 	Paused  Status = "paused"
 )
 
+// DefaultVolume es el volumen de una sala nueva (y de estados persistidos
+// antes de existir el campo).
+const DefaultVolume = 1.0
+
 // ErrNotCommand indica que el evento no modifica el reloj maestro.
 var ErrNotCommand = errors.New("el evento no es un comando de reproducción")
 
@@ -31,7 +35,8 @@ type State struct {
 	Rate        float64 // velocidad de reproducción
 	Version     int64   // orden total de comandos aplicados
 	HostID      string
-	MediaID     string // vídeo actual de la sala ("" = sin vídeo)
+	MediaID     string  // vídeo actual de la sala ("" = sin vídeo)
+	Volume      float64 // volumen de la sala en [0, 1] (0 = silencio)
 }
 
 // Command es una orden del Host sobre el reproductor.
@@ -40,11 +45,12 @@ type Command struct {
 	PositionMs int64   // posición del reproductor del Host al emitir el comando
 	Rate       float64 // nueva velocidad (RATE)
 	MediaID    string  // nuevo vídeo (LOAD)
+	Volume     float64 // nuevo volumen (VOLUME)
 }
 
 // Initial devuelve una sala nueva: pausada al inicio del video.
 func Initial(hostID string, nowMs int64) State {
-	return State{Status: Paused, UpdatedAtMs: nowMs, Rate: 1, HostID: hostID}
+	return State{Status: Paused, UpdatedAtMs: nowMs, Rate: 1, HostID: hostID, Volume: DefaultVolume}
 }
 
 // PositionAt calcula la posición maestra del video en el instante nowMs.
@@ -66,6 +72,16 @@ func (s State) Apply(cmd Command, receivedAtMs, rttMs int64) (State, error) {
 	}
 	if cmd.PositionMs < 0 {
 		return s, syncevent.ErrNegativePosition
+	}
+
+	switch cmd.Type {
+	case syncevent.Volume:
+		if err := syncevent.ValidateVolume(cmd.Volume); err != nil {
+			return s, err
+		}
+		next := s.reanchor(receivedAtMs)
+		next.Volume = cmd.Volume
+		return next, nil
 	}
 
 	next := s
@@ -90,6 +106,18 @@ func (s State) Apply(cmd Command, receivedAtMs, rttMs int64) (State, error) {
 	next.UpdatedAtMs = receivedAtMs - max(rttMs, 0)/2
 	next.Version++
 	return next, nil
+}
+
+// reanchor fija el ancla en la posición maestra de nowMs sin cambiar el
+// status ni la velocidad: para comandos que no mueven la reproducción
+// (VOLUME), así la posición es continua y no depende del drift del Host.
+func (s State) reanchor(nowMs int64) State {
+	next := s
+	next.PositionMs = s.PositionAt(nowMs)
+	next.UpdatedAtMs = nowMs
+	next.Rate = s.rate()
+	next.Version++
+	return next
 }
 
 func (s State) rate() float64 {

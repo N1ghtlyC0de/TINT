@@ -516,7 +516,7 @@ func (h *Hub) Deliver(roomID string, payload []byte) {
 		}
 		r.update(master.State{
 			Status: master.Status(ev.Status), PositionMs: ev.PositionMs, UpdatedAtMs: ev.UpdatedAtMs,
-			Rate: ev.Rate, Version: ev.Version, MediaID: ev.MediaID,
+			Rate: ev.Rate, Version: ev.Version, MediaID: ev.MediaID, Volume: volumeOf(ev),
 		}, h.now().UnixMilli())
 	}
 	// El bus siempre viaja en JSON; para los clientes MessagePack se
@@ -580,12 +580,16 @@ func (h *Hub) handleCommand(ctx context.Context, c *Client, ev syncevent.Event, 
 		return json.Marshal(out)
 	}
 	cmd := master.Command{Type: ev.Type, PositionMs: ev.PositionMs, Rate: ev.Rate, MediaID: ev.MediaID}
+	if ev.Volume != nil {
+		cmd.Volume = *ev.Volume
+	}
 	started := time.Now()
 	st, dup, err := h.store.Apply(ctx, room, ev.EventID, cmd, now.UnixMilli(), c.RTT(), encode)
 	h.m.apply.Observe(time.Since(started).Seconds())
 	if err != nil {
 		code, result := syncevent.CodeInternal, "error"
-		if errors.Is(err, syncevent.ErrNegativePosition) || errors.Is(err, syncevent.ErrInvalidRate) || errors.Is(err, syncevent.ErrInvalidMedia) {
+		if errors.Is(err, syncevent.ErrNegativePosition) || errors.Is(err, syncevent.ErrInvalidRate) || errors.Is(err, syncevent.ErrInvalidMedia) ||
+			errors.Is(err, syncevent.ErrInvalidVolume) {
 			code, result = syncevent.CodeInvalid, "invalid"
 		} else {
 			log.Printf("hub: comando %s en sala %s: %v", ev.Type, room, err)
@@ -646,6 +650,7 @@ func (h *Hub) handleSyncCheck(ctx context.Context, c *Client, ev syncevent.Event
 	out.Status = string(st.Status)
 	out.Rate = st.Rate
 	out.MediaID = st.MediaID
+	out.Volume = syncevent.Float64(st.Volume)
 	c.enqueueEvent(out)
 	h.tel.EmitDrift(telemetry.DriftSample{
 		RoomID: room, DriftMs: corr.DriftMs, RTTMs: rtt, Strategy: string(corr.Strategy),
@@ -813,7 +818,17 @@ func stateEvent(typ syncevent.Type, room string, st master.State, now time.Time)
 	ev.UpdatedAtMs = st.UpdatedAtMs
 	ev.ServerTimeMs = now.UnixMilli()
 	ev.MediaID = st.MediaID
+	ev.Volume = syncevent.Float64(st.Volume)
 	return ev
+}
+
+// volumeOf lee el volumen de un broadcast; los de réplicas anteriores a
+// VOLUME no lo traen y equivalen al volumen por defecto.
+func volumeOf(ev syncevent.Event) float64 {
+	if ev.Volume == nil {
+		return master.DefaultVolume
+	}
+	return *ev.Volume
 }
 
 func errorEvent(room, ref, code string, now time.Time) syncevent.Event {

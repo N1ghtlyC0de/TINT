@@ -634,3 +634,91 @@ func TestRateAndLoadBroadcastWithMedia(t *testing.T) {
 		t.Errorf("RATE fuera de rango = %+v", ev)
 	}
 }
+
+func TestVolumeBroadcastAndState(t *testing.T) {
+	e := newEnv(t)
+	a := e.newHub(t)
+	b := e.newHub(t)
+	hc := connect(t, a, host)
+	if st := next(t, hc); st.Volume == nil || *st.Volume != 1 {
+		t.Errorf("STATE inicial debe llevar volume=1: %+v", st.Volume)
+	}
+	g := connect(t, b, guest) // otra réplica
+	next(t, g)
+	e.waitSubscribers(t, 2)
+
+	send(t, a, hc, cmd("e-play", syncevent.Play, 1000))
+	nextOf(t, g, syncevent.Play)
+
+	e.clock.advance(2 * time.Second)
+	vol := cmd("e-vol", syncevent.Volume, 50_000) // la posición del Host no mueve el ancla
+	vol["volume"] = 0.0
+	send(t, a, hc, vol)
+	ev := nextOf(t, g, syncevent.Volume)
+	if ev.Volume == nil || *ev.Volume != 0 || ev.Status != "playing" || ev.PositionMs != 3000 || ev.Version != 2 {
+		t.Errorf("broadcast VOLUME en réplica B = %+v (volume %v)", ev, ev.Volume)
+	}
+	if st, ok := b.cached(room); !ok || st.Volume != 0 || st.Version != 2 {
+		t.Errorf("la caché de B debe reflejar el volumen: %+v", st)
+	}
+	// Los demás broadcasts siguen llevando el volumen (aunque sea 0).
+	send(t, a, hc, cmd("e-seek", syncevent.Seek, 7000))
+	if ev := nextOf(t, g, syncevent.Seek); ev.Volume == nil || *ev.Volume != 0 {
+		t.Errorf("SEEK debe llevar volume=0: %v", ev.Volume)
+	}
+	// STATE de un participante nuevo.
+	g2 := connect(t, b, guestTwo)
+	if st := next(t, g2); st.Volume == nil || *st.Volume != 0 {
+		t.Errorf("STATE debe llevar volume=0: %v", st.Volume)
+	}
+	// SYNC_CORRECTION también lo lleva.
+	send(t, b, g2, cmd("c1", syncevent.SyncCheck, 60_000))
+	if corr := nextOf(t, g2, syncevent.SyncCorrection); corr.Volume == nil || *corr.Volume != 0 {
+		t.Errorf("SYNC_CORRECTION debe llevar volume: %v", corr.Volume)
+	}
+
+	for _, v := range []any{nil, 1.5, -0.1} {
+		bad := cmd("e-bad", syncevent.Volume, 0)
+		if v != nil {
+			bad["volume"] = v
+		}
+		send(t, a, hc, bad)
+		if ev := nextOf(t, hc, syncevent.Error); ev.Code != syncevent.CodeInvalid || ev.RefEventID != "e-bad" {
+			t.Errorf("VOLUME %v = %+v", v, ev)
+		}
+	}
+}
+
+func TestParticipantVolumeIsForbidden(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	hc := connect(t, h, host)
+	next(t, hc)
+	g := connect(t, h, guest)
+	next(t, g)
+
+	vol := cmd("e-evil", syncevent.Volume, 0)
+	vol["volume"] = 0.1
+	send(t, h, g, vol)
+	if ev := nextOf(t, g, syncevent.Error); ev.Code != syncevent.CodeForbidden || ev.RefEventID != "e-evil" {
+		t.Errorf("ERROR = %+v", ev)
+	}
+	expectSilence(t, hc)
+	if st, _ := h.store.Load(context.Background(), room); st.Version != 0 || st.Volume != 1 {
+		t.Errorf("el estado maestro debe quedar intacto: %+v", st)
+	}
+}
+
+// Un broadcast de una réplica sin volume (versión anterior) se cachea con volumen 1.
+func TestDeliverWithoutVolumeDefaultsToOne(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	g := connect(t, h, guest)
+	next(t, g)
+	ev := stateEvent(syncevent.Seek, room, master.State{Status: master.Paused, PositionMs: 1, Rate: 1, Version: 5}, e.clock.now())
+	ev.Volume = nil
+	h.Deliver(room, mustJSON(ev))
+	if st, ok := h.cached(room); !ok || st.Volume != 1 || st.Version != 5 {
+		t.Errorf("caché = %+v", st)
+	}
+}

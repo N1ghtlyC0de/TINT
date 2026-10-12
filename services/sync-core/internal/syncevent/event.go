@@ -4,6 +4,7 @@ package syncevent
 import (
 	"errors"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -17,6 +18,8 @@ const (
 	Seek  Type = "SEEK"
 	Rate  Type = "RATE" // cambia la velocidad de reproducción
 	Load  Type = "LOAD" // carga otro vídeo (media_id) y pausa
+	// Volume fija el volumen de la sala (volume ∈ [0, 1]).
+	Volume Type = "VOLUME"
 
 	// Latido servidor → cliente; el cliente responde con SYNC_CHECK.
 	Heartbeat Type = "HEARTBEAT"
@@ -36,11 +39,13 @@ const (
 	Revoked Type = "REVOKED"
 )
 
-// Límites de los comandos RATE y LOAD.
+// Límites de los comandos RATE, LOAD y VOLUME.
 const (
 	MinRate       = 0.25
 	MaxRate       = 4.0
 	MaxMediaIDLen = 128
+	MinVolume     = 0.0
+	MaxVolume     = 1.0
 )
 
 // Códigos de error enviados en mensajes ERROR.
@@ -82,6 +87,9 @@ type Event struct {
 
 	// Vídeo actual de la sala (STATE y broadcasts de comandos).
 	MediaID string `json:"media_id,omitempty"`
+	// Volumen de la sala (VOLUME, STATE, broadcasts y SYNC_CORRECTION).
+	// Puntero: 0 (silencio) es válido y debe viajar explícito.
+	Volume *float64 `json:"volume,omitempty"`
 	// RTT suavizado de este cliente (HEARTBEAT).
 	RTTMs int64 `json:"rtt_ms,omitempty"`
 	// Delegación de control: can_control va al cliente; holder (sub del
@@ -101,6 +109,7 @@ var (
 	ErrReceivedBefore   = errors.New("received_at no puede ser anterior a occurred_at")
 	ErrInvalidRate      = errors.New("rate debe estar entre 0.25 y 4")
 	ErrInvalidMedia     = errors.New("media_id es obligatorio y de máximo 128 caracteres")
+	ErrInvalidVolume    = errors.New("volume es obligatorio y debe estar entre 0 y 1")
 )
 
 // Validate verifica que un evento completo (ya sellado por el servidor)
@@ -110,7 +119,7 @@ func (e Event) Validate() error {
 		return err
 	}
 	switch e.Type {
-	case Play, Pause, Seek, Rate, Load, Heartbeat, SyncCheck, State, SyncCorrection, HostStatus, Ack, Error, Control, Revoked:
+	case Play, Pause, Seek, Rate, Load, Volume, Heartbeat, SyncCheck, State, SyncCorrection, HostStatus, Ack, Error, Control, Revoked:
 	default:
 		return fmt.Errorf("%w: %q", ErrUnsupportedType, e.Type)
 	}
@@ -131,7 +140,7 @@ func (e Event) ValidateInbound() error {
 		return err
 	}
 	switch e.Type {
-	case Play, Pause, Seek, Rate, Load, SyncCheck:
+	case Play, Pause, Seek, Rate, Load, Volume, SyncCheck:
 	default:
 		return fmt.Errorf("%w: %q", ErrUnsupportedType, e.Type)
 	}
@@ -141,13 +150,26 @@ func (e Event) ValidateInbound() error {
 	return e.validateArgs()
 }
 
-// validateArgs valida los argumentos propios de RATE y LOAD.
+// validateArgs valida los argumentos propios de RATE, LOAD y VOLUME.
 func (e Event) validateArgs() error {
 	switch e.Type {
 	case Rate:
 		return ValidateRate(e.Rate)
 	case Load:
 		return ValidateMedia(e.MediaID)
+	case Volume:
+		if e.Volume == nil {
+			return ErrInvalidVolume
+		}
+		return ValidateVolume(*e.Volume)
+	}
+	return nil
+}
+
+// ValidateVolume verifica que el volumen esté en [MinVolume, MaxVolume].
+func ValidateVolume(v float64) error {
+	if math.IsNaN(v) || v < MinVolume || v > MaxVolume {
+		return ErrInvalidVolume
 	}
 	return nil
 }
@@ -184,7 +206,7 @@ func (e Event) validateBase() error {
 // IsCommand indica si el evento es un comando de reproducción del Host.
 func (e Event) IsCommand() bool {
 	switch e.Type {
-	case Play, Pause, Seek, Rate, Load:
+	case Play, Pause, Seek, Rate, Load, Volume:
 		return true
 	}
 	return false
@@ -241,6 +263,8 @@ func HostlessSinceKey(roomID string) string {
 	return "room:" + roomID + ":hostless_since"
 }
 
-// Int64 y Bool crean punteros para campos opcionales donde el cero es válido.
-func Int64(v int64) *int64 { return &v }
-func Bool(v bool) *bool    { return &v }
+// Int64, Float64 y Bool crean punteros para campos opcionales donde el
+// cero es válido.
+func Int64(v int64) *int64       { return &v }
+func Float64(v float64) *float64 { return &v }
+func Bool(v bool) *bool          { return &v }
