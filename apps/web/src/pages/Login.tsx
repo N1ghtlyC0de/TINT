@@ -5,6 +5,7 @@ import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { apiFetch } from '../lib/api';
 import { parseInviteCode } from '../lib/invite';
 import { Button } from '../components/ui/Button';
+import { TintLogo } from '../components/brand/TintLogo';
 import { Field, ErrorAlert } from '../components/ui/Primitives';
 
 export default function Login() {
@@ -76,9 +77,7 @@ export default function Login() {
       <section className="flex items-center justify-center px-4 py-10">
         <div className="w-full max-w-md rounded-2xl border border-white/10 bg-tint-card/70 p-8">
           <div className="flex items-center gap-3">
-            <span aria-hidden="true" className="grid h-10 w-10 place-items-center rounded-xl bg-tint-accent">
-              <span className="block h-4 w-4 rounded-[5px] bg-tint-bg" />
-            </span>
+            <TintLogo size={40} className="shrink-0" />
             <div className="leading-none">
               <p className="text-lg font-bold tracking-tight text-white">TINT</p>
               <p className="mt-1 text-[11px] tracking-[0.14em] text-tint-muted/80">WATCH PARTY</p>

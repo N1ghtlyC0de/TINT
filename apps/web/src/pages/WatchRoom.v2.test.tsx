@@ -162,10 +162,38 @@ describe('WatchRoom v2 — vídeo de la sala (F3)', () => {
 describe('WatchRoom v2 — estado del procesamiento (Ambilight)', () => {
   const base = { mediaId: 'm1', url: 'https://minio/m1', expiresAt: null };
 
+  beforeEach(() => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve([]) })),
+    );
+  });
+
+  it('listo: brillo con interruptor "Ambilight" y sin texto técnico ni tarjeta de relleno', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    playbackByCall = [{ ...base, status: 'ready', ambilightUrl: 'https://minio/m1/ambilight.json?sig=1' }];
+    const { container } = renderWatch();
+    await flush();
+    expect(screen.getByRole('switch', { name: 'Ambilight' })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('ambilight-glow')).toBeInTheDocument();
+    expect(fetch).toHaveBeenCalledWith('https://minio/m1/ambilight.json?sig=1', expect.anything());
+    expect(screen.queryByRole('heading', { name: 'Ambilight' })).not.toBeInTheDocument();
+    expect(container.textContent).not.toMatch(/ambilight\.json|media-worker/);
+  });
+
+  it('procesando: sin brillo ni interruptor', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    playbackByCall = [{ ...base, status: 'processing', ambilightUrl: null }];
+    renderWatch();
+    await flush();
+    expect(screen.queryByRole('switch', { name: 'Ambilight' })).not.toBeInTheDocument();
+    expect(screen.getByTestId('ambilight-glow')).toHaveAttribute('data-visible', 'false');
+  });
+
   it.each([
-    ['pending', 'Procesando vídeo (Ambilight)…'],
-    ['processing', 'Procesando vídeo (Ambilight)…'],
-    ['ready', 'Ambilight listo'],
+    ['pending', 'Preparando el vídeo…'],
+    ['processing', 'Preparando el vídeo…'],
+    ['ready', 'Vídeo listo'],
   ])('status %s → "%s"', async (status, text) => {
     localStorage.setItem('tint_guest_token', testGuestToken());
     playbackByCall = [{ ...base, status, ambilightUrl: status === 'ready' ? 'https://a' : null }];
