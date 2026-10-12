@@ -14,7 +14,14 @@ import { publishAnalyticsEvent } from '../modules/analytics/analytics.events.js'
 import { getMediaSigner } from '../modules/media/media.signer.js';
 import { getMediaStore } from '../modules/media/media.store.js';
 import { enqueueMediaUpload } from '../modules/media/media.queue.js';
-import { create as createVideo, findById as findVideo, transitionStatus as transitionVideoStatus } from '../modules/videos/videos.repo.js';
+import {
+  create as createVideo,
+  findById as findVideo,
+  transitionStatus as transitionVideoStatus,
+  listByUploader as listVideosByUploader,
+  updateTitle as updateVideoTitle,
+  type Video,
+} from '../modules/videos/videos.repo.js';
 import {
   create as createGuestSession,
   findByJti as findGuestSession,
@@ -22,7 +29,17 @@ import {
   setRevoked as setGuestSessionRevoked,
   listActiveByRoom as listActiveGuestSessions,
   setRevokedMany as setGuestSessionsRevoked,
+  listByRoomAndSub as listGuestSessionsBySub,
+  type GuestSession,
 } from '../modules/guests/guestSessions.repo.js';
+import {
+  create as createBan,
+  findByRoomAndDevice as findBanByDevice,
+  findByRoomAndSub as findBanBySub,
+  listByRoom as listBans,
+  removeById as removeBan,
+  type RoomBan,
+} from '../modules/bans/roomBans.repo.js';
 import { markTokenRevoked, publishRevoked } from '../modules/tokens/revocation.js';
 import { v4 as uuidv4 } from 'uuid';
 
@@ -240,19 +257,36 @@ router.post('/rooms/:id/analytics-ticket', requireAuthHost, requireRoomOwner, as
   res.json({ token, expiresAt: expiresAt.toISOString() });
 });
 
-const setMediaSchema = z.object({
-  mediaKey: z
-    .string()
-    .trim()
-    .min(1)
-    .max(512)
-    .refine((key) => !key.includes('..'), { message: 'mediaKey no puede contener ".."' })
-    .refine((key) => !key.startsWith('/'), { message: 'mediaKey no puede empezar con "/"' }),
-});
+const mediaKeySchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(512)
+  .refine((key) => !key.includes('..'), { message: 'mediaKey no puede contener ".."' })
+  .refine((key) => !key.startsWith('/'), { message: 'mediaKey no puede empezar con "/"' });
+// { mediaKey } (clave manual del bucket) o { videoId } (vídeo de la biblioteca del host), no ambos.
+const setMediaSchema = z.union([
+  z.object({ mediaKey: mediaKeySchema }).strict(),
+  z.object({ videoId: z.string().uuid() }).strict(),
+]);
 router.put('/rooms/:id/media', requireAuthHost, requireRoomOwner, validate(setMediaSchema), requireActiveRoom, async (req, res) => {
   const roomId = paramId(req.params.id);
-  const { mediaKey } = req.body;
-  const mediaId = uuidv4();
+  const body = req.body as { mediaKey: string } | { videoId: string };
+  let mediaId: string;
+  let mediaKey: string;
+  if ('videoId' in body) {
+    // Reuso desde la biblioteca: media_id = videos.id para que playback siga
+    // resolviendo estado, calidades y Ambilight. Solo vídeos propios y confirmados (processing/ready).
+    const video = await findVideo(body.videoId);
+    if (!video || video.uploadedBy !== req.user!.id || (video.status !== 'processing' && video.status !== 'ready')) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+    mediaId = video.id;
+    mediaKey = video.storageKey;
+  } else {
+    mediaId = uuidv4();
+    mediaKey = body.mediaKey;
+  }
   const room = await setMedia(roomId, { mediaId, mediaKey });
   if (!room) {
     return res.status(404).json({ error: 'Not found' });
@@ -272,6 +306,12 @@ const EXTENSION_BY_TYPE: Record<string, string> = {
   'video/x-m4v': '.m4v',
   'video/ogg': '.ogv',
 };
+
+/** Título de la biblioteca: el nombre del archivo sin su extensión (o tal cual si no queda nada). */
+function videoTitle(filename: string) {
+  const base = filename.replace(/\.[^./\\]{1,10}$/, '').trim();
+  return base || filename;
+}
 
 function videoExtension(filename: string, contentType: string) {
   const match = /\.[a-z0-9]{1,5}$/i.exec(filename);
@@ -305,6 +345,7 @@ router.post('/rooms/:id/media/uploads', requireAuthHost, requireRoomOwner, valid
     contentType,
     sizeBytes,
     status: 'pending',
+    title: videoTitle(filename),
   });
   const ttl = env.UPLOAD_URL_TTL_SECONDS;
   const uploadUrl = await getMediaSigner().presignPut(storageKey, contentType, ttl);
@@ -411,6 +452,39 @@ router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, asy
   });
 });
 
+/**
+ * Tarjeta de la biblioteca. previewUrl es una GET firmada para mostrar un
+ * fotograma: la versión 360p si el vídeo está ready y la tiene; si no, storage_key.
+ */
+async function libraryItem(video: Video) {
+  const { id, title, durationMs, status, createdAt, storageKey } = video;
+  const renditions = Array.isArray(video.renditions) ? video.renditions : [];
+  const previewKey = status === 'ready' && renditions.includes(360) ? `${id}/360p.mp4` : storageKey;
+  const previewUrl = await getMediaSigner().presignGet(previewKey, env.PLAYBACK_URL_TTL_SECONDS);
+  return { id, title, durationMs, status, createdAt, previewUrl };
+}
+
+router.get('/videos', requireAuthHost, async (req, res) => {
+  const videos = await listVideosByUploader(req.user!.id);
+  res.json({ videos: await Promise.all(videos.map(libraryItem)) });
+});
+
+const updateVideoSchema = z.object({
+  title: z.string().trim().min(1).max(255),
+});
+router.patch('/videos/:id', requireAuthHost, validate(updateVideoSchema), async (req, res) => {
+  const videoId = paramId(req.params.id);
+  const video = UUID_RE.test(videoId) ? await findVideo(videoId) : null;
+  if (!video || video.uploadedBy !== req.user!.id) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  const updated = await updateVideoTitle(video.id, req.body.title);
+  if (!updated) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  res.json({ video: await libraryItem(updated) });
+});
+
 router.get('/rooms/:id/guests', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
   const sessions = await listGuestSessions(paramId(req.params.id));
   res.json({
@@ -430,6 +504,83 @@ router.post('/rooms/:id/guests/:jti/revoke', requireAuthHost, requireRoomOwner, 
   await setGuestSessionRevoked(jti);
   await markTokenRevoked(jti, Math.floor(session.expiresAt.getTime() / 1000));
   await publishRevoked(roomId, jti);
+  res.json({ success: true });
+});
+
+// Bloqueo por dispositivo. Los invitados son anónimos: el bloqueo se ata al
+// deviceId que la web guarda en el navegador, así que borrar los datos del
+// navegador lo evade (ver docs/usuarios-e-identidad.md §6.6).
+const createBanSchema = z
+  .object({
+    jti: z.string().uuid().optional(),
+    sub: z.string().trim().min(1).max(128).optional(),
+  })
+  .refine((body) => (body.jti === undefined) !== (body.sub === undefined), { message: 'Envía jti o sub (solo uno)' });
+
+const banView = ({ id, nick, createdAt }: RoomBan) => ({ id, nick, createdAt });
+
+/** Inserta (o recupera, si ya existía) el bloqueo de cada dispositivo del invitado. */
+async function upsertBans(roomId: string, sessions: GuestSession[], createdBy: string) {
+  const { sub, nick } = sessions[0];
+  const devices = [...new Set(sessions.map((s) => s.deviceId).filter((d): d is string => !!d))];
+  if (devices.length === 0) {
+    // Cliente viejo sin deviceId: queda registrado por sub (no impide volver a entrar).
+    return (await findBanBySub(roomId, sub)) ?? (await createBan({ roomId, deviceId: null, sub, nick, createdBy }));
+  }
+  const bans: (RoomBan | null)[] = [];
+  for (const deviceId of devices) {
+    bans.push((await createBan({ roomId, deviceId, sub, nick, createdBy })) ?? (await findBanByDevice(roomId, deviceId)));
+  }
+  return bans.find((b): b is RoomBan => !!b) ?? null;
+}
+
+router.post('/rooms/:id/bans', requireAuthHost, requireRoomOwner, validate(createBanSchema), requireActiveRoom, async (req, res) => {
+  const roomId = req.room!.id;
+  const { jti, sub } = req.body as { jti?: string; sub?: string };
+  let guestSub = sub;
+  if (jti) {
+    const session = await findGuestSession(jti);
+    guestSub = session?.roomId === roomId ? session.sub : undefined;
+  }
+  const sessions = guestSub ? await listGuestSessionsBySub(roomId, guestSub) : [];
+  if (sessions.length === 0) {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  // El bloqueo se guarda antes de revocar: si Redis falla, el dispositivo ya no
+  // puede volver a entrar y el reintento (idempotente) termina de revocar.
+  const ban = await upsertBans(roomId, sessions, req.user!.id);
+  if (!ban) {
+    return res.status(503).json({ error: 'Service unavailable' });
+  }
+  const now = Date.now();
+  const live = sessions.filter((s) => s.expiresAt.getTime() > now);
+  try {
+    for (const s of live) {
+      await markTokenRevoked(s.jti, Math.floor(s.expiresAt.getTime() / 1000));
+      await publishRevoked(roomId, s.jti);
+    }
+  } catch (err) {
+    console.error('[bans] no se pudieron revocar las sesiones del invitado bloqueado:', (err as Error).message);
+    return res.status(503).json({ error: 'Service unavailable' });
+  }
+  for (const s of live) {
+    await setGuestSessionRevoked(s.jti);
+  }
+  res.json({ ban: banView(ban) });
+});
+
+router.get('/rooms/:id/bans', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
+  const bans = await listBans(req.room!.id);
+  // Ni device_id ni sub salen de identity-api.
+  res.json({ bans: bans.map(banView) });
+});
+
+router.delete('/rooms/:id/bans/:banId', requireAuthHost, requireRoomOwner, requireActiveRoom, async (req, res) => {
+  const banId = paramId(req.params.banId);
+  const removed = UUID_RE.test(banId) ? await removeBan(req.room!.id, banId) : null;
+  if (!removed) {
+    return res.status(404).json({ error: 'Not found' });
+  }
   res.json({ success: true });
 });
 
@@ -454,9 +605,11 @@ router.post('/invitations/:code/revoke', requireAuthHost, async (req, res) => {
 const claimSchema = z.object({
   code: z.string().trim(),
   nick: z.string().trim().min(1).max(64),
+  // Identificador anónimo del navegador (bloqueo por dispositivo). Opcional: los clientes viejos no lo envían.
+  deviceId: z.string().uuid().optional(),
 });
 router.post('/invitations/claim', validate(claimSchema), async (req, res) => {
-  const { code, nick } = req.body;
+  const { code, nick, deviceId } = req.body as { code: string; nick: string; deviceId?: string };
   const invitation = await findByCode(code);
   if (!invitation) {
     return res.status(404).json({ error: 'Not found' });
@@ -471,6 +624,9 @@ router.post('/invitations/claim', validate(claimSchema), async (req, res) => {
   if (room && room.status === 'deleted') {
     return res.status(410).json({ error: 'Deleted' });
   }
+  if (deviceId && (await findBanByDevice(invitation.roomId, deviceId))) {
+    return res.status(403).json({ error: 'BANNED' });
+  }
   const { token, payload } = issueGuestToken(invitation.roomId, nick);
   // Registrar la sesión antes de entregar el token: un token sin fila no se podría listar ni revocar.
   await createGuestSession({
@@ -480,6 +636,7 @@ router.post('/invitations/claim', validate(claimSchema), async (req, res) => {
     nick: payload.nick,
     joinedAt: new Date(payload.iat * 1000),
     expiresAt: new Date(payload.exp * 1000),
+    deviceId: deviceId ?? null,
   });
   res.json({ token, roomId: invitation.roomId, nick, roomTitle: room?.title ?? null });
   void publishAnalyticsEvent('invitation_claimed', { room_id: payload.room_id, user_id: payload.sub });

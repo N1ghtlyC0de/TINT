@@ -46,7 +46,7 @@ export type SocialChatItem = ChatMessage | PresenceNotice;
 
 /** Tope de reacciones en memoria para el overlay (efímeras, fuera del chat). */
 export const REACTION_STREAM_LIMIT = 30;
-/** Puntos del láser en memoria (~2 s a 30 puntos/s; el overlay los desvanece en 1.5 s). */
+/** Puntos del láser en memoria (~2 s a 30 puntos/s; el overlay acumula su propio trazo y lo desvanece en 2,5 s). */
 export const LASER_STREAM_LIMIT = 64;
 
 export type SocialStatus = 'connecting' | 'open' | 'reconnecting' | 'closed';

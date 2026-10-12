@@ -1,1 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#FF6B1A"/><rect x="10" y="10" width="12" height="12" rx="3.5" fill="#1E1F22"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="120 120 272 272" role="img" aria-label="TINT">
+  <defs>
+    <linearGradient id="tint-fav-g" gradientUnits="userSpaceOnUse" x1="150" y1="380" x2="380" y2="140">
+      <stop offset="0" stop-color="#FFC93C"/>
+      <stop offset="1" stop-color="#FF8A1A"/>
+    </linearGradient>
+  </defs>
+  <!-- Variante simplificada para 16/32 px: trazos gruesos y "T" maciza. -->
+  <g fill="none" stroke="url(#tint-fav-g)" stroke-width="24" stroke-linecap="round">
+    <path d="M200 356 A116 116 0 0 1 316 148"/>
+    <path d="M368 222 A116 116 0 0 1 252 372"/>
+    <path d="M200 200 H312"/>
+    <path d="M256 204 V318"/>
+  </g>
+  <path fill="url(#tint-fav-g)" d="M316 196 C334 170 362 166 380 136 C402 178 388 214 342 218 C330 218 320 210 316 196 Z"/>
+</svg>

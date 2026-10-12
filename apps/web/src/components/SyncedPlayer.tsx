@@ -96,6 +96,13 @@ export function SyncedPlayer({
   const [buffered, setBuffered] = useState<Array<[number, number]>>([]);
   const [marks, setMarks] = useState<number[]>([]);
   const [showHelp, setShowHelp] = useState(false);
+  // Con puntero láser, L lo alterna (HostControlBar) y deja de avanzar 10 s.
+  const shortcuts: readonly { keys: string; action: string }[] = onToggleLaser
+    ? [
+        ...PLAYER_SHORTCUTS.map((s) => (s.keys === '→ / L' ? { ...s, keys: '→' } : s)),
+        { keys: 'L', action: 'Activar o desactivar el puntero láser' },
+      ]
+    : PLAYER_SHORTCUTS;
   const [fading, fade] = useTransientFlag(FADE_MS);
   /** Silencio local del participante: no cambia el volumen maestro de la sala. */
   const [localMuted, setLocalMuted] = useState(false);
@@ -399,7 +406,7 @@ export function SyncedPlayer({
             variant="quiet"
             className="px-3 py-2"
             aria-label="Avanzar 10 segundos"
-            aria-keyshortcuts="ArrowRight l"
+            aria-keyshortcuts={onToggleLaser ? 'ArrowRight' : 'ArrowRight l'}
             disabled={controlsDisabled}
             onClick={() => seekBy(SHORTCUT_SEEK_MS)}
           >
@@ -469,7 +476,7 @@ export function SyncedPlayer({
             id={helpId}
             className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 rounded-xl border border-white/10 bg-white/[0.03] p-3 text-[13px]"
           >
-            {PLAYER_SHORTCUTS.map((s) => (
+            {shortcuts.map((s) => (
               <div key={s.keys} className="contents">
                 <dt>
                   <kbd className="rounded border border-white/20 bg-white/5 px-1.5 py-0.5 font-mono text-[12px] text-white">

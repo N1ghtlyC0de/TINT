@@ -528,6 +528,20 @@ Un token revocado o expirado pero bien firmado **hace upgrade y se cierra** con 
 
 `DELETE /rooms/:id` aplica esta misma secuencia a **todas** las sesiones de invitado activas de la sala (no revocadas y no vencidas), así que borrar una sala corta a los invitados conectados. `guest_sessions.revoked` se marca después de Redis: si Redis falla, la respuesta es 503 (la sala ya quedó borrada) y repetir el `DELETE` vuelve a publicar los `REVOKED` pendientes (responde 410 cuando termina).
 
+#### Retirar vs. bloquear
+
+| | Retirar (`POST /rooms/:id/guests/:jti/revoke`) | Bloquear (`POST /rooms/:id/bans { jti } \| { sub }`) |
+| :--- | :--- | :--- |
+| Sesión actual | Revoca ese `jti` (cierre `4001`) | Revoca **todas** las sesiones vigentes del invitado (`sub`) en la sala (cierre `4001`) |
+| ¿Puede volver con el link? | Sí, con un claim nuevo | No desde el mismo navegador: el claim con su `deviceId` responde **403 `{ error: "BANNED" }`** |
+| Persistencia | `guest_sessions.revoked` | `guest_sessions.revoked` + fila en `room_bans` (`device_id`, `sub`, `nick`) |
+| Deshacer | — | `DELETE /rooms/:id/bans/:banId` (lista en `GET /rooms/:id/bans`) |
+| Si Redis falla | 500 | **503**; el ban ya quedó guardado y repetir el `POST` (idempotente) termina de revocar |
+
+sync-core y social-core no cambian: reciben el mismo `REVOKED{jti}` por cada sesión y cierran con `4001`. `{ sub }` sirve para bloquear desde el chat del Canal Social (donde la web conoce el `user_id` del invitado); `{ jti }`, desde el panel de invitados.
+
+> ⚠️ El bloqueo es **por navegador**, no por persona: los invitados son anónimos y el `deviceId` es un UUID que la web guarda en `localStorage`. Borrar los datos del navegador, una ventana privada u otro dispositivo lo evaden, y las sesiones de clientes viejos sin `deviceId` solo quedan registradas por `sub` (no impiden volver a entrar). Detalle en [usuarios-e-identidad §6.6](usuarios-e-identidad.md#66-bloquear-a-un-invitado-por-dispositivo).
+
 ### 6.7 Subida y cambio de vídeo
 
 El archivo **nunca pasa por identity-api**: el navegador lo sube directo a MinIO con una URL PUT firmada, y lo reproduce con una URL GET firmada.
@@ -577,6 +591,32 @@ sequenceDiagram
 | Reproducir | `GET /rooms/:id/playback` firma `videos.storage_key` (el original mientras se procesa, la versión publicada al quedar `ready`) y devuelve `qualities`: `Original` (= `url`) y, si está `ready`, `720p`/`360p` según `videos.renditions` (`{id}/{h}p.mp4`) | 401 si el token fue revocado, 410 si la sala se borró. Un vídeo `failed` responde `url: null` y `qualities: []` |
 
 Sigue existiendo `PUT /rooms/:id/media { mediaKey }`, para asignar un objeto que ya está en el bucket (sin fila en `videos`, `status: null`).
+
+#### Biblioteca y reuso por `videoId`
+
+El host puede volver a poner en cualquiera de sus salas un vídeo que ya subió, sin escribir la clave del bucket:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Host
+    participant ID as identity-api
+    participant PG as PostgreSQL
+    participant SC as sync-core
+
+    Host->>ID: GET /videos (Firebase)
+    ID->>PG: videos WHERE uploaded_by = host AND status <> failed ORDER BY created_at DESC
+    ID-->>Host: { videos: [{ id, title, durationMs, status, createdAt, previewUrl }] }
+    Host->>ID: PUT /rooms/:id/media { videoId }
+    ID->>PG: el vídeo es del host y no está failed (si no, 404)
+    ID->>PG: rooms.media_id = videos.id, media_key = storage_key
+    ID-->>Host: { mediaId, mediaKey }
+    Host->>SC: LOAD { media_id: mediaId, position_ms: 0 }
+```
+
+- **`title`:** el `filename` sin extensión, guardado al reservar la subida (`videos.title`, migración `0007`). Se renombra con `PATCH /videos/:id { title }` (1–255, solo quien lo subió; responde `{ video }` con la misma forma de la tarjeta). Los vídeos anteriores a `0007` tienen `title: null`.
+- **`previewUrl`:** GET firmada (`PLAYBACK_URL_TTL_SECONDS`) para mostrar un fotograma en la tarjeta: `{id}/360p.mp4` si el vídeo está `ready` y `360` está en `renditions`; si no, `storage_key` (el original de `incoming/` mientras se procesa).
+- **Reuso:** como `media_id = videos.id` (no un uuid nuevo como con `mediaKey`), `GET /rooms/:id/playback` sigue resolviendo `status`, `qualities` y `ambilightUrl` del vídeo. Solo se reusan vídeos confirmados (`processing`/`ready`): uno `pending` (reservado sin confirmar, el objeto puede no existir), `failed`, inexistente o de otro host responde 404. La biblioteca lista los mismos estados.
 
 **Staging `incoming/`.** El original del navegador nunca va a la clave publicada: el media-worker solo publica vídeos que validó (regla de su dominio). `minio-init` importa una regla de ciclo de vida que borra `incoming/` a los 2 días, así quien ya reproducía el original no se corta al publicarse la versión procesada.
 
@@ -790,11 +830,16 @@ flowchart LR
 | `POST /rooms/:id/sync-ticket` | Host dueño (Firebase) | `{ token, expiresAt }` (HS256, `role: host`, 10 min) |
 | `POST /rooms/:id/media/uploads` | Host dueño | `{ videoId, uploadUrl, storageKey, expiresAt, headers }`: reserva el vídeo y firma el PUT a MinIO |
 | `POST /rooms/:id/media/uploads/:videoId/complete` | Host dueño | `{ mediaId, mediaKey, status }`: HEAD del objeto (tamaño real), `pending → processing`, `XADD media:uploads` y asignación a la sala. Idempotente |
-| `PUT /rooms/:id/media` | Host dueño | `{ mediaId, mediaKey }`: asigna un objeto que ya está en el bucket (nuevo `mediaId` en cada llamada) |
+| `PUT /rooms/:id/media` | Host dueño | `{ mediaId, mediaKey }`. Con `{ mediaKey }` asigna un objeto que ya está en el bucket (nuevo `mediaId` en cada llamada); con `{ videoId }` reusa un vídeo de su biblioteca (`mediaId = videoId`, `mediaKey = storage_key`; 404 si no es suyo o no está `processing`/`ready`) |
+| `GET /videos` | Host (Firebase) | `{ videos: [{ id, title, durationMs, status, createdAt, previewUrl }] }`: sus vídeos confirmados (`processing`/`ready`), recientes primero |
+| `PATCH /videos/:id` | Host que lo subió | `{ title }` (1–255) → `{ video }` (misma forma); 404 si no es suyo |
 | `GET /rooms/:id/playback` | Host dueño **o** guest token de la sala no revocado | `{ mediaId, url, expiresAt, status, ambilightUrl, qualities }` (`null`s y `qualities: []` si no hay vídeo) |
 | `GET /rooms/:id/guests` | Host dueño | `{ guests: [{ jti, nick, joinedAt, expiresAt, revoked }] }` (sin `sub`) |
 | `POST /rooms/:id/guests/:jti/revoke` | Host dueño | `{ success: true }`, idempotente; 404 si el `jti` no es de la sala |
-| `POST /invitations/claim` | — | Ahora registra la sesión en `guest_sessions`; `nick` ≤ 64 caracteres |
+| `POST /rooms/:id/bans` | Host dueño | `{ jti }` o `{ sub }` → `{ ban: { id, nick, createdAt } }`; bloquea el dispositivo y revoca todas las sesiones del invitado. Idempotente; 404 si no tiene sesiones en la sala; 503 si Redis falla |
+| `GET /rooms/:id/bans` | Host dueño | `{ bans: [{ id, nick, createdAt }] }` (sin `device_id` ni `sub`), recientes primero |
+| `DELETE /rooms/:id/bans/:banId` | Host dueño | `{ success: true }`; 404 si no existe en la sala |
+| `POST /invitations/claim` | — | Registra la sesión en `guest_sessions` (con `device_id`); `nick` ≤ 64 caracteres; `deviceId` opcional (UUID): **403 `{ error: "BANNED" }`** si ese dispositivo está bloqueado en la sala |
 
 - **Firmado:** se usa `@aws-sdk/client-s3` + `@aws-sdk/s3-request-presigner`, con `forcePathStyle` para MinIO. La firma SigV4 se calcula en local, sin llamar a MinIO.
 - **Host de la URL firmada:** se firma contra `MINIO_PUBLIC_ENDPOINT`, el host que ve el navegador.
