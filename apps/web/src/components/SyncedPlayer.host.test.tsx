@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createRef } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -6,6 +6,7 @@ import { SyncedPlayer, type SyncedPlayerProps } from './SyncedPlayer';
 import type { SyncSocketApi } from '../hooks/useSyncSocket';
 import type { SyncSnapshot } from '../lib/syncProtocol';
 import type { PlaybackQuality } from '../lib/quality';
+import { VOLUME_SEND_DEBOUNCE_MS } from './host/HostControlBar';
 
 const SRC = 'https://minio/m1/source.mp4?sig=1';
 const QUALITIES: PlaybackQuality[] = [
@@ -133,5 +134,43 @@ describe('SyncedPlayer — calidad', () => {
   it('sin src no muestra vídeo aunque haya calidades', () => {
     renderPlayer({ src: undefined, qualities: QUALITIES });
     expect(screen.queryByLabelText('Vídeo de la sala')).not.toBeInTheDocument();
+  });
+});
+
+describe('SyncedPlayer — barra de controles del host', () => {
+  it('solo quien controla ve la barra', () => {
+    const { rerenderWith, sync } = renderPlayer({ canControl: false, sync: makeSync({ canControl: false }) });
+    expect(screen.queryByRole('group', { name: 'Controles del host' })).not.toBeInTheDocument();
+    rerenderWith({ canControl: true, sync: { ...sync, canControl: true } });
+    expect(screen.getByRole('group', { name: 'Controles del host' })).toBeInTheDocument();
+  });
+
+  it('el volumen envía VOLUME con la posición local', () => {
+    vi.useFakeTimers();
+    const { sync } = renderPlayer();
+    video().currentTime = 12;
+    fireEvent.change(screen.getByRole('slider', { name: 'Volumen de la sala' }), { target: { value: '25' } });
+    act(() => vi.advanceTimersByTime(VOLUME_SEND_DEBOUNCE_MS));
+    expect(sync.sendCommand).toHaveBeenCalledWith('VOLUME', 12_000, { volume: 0.25 });
+    vi.useRealTimers();
+  });
+
+  it('la calidad envía QUALITY con las opciones de playback', () => {
+    const { sync } = renderPlayer({ qualities: QUALITIES });
+    video().currentTime = 3;
+    const select = screen.getByRole('combobox', { name: 'Calidad' });
+    expect(Array.from((select as HTMLSelectElement).options).map((o) => o.value)).toEqual(['auto', 'source', '720p', '360p']);
+    fireEvent.change(select, { target: { value: '360p' } });
+    expect(sync.sendCommand).toHaveBeenCalledWith('QUALITY', 3_000, { quality: '360p' });
+  });
+
+  it('reenvía el láser y el creador de encuestas', () => {
+    const onToggleLaser = vi.fn();
+    const onOpenPoll = vi.fn();
+    renderPlayer({ laserOn: false, onToggleLaser, onOpenPoll });
+    fireEvent.click(screen.getByRole('button', { name: 'Puntero láser' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Crear encuesta' }));
+    expect(onToggleLaser).toHaveBeenCalled();
+    expect(onOpenPoll).toHaveBeenCalled();
   });
 });

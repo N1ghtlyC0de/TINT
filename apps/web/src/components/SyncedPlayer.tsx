@@ -4,8 +4,9 @@ import { PLAYER_SHORTCUTS, SHORTCUT_SEEK_MS, usePlayerShortcuts } from '../hooks
 import { useTransientFlag } from '../hooks/useTransientFlag';
 import { applyCorrection, shouldRestoreRate } from '../lib/drift';
 import { readNetworkHints, resolveQuality, type PlaybackQuality } from '../lib/quality';
-import { estimateServerNow, expectedPosition, RATE_OPTIONS, stepRate, type SyncSnapshot } from '../lib/syncProtocol';
+import { estimateServerNow, expectedPosition, stepRate, type QualityPref, type SyncSnapshot } from '../lib/syncProtocol';
 import { formatRate, formatTime } from '../lib/time';
+import { HostControlBar } from './host/HostControlBar';
 import { SeekBar } from './player/SeekBar';
 import { Button } from './ui/Button';
 
@@ -24,6 +25,11 @@ export interface SyncedPlayerProps {
   emptyMessage?: string;
   /** Reloj monotónico local (inyectable para pruebas). */
   now?: () => number;
+  /** Puntero láser del host (botón en la barra de controles). */
+  laserOn?: boolean;
+  onToggleLaser?: () => void;
+  /** Abre el creador de encuestas (botón en la barra de controles). */
+  onOpenPoll?: () => void;
 }
 
 const RATE_CHECK_INTERVAL_MS = 200;
@@ -72,6 +78,9 @@ export function SyncedPlayer({
   videoRef,
   emptyMessage = 'Sin video configurado',
   now = defaultNow,
+  laserOn,
+  onToggleLaser,
+  onOpenPoll,
 }: SyncedPlayerProps) {
   const { state, correction, connected, hostOnline, lastError, lastBroadcast, sendCommand, volume, quality } = sync;
   const [needsGesture, setNeedsGesture] = useState(false);
@@ -86,7 +95,6 @@ export function SyncedPlayer({
   // Pistas de red/pantalla al montar: no se cambia de calidad por redimensionar la ventana.
   const [networkHints] = useState(readNetworkHints);
   const helpId = useId();
-  const rateId = useId();
 
   const nowRef = useRef(now);
   const stateRef = useRef(state);
@@ -230,6 +238,14 @@ export function SyncedPlayer({
     sendCommand('RATE', localPositionMs(), { rate });
   };
 
+  const changeVolume = (next: number) => {
+    sendCommand('VOLUME', localPositionMs(), { volume: next });
+  };
+
+  const changeQuality = (next: QualityPref) => {
+    sendCommand('QUALITY', localPositionMs(), { quality: next });
+  };
+
   const controlsDisabled = !canControl || !connected;
 
   usePlayerShortcuts(canControl && connected, {
@@ -247,9 +263,6 @@ export function SyncedPlayer({
     if (video && snap) applyMaster(video, snap);
   };
 
-  const rateOptions: number[] = RATE_OPTIONS.includes(currentRate as (typeof RATE_OPTIONS)[number])
-    ? [...RATE_OPTIONS]
-    : [...RATE_OPTIONS, currentRate].sort((a, b) => a - b);
   const errorMessage = lastError ? (ERROR_MESSAGES[lastError] ?? `Error de sincronía (${lastError}).`) : '';
 
   return (
@@ -372,23 +385,6 @@ export function SyncedPlayer({
           <div className="ml-auto flex items-center gap-2">
             {canControl ? (
               <>
-                <label htmlFor={rateId} className="sr-only">
-                  Velocidad
-                </label>
-                <select
-                  id={rateId}
-                  value={String(currentRate)}
-                  disabled={!connected}
-                  aria-keyshortcuts="[ ]"
-                  onChange={(e) => changeRate(Number(e.target.value))}
-                  className="rounded-full border border-white/15 bg-tint-bg px-3 py-1.5 text-[13px] text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-tint-accent disabled:opacity-50"
-                >
-                  {rateOptions.map((r) => (
-                    <option key={r} value={String(r)}>
-                      {formatRate(r)}×
-                    </option>
-                  ))}
-                </select>
                 <Button
                   variant="quiet"
                   className="px-3 py-1.5 text-[13px]"
@@ -423,6 +419,22 @@ export function SyncedPlayer({
             )}
           </div>
         </div>
+
+        {canControl && (
+          <HostControlBar
+            connected={connected}
+            volume={volume}
+            onVolumeChange={changeVolume}
+            quality={quality}
+            qualities={qualities ?? []}
+            onQualityChange={changeQuality}
+            rate={currentRate}
+            onRateChange={changeRate}
+            laserOn={laserOn}
+            onToggleLaser={onToggleLaser}
+            onOpenPoll={onOpenPoll}
+          />
+        )}
 
         {canControl && showHelp && (
           <dl
