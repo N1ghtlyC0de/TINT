@@ -481,18 +481,16 @@ export default function WatchRoom() {
             />
           </Card>
 
-          <div className="mt-4 grid gap-4 md:grid-cols-2">
-            <Card className="p-5">
-              <TriviaPanel
-                isHost={!isGuest}
-                schedule={triviaSchedule}
-                getCurrentMs={getPositionMs}
-                onSchedule={scheduleTrivia}
-                onDelete={deleteTrivia}
-                error={socialError?.code ?? null}
-              />
-            </Card>
-          </div>
+          <Card className="mt-4 p-5">
+            <TriviaPanel
+              isHost={!isGuest}
+              schedule={triviaSchedule}
+              getCurrentMs={getPositionMs}
+              onSchedule={scheduleTrivia}
+              onDelete={deleteTrivia}
+              error={socialError?.code ?? null}
+            />
+          </Card>
 
         </section>
 

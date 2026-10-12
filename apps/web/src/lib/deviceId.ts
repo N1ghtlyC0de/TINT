@@ -1,3 +1,5 @@
+import { readStored, writeStored } from './safeStorage';
+
 /**
  * Identificador anónimo del navegador (`tint_device_id`), que se envía al canjear una
  * invitación para que el host pueda bloquear por dispositivo. Borrar los datos del
@@ -16,16 +18,13 @@ export function resetDeviceIdCache() {
 
 /** UUID estable del dispositivo, o null si el navegador no puede generarlo. */
 export function getDeviceId(): string | null {
-  try {
-    const stored = localStorage.getItem(DEVICE_ID_KEY);
-    if (stored && UUID_RE.test(stored)) {
-      cached = stored;
-      return stored;
-    }
-  } catch {
-    // Almacenamiento no disponible: vale el de memoria (o se genera uno).
-    if (cached) return cached;
+  const stored = readStored(DEVICE_ID_KEY);
+  if (stored && UUID_RE.test(stored)) {
+    cached = stored;
+    return stored;
   }
+  // Almacenamiento bloqueado: vale el de memoria de esta pestaña.
+  if (cached) return cached;
   let id: string;
   try {
     id = crypto.randomUUID();
@@ -33,10 +32,6 @@ export function getDeviceId(): string | null {
     return null;
   }
   cached = id;
-  try {
-    localStorage.setItem(DEVICE_ID_KEY, id);
-  } catch {
-    // Sin persistencia: vale para esta pestaña.
-  }
+  writeStored(DEVICE_ID_KEY, id);
   return id;
 }
