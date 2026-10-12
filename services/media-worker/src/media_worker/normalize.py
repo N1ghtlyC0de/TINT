@@ -52,6 +52,53 @@ def is_normalized(src: Path, runner=subprocess.run, timeout: float = PROBE_TIMEO
     )
 
 
+# Un keyframe cada 2 s (sin cortes de escena extra): los seeks y las correcciones del Canal Sync
+# caen como mucho a 2 s de un keyframe en vez de hasta ~10 s (keyint 250 por defecto de x264).
+KEYFRAME_INTERVAL_S = 2
+
+# `source.mp4` conserva la resolución del original (puede ser 4K o 60 fps), así que no se fija el
+# nivel H.264: x264 elige el correcto. CRF 23 con tope VBV para que los picos no atasquen el buffer.
+SOURCE_PROFILE = "high"
+SOURCE_MAXRATE = "8000k"
+SOURCE_BUFSIZE = "16000k"
+
+AUDIO_ARGS = ("-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "48000")
+
+
+def x264_args(profile: str, level: str | None, maxrate: str, bufsize: str) -> list[str]:
+    """Argumentos de vídeo comunes: H.264 yuv420p, CRF con tope de bitrate y GOP de 2 s."""
+    args = [
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-pix_fmt",
+        "yuv420p",
+        "-profile:v",
+        profile,
+    ]
+    if level is not None:
+        args += ["-level:v", level]
+    return [
+        *args,
+        "-maxrate",
+        maxrate,
+        "-bufsize",
+        bufsize,
+        "-force_key_frames",
+        f"expr:gte(t,n_forced*{KEYFRAME_INTERVAL_S})",
+        "-sc_threshold",
+        "0",
+    ]
+
+
+def mp4_output_args(dest: str) -> list[str]:
+    """Salida MP4 con el `moov` al principio: el navegador arranca sin pedir el final."""
+    return ["-movflags", "+faststart", "-f", "mp4", dest]
+
+
 def ffmpeg_normalize_cmd(src: str, dest: str) -> list[str]:
     """Comando FFmpeg que re-codifica a MP4 H.264 (yuv420p) + AAC listo para streaming."""
     return [
@@ -66,23 +113,9 @@ def ffmpeg_normalize_cmd(src: str, dest: str) -> list[str]:
         "0:v:0",
         "-map",
         "0:a:0?",
-        "-c:v",
-        "libx264",
-        "-preset",
-        "veryfast",
-        "-crf",
-        "23",
-        "-pix_fmt",
-        "yuv420p",
-        "-c:a",
-        "aac",
-        "-b:a",
-        "128k",
-        "-movflags",
-        "+faststart",
-        "-f",
-        "mp4",
-        dest,
+        *x264_args(SOURCE_PROFILE, None, SOURCE_MAXRATE, SOURCE_BUFSIZE),
+        *AUDIO_ARGS,
+        *mp4_output_args(dest),
     ]
 
 

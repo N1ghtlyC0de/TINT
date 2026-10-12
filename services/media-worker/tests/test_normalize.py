@@ -8,10 +8,12 @@ from fakes import fake_run
 
 from media_worker.normalize import (
     DEFAULT_TIMEOUT_S,
+    KEYFRAME_INTERVAL_S,
     NormalizeError,
     ffmpeg_normalize_cmd,
     is_normalized,
     normalize_video,
+    x264_args,
 )
 
 
@@ -24,6 +26,68 @@ def test_normalize_cmd_targets_mp4_h264_aac_with_faststart():
     assert cmd[cmd.index("-c:a") + 1] == "aac"
     assert cmd[cmd.index("-movflags") + 1] == "+faststart"
     assert "0:a:0?" in cmd  # el audio es opcional
+
+
+def test_normalize_cmd_exact_args_for_fast_seek_and_start():
+    assert ffmpeg_normalize_cmd("in.mkv", "out.mp4") == [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-nostdin",
+        "-y",
+        "-i",
+        "in.mkv",
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0?",
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-pix_fmt",
+        "yuv420p",
+        "-profile:v",
+        "high",
+        "-maxrate",
+        "8000k",
+        "-bufsize",
+        "16000k",
+        "-force_key_frames",
+        "expr:gte(t,n_forced*2)",
+        "-sc_threshold",
+        "0",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "128k",
+        "-ac",
+        "2",
+        "-ar",
+        "48000",
+        "-movflags",
+        "+faststart",
+        "-f",
+        "mp4",
+        "out.mp4",
+    ]
+
+
+def test_keyframe_interval_is_two_seconds():
+    assert KEYFRAME_INTERVAL_S == 2
+    cmd = ffmpeg_normalize_cmd("in.mkv", "out.mp4")
+    assert cmd[cmd.index("-force_key_frames") + 1] == "expr:gte(t,n_forced*2)"
+
+
+def test_x264_args_includes_level_only_when_given():
+    assert "-level:v" not in x264_args("high", None, "8000k", "16000k")
+    args = x264_args("main", "3.1", "1000k", "2000k")
+    assert args[args.index("-profile:v") + 1] == "main"
+    assert args[args.index("-level:v") + 1] == "3.1"
+    assert args[args.index("-maxrate") + 1] == "1000k"
+    assert args[args.index("-bufsize") + 1] == "2000k"
 
 
 def test_normalize_runs_ffmpeg_with_timeout():
