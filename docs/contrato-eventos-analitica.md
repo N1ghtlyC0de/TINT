@@ -133,7 +133,7 @@ Para agregar un tipo o un campo: PR a este archivo.
 | Servicio | Publica hoy |
 | :--- | :--- |
 | `social-core` | Solo `chat_message`, sin `user_id`, `received_at` ni `source` |
-| `identity-api` | Nada |
+| `identity-api` | `user_login`, `room_created`, `room_closed` (`reason=deleted`, solo el primer borrado) e `invitation_claimed`, con todos los campos comunes. Además entrega el analytics-ticket (`POST /rooms/:id/analytics-ticket`) |
 | `sync-core` | Nada (el servicio aún no tiene WebSocket) |
 | `media-worker` | Nada |
 | `analytics` (consumidor) | Consume `analytics:events` (grupo `analytics-workers`), persiste en `telemetry_events`, consolida `room_kpis` con `room_closed`, purga a los 90 días y sirve la API de lectura. `room_id` solo se exige fuera de `user_login` y `media_processed` |

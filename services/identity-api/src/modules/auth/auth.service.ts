@@ -51,12 +51,16 @@ export interface SyncTicketInput {
   nick?: string | null;
 }
 
+export type HostTicketPayload = SyncTicketPayload;
+export type HostTicketInput = SyncTicketInput;
+
 /**
- * Ticket de corta duración (HS256, mismo secreto que los guest tokens) que
- * permite al host autenticarse en el WebSocket /ws/sync de sync-core, que
- * solo valida JWT simétricos y no conoce los ID tokens de Firebase.
+ * Ticket de host de corta duración (HS256, mismo secreto que los guest tokens,
+ * TTL `SYNC_TICKET_TTL_SECONDS`). Lo usan los servicios que solo validan JWT
+ * simétricos y no conocen los ID tokens de Firebase: el WebSocket /ws/sync de
+ * sync-core (sync-ticket) y la API de lectura de analytics (analytics-ticket).
  */
-export function generateSyncTicket({ userId, roomId, nick }: SyncTicketInput): { token: string; expiresAt: Date } {
+export function generateHostTicket({ userId, roomId, nick }: HostTicketInput): { token: string; expiresAt: Date } {
   const now = Math.floor(Date.now() / 1000);
   const exp = now + env.SYNC_TICKET_TTL_SECONDS;
   const payload: SyncTicketPayload = {
@@ -73,3 +77,6 @@ export function generateSyncTicket({ userId, roomId, nick }: SyncTicketInput): {
   const token = jwt.sign(payload, env.JWT_SECRET, { algorithm: 'HS256' });
   return { token, expiresAt: new Date(exp * 1000) };
 }
+
+/** Sync-ticket para /ws/sync: mismo ticket de host. */
+export const generateSyncTicket = generateHostTicket;
