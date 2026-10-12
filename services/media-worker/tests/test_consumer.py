@@ -131,7 +131,18 @@ def test_handler_error_leaves_message_pending():
     with pytest.raises(ConnectionError):
         make_consumer(redis, handler).poll()
     assert redis.acks == []
-    assert message_id in redis.pending
+    assert (STREAM_KEY, message_id) in redis.pending
+
+
+def test_fake_redis_keeps_streams_apart():
+    redis = FakeRedis()
+    redis.xadd("analytics:events", {"type": "x"}, maxlen=10, approximate=True)
+    redis.xadd(STREAM_KEY, {"video_id": "a"})
+    handler = Mock()
+    assert make_consumer(redis, handler).poll() == 1
+    handler.assert_called_once_with("a")
+    assert redis.entries("analytics:events") == [{"type": "x"}]
+    assert redis.xadd_calls[0] == ("analytics:events", 10, True)
 
 
 def test_recover_pending_retries_unacked_messages_after_restart():
