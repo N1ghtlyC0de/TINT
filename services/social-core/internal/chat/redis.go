@@ -211,22 +211,8 @@ func decodeInbound(fromSync bool, raw []byte) (Inbound, bool) {
 	return Inbound{EventID: head.EventID, Type: head.Type, Payload: payload}, true
 }
 
-// TrackChat publica telemetría sin texto (solo message_length, Ley 1581).
-func (s *RedisStore) TrackChat(ctx context.Context, msg socialevent.ChatMessage, length int) error {
-	return s.client.XAdd(ctx, &redis.XAddArgs{
-		Stream: "analytics:events",
-		Values: map[string]any{
-			"event_id":       msg.EventID,
-			"type":           "chat_message",
-			"room_id":        msg.RoomID,
-			"message_length": length,
-			"occurred_at":    msg.OccurredAt.UTC().Format(time.RFC3339Nano),
-		},
-	}).Err()
-}
-
 // Client expone el cliente Redis para los stores que comparten conexión
-// (encuestas, recap).
+// (encuestas, recap) y para el emisor de analítica (internal/analytics).
 func (s *RedisStore) Client() *redis.Client {
 	return s.client
 }

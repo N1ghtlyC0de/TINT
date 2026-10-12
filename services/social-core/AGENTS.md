@@ -45,6 +45,7 @@ Gestionas la interactividad de la audiencia en **TINT**: chat, reacciones con co
 | `room:{id}:recap:last_pos` | Redis Hash, TTL 12 h | Ancla de reproducción conocida: `pos`, `status`, `rate`, `updated_at_ms`, `version` |
 | `room:{id}:recap:seen:{event_id}` | Redis String, EX 1 h | Dedup entre réplicas de los eventos del bus de sync (`SET NX`) |
 | `token:revoked:{jti}` | Redis String (solo lectura) | Marca de revocación de identity-api |
+| `analytics:events` | Redis Stream (solo escritura) | `chat_message`, `presence` y `reaction` para `services/analytics` (ver abajo) |
 
 ## Protocolo del Canal Social
 JSON sobre `/ws/social`. Todo lo que se emite a la sala viaja también por `room:{id}:social` a las demás réplicas (dedup por `event_id`). Al entrar, el cliente recibe `history` y, si hay encuesta, su `poll_state` (con `my_vote`).
@@ -86,6 +87,23 @@ El verificador se elige por el `alg` del header del token; nada se acepta sin fi
 **Revocación (contrato con identity-api):** en el handshake se consulta `EXISTS token:revoked:{jti}` (revocado → 401; Redis caído → 503). La suscripción Pub/Sub de cada sala con clientes locales escucha también `room:{id}:sync` y, ante `type: "REVOKED"`, cierra con **4001** los sockets de ese `jti` (borrar una sala revoca todos sus `jti`). Sin `REDIS_URL` (modo memoria) no hay fuente de revocación.
 
 **Conexiones:** ping cada 20 s (10 s para el pong) y plazo de 5 s por escritura; una conexión muerta se corta y emite el aviso de salida. Los orígenes del handshake se limitan con `ALLOWED_ORIGINS`.
+
+## Analítica (`analytics:events`)
+Contrato: [docs/contrato-eventos-analitica.md](../../docs/contrato-eventos-analitica.md). Lo publica `internal/analytics`, con el mismo patrón que la telemetría de sync-core:
+
+- **No bloqueante:** los `Track*` de `Deps` solo encolan en un canal con buffer (4096); una goroutine (`Emitter.Run`, arrancada en `server.Run`) hace `XADD analytics:events MAXLEN ~ 100000`. Con el buffer lleno el evento se descarta y se cuenta (`Dropped`); un `XADD` fallido se cuenta (`Failed`) y solo se registra en el log.
+- **Sin `REDIS_URL`** (modo memoria) los `Track*` quedan en `nil`: no se publica nada.
+- **Campos comunes:** `event_id`, `type`, `source=social-core`, `room_id`, `user_id` (`sub` del token), `occurred_at` y `received_at` (RFC 3339 UTC con milisegundos). **Nunca** `text` ni `nick` (Ley 1581).
+
+| `type` | Cuándo | Campos propios | `event_id` |
+| :--- | :--- | :--- | :--- |
+| `chat_message` | Mensaje aceptado (tras validación y límite) | `message_length` (runas tras recortar) | El del `chat_message` difundido |
+| `presence` | Se emite un aviso `joined`/`left` (el `left`, tras la gracia de 5 s; multipestaña y reingresos dentro de la gracia no generan evento) | `kind` (`joined`, `left`), `connected_users` | El del aviso (`notice`) |
+| `reaction` | Reacción aceptada (después del límite de 5/s) | `emoji`, `position_ms` | El de la `reaction` difundida |
+
+**Limitación de `connected_users`:** es el conteo de usuarios distintos con presencia **en esta réplica** (incluye a quien acaba de salir y sigue dentro de la gracia), tomado bajo el mismo lock que el cambio. La presencia no se comparte entre réplicas: con varias réplicas, cada una publica su propio conteo y Analítica no debe sumarlos como si fueran globales.
+
+`trivia_answer` **no se publica**: el servidor todavía no evalúa respuestas de trivia (solo existe `trivia.Score`). Se agrega cuando exista el flujo de trivia por WebSocket.
 
 ## Variables de entorno
 | Variable | Por defecto | Uso |

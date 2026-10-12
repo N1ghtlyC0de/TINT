@@ -10,6 +10,7 @@ import (
 
 	"nhooyr.io/websocket"
 
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/analytics"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/auth"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/chat"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/reactions"
@@ -99,7 +100,7 @@ func TestSocialCallsPublishTrackAndRemote(t *testing.T) {
 	var published, tracked int
 	now := time.Now().UTC()
 	deps.Publish = func(_ context.Context, _ string, _ socialevent.ChatMessage) error { published++; return nil }
-	deps.Track = func(_ context.Context, _ string, _ int, _ string, _ time.Time) { tracked++ }
+	deps.TrackChat = func(analytics.ChatMessage) { tracked++ }
 	deps.Subscribe = func(_ context.Context, _ string) (<-chan chat.Inbound, func()) {
 		out := make(chan chat.Inbound, 4)
 		raw, _ := json.Marshal(socialevent.ChatMessage{

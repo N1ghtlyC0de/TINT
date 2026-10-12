@@ -71,8 +71,8 @@ func TestRedisPubSubAndTrack(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("timeout esperando Pub/Sub")
 	}
-	if err := s.TrackChat(ctx, m, 11); err != nil {
-		t.Fatalf("TrackChat: %v", err)
+	if s.Client() == nil {
+		t.Fatal("Client() no debe ser nil")
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)

@@ -58,10 +58,15 @@ el Canal Sync no necesita identificar a la persona y así se publica lo mínimo.
 
 | `type` | Cuándo | Campos propios | Sirve para |
 | :--- | :--- | :--- | :--- |
-| `chat_message` | Se acepta un mensaje de chat | `message_length` | Engagement. **Ya se publica; le faltan `user_id`, `received_at` y `source`** |
+| `chat_message` | Se acepta un mensaje de chat | `message_length` | Engagement |
 | `presence` | Alguien entra o sale de la sala (los mismos avisos `joined`/`left`) | `kind` (`joined`, `left`), `connected_users` (conectados después del cambio) | Pico y promedio de espectadores |
 | `reaction` | Se acepta una reacción (después del límite de 5/s) | `emoji`, `position_ms` | Heatmap (REQ-21 a REQ-23) |
 | `trivia_answer` | Se evalúa una respuesta de trivia | `question_id`, `correct` (`true`/`false`), `response_ms` | % de aciertos (REQ-32) |
+
+`connected_users` es el conteo **de la réplica que publica**: la presencia de `social-core` vive en
+memoria y no se comparte entre réplicas. Con una réplica (el despliegue actual) es el total de la
+sala; con varias, cada réplica publica el suyo. `trivia_answer` aún no se publica: el servidor no
+evalúa respuestas de trivia todavía.
 
 ### `sync-core`
 
@@ -132,7 +137,7 @@ Para agregar un tipo o un campo: PR a este archivo.
 
 | Servicio | Publica hoy |
 | :--- | :--- |
-| `social-core` | Solo `chat_message`, sin `user_id`, `received_at` ni `source` |
+| `social-core` | `chat_message`, `presence` y `reaction` completos; `trivia_answer` no (aún no hay trivia en el servidor) |
 | `identity-api` | `user_login`, `room_created`, `room_closed` (`reason=deleted`, solo el primer borrado) e `invitation_claimed`, con todos los campos comunes. Además entrega el analytics-ticket (`POST /rooms/:id/analytics-ticket`) |
 | `sync-core` | Nada (el servicio aún no tiene WebSocket) |
 | `media-worker` | Nada |

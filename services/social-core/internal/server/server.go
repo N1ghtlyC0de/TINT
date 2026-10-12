@@ -8,8 +8,8 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"time"
 
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/analytics"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/auth"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/chat"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/polls"
@@ -19,6 +19,10 @@ import (
 )
 
 const defaultAddr = ":8082"
+
+// analyticsBuffer es la cola del emisor de analítica: si Redis se atrasa
+// más de esto, los eventos se descartan (y se cuentan) en vez de bloquear.
+const analyticsBuffer = 4096
 
 // defaultOrigins son los orígenes del frontend en desarrollo (Vite).
 const defaultOrigins = "localhost:5173,127.0.0.1:5173"
@@ -41,6 +45,9 @@ func Run(getenv func(string) string) error {
 	}
 	addr := Addr(getenv)
 	deps := DefaultDeps(getenv)
+	if deps.analytics != nil {
+		go deps.analytics.Run(context.Background())
+	}
 	log.Printf("social-core escuchando en %s", addr)
 	return http.ListenAndServe(addr, NewRouterWithDeps(deps))
 }
@@ -84,17 +91,18 @@ func DefaultDeps(getenv func(string) string) *Deps {
 		d.OnPollCreated = func(ctx context.Context, roomID string) {
 			_ = rc.RecordPoll(ctx, roomID)
 		}
-		d.Track = func(ctx context.Context, roomID string, length int, eventID string, occurredAt time.Time) {
-			go func() {
-				tctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-				defer cancel()
-				_ = st.TrackChat(tctx, socialevent.ChatMessage{
-					EventID: eventID, RoomID: roomID, OccurredAt: occurredAt,
-				}, length)
-			}()
-		}
+		d.useAnalytics(analytics.New(st.Client(), analyticsBuffer))
 	}
 	return d
+}
+
+// useAnalytics cablea el emisor: chat_message, presence y reaction. Sin
+// emisor (modo memoria) los Track* quedan en nil y no se publica nada.
+func (d *Deps) useAnalytics(em *analytics.Emitter) {
+	d.analytics = em
+	d.TrackChat = func(m analytics.ChatMessage) { em.EmitChat(m) }
+	d.TrackPresence = func(p analytics.Presence) { em.EmitPresence(p) }
+	d.TrackReaction = func(r analytics.Reaction) { em.EmitReaction(r) }
 }
 
 func or(v, def string) string {
