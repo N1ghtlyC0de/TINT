@@ -31,3 +31,16 @@ describe('AppShell', () => {
     expect(logo).toHaveAttribute('aria-hidden', 'true');
   });
 });
+
+describe('AppShell — fondo ambiental', () => {
+  it('incluye el fondo decorativo oculto a lectores', () => {
+    const { container } = render(
+      <MemoryRouter>
+        <AppShell>
+          <p>Hola</p>
+        </AppShell>
+      </MemoryRouter>,
+    );
+    expect(container.querySelector('[aria-hidden="true"] [data-orb]')).not.toBeNull();
+  });
+});

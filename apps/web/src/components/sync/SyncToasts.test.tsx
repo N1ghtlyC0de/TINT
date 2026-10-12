@@ -1,4 +1,4 @@
-import { act, render, renderHook, screen } from '@testing-library/react';
+import { act, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SyncBroadcast } from '../../hooks/useSyncSocket';
 import { describeBroadcast, useSyncToasts } from '../../hooks/useSyncToasts';
@@ -105,5 +105,19 @@ describe('ToastStack', () => {
   it('la región existe aunque esté vacía (para que se anuncien los nuevos)', () => {
     render(<ToastStack toasts={[]} />);
     expect(screen.getByRole('status')).toBeEmptyDOMElement();
+  });
+
+  it('cada aviso es una píldora de vidrio sin el keyframe CSS antiguo', () => {
+    render(<ToastStack toasts={[{ id: 1, text: 'El host pausó en 0:10' }]} />);
+    const toast = screen.getByText('El host pausó en 0:10');
+    expect(toast.className).toContain('tint-glass-panel');
+    expect(toast.className).toContain('rounded-full');
+    expect(toast.className).not.toContain('tint-toast-in');
+  });
+
+  it('el aviso que caduca sale animado y la región vuelve a quedar vacía', async () => {
+    const { rerender } = render(<ToastStack toasts={[{ id: 1, text: 'El host pausó en 0:10' }]} />);
+    rerender(<ToastStack toasts={[]} />);
+    await waitFor(() => expect(screen.getByRole('status')).toBeEmptyDOMElement());
   });
 });

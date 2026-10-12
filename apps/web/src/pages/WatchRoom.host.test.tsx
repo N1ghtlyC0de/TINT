@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import WatchRoom from './WatchRoom';
@@ -69,7 +69,7 @@ beforeEach(() => {
   localStorage.clear();
   MockWebSocket.reset();
   vi.stubGlobal('WebSocket', MockWebSocket);
-  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
+  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addListener: vi.fn(), removeListener: vi.fn() })));
   vi.stubEnv('VITE_SYNC_ENCODING', 'json');
   mockedApiFetch.mockReset();
   mockedApiFetch.mockImplementation(routeApi as typeof apiFetch);
@@ -134,7 +134,8 @@ describe('WatchRoom — encuestas', () => {
     fireEvent.change(screen.getByLabelText('Opción 2'), { target: { value: 'No' } });
     fireEvent.click(screen.getByRole('button', { name: 'Lanzar encuesta' }));
     expect(social.current.createPoll).toHaveBeenCalledWith('¿Final?', ['Sí', 'No'], 60);
-    expect(screen.queryByLabelText('Pregunta')).not.toBeInTheDocument();
+    // El creador colapsa animado (AnimatePresence) antes de desmontarse.
+    await waitFor(() => expect(screen.queryByLabelText('Pregunta')).not.toBeInTheDocument());
   });
 
   it('el invitado vota en la encuesta activa y ve los errores del canal', async () => {
@@ -198,6 +199,57 @@ describe('WatchRoom — Watch Party Recap', () => {
     renderWatch();
     await flush();
     expect(screen.getByRole('dialog', { name: 'Watch Party Recap' })).toBeInTheDocument();
+  });
+});
+
+describe('WatchRoom — halo del reproductor', () => {
+  it('respira mientras el vídeo se reproduce y se atenúa en pausa o al terminar', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    const { container } = renderWatch();
+    await flush();
+    const halo = screen.getByTestId('player-halo');
+    expect(halo).toHaveAttribute('aria-hidden', 'true');
+    expect(halo).toHaveAttribute('data-playing', 'false');
+    const video = screen.getByLabelText('Vídeo de la sala');
+    fireEvent.play(video);
+    expect(halo).toHaveAttribute('data-playing', 'true');
+    fireEvent.pause(video);
+    expect(halo).toHaveAttribute('data-playing', 'false');
+    fireEvent.play(video);
+    fireEvent.ended(video);
+    expect(halo).toHaveAttribute('data-playing', 'false');
+    // La franja degradada difuminada bajo el vídeo ya no existe.
+    expect(container.querySelector('.blur-\\[6px\\]')).toBeNull();
+  });
+});
+
+describe('WatchRoom — chat', () => {
+  const msg = (id: string, text: string) => ({
+    event_id: id,
+    type: 'chat_message',
+    room_id: 'r1',
+    user_id: 'u1',
+    nick: 'Ana',
+    text,
+    occurred_at: '2026-10-10T10:05:00Z',
+  });
+
+  it('los mensajes del primer render no animan su entrada; los nuevos sí', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    social.current = baseSocial({ messages: [msg('m1', 'Hola')] });
+    const { rerender } = renderWatch();
+    await flush();
+    expect(screen.getByText('Hola').closest('li')).toHaveAttribute('data-enter', 'false');
+    social.current = { ...social.current, messages: [msg('m1', 'Hola'), msg('m2', 'Qué tal')] };
+    rerender(
+      <MemoryRouter initialEntries={['/watch/r1']}>
+        <Routes>
+          <Route path="/watch/:roomId" element={<WatchRoom />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(screen.getByText('Qué tal').closest('li')).toHaveAttribute('data-enter', 'true');
+    expect(screen.getByText('Hola').closest('li')).toHaveAttribute('data-enter', 'false');
   });
 });
 

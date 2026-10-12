@@ -124,6 +124,25 @@ describe('RoomAnalytics', () => {
     expect(screen.getByRole('link', { name: 'Volver' })).toHaveAttribute('href', '/dashboard');
   });
 
+  it('los KPIs numéricos cuentan hasta el valor final con números tabulares', async () => {
+    mockedClient.mockReturnValue(client());
+    renderPage();
+    const tiles = await screen.findByRole('list', { name: 'Indicadores de la sesión' });
+    const tile = (label: string) => within(tiles).getByText(label).closest('li') as HTMLElement;
+    expect(await within(tile('Mensajes')).findByText('42')).toHaveClass('tabular-nums');
+    expect(await within(tile('Drift promedio')).findByText('85 ms')).toHaveClass('tabular-nums');
+    expect(await within(tile('Buffering')).findByText('3 eventos')).toHaveClass('tabular-nums');
+    expect(await within(tile('Aciertos de trivia')).findByText('62,5 %')).toHaveClass('tabular-nums');
+  });
+
+  it('"En vivo" lleva un punto con anillo de pulso decorativo', async () => {
+    mockedClient.mockReturnValue(client());
+    renderPage();
+    const badge = await screen.findByText('En vivo');
+    const ring = within(badge).getByTestId('live-ring');
+    expect(ring.closest('[aria-hidden="true"]')).not.toBeNull();
+  });
+
   it('una sala cerrada muestra "Sesión cerrada" con la fecha', async () => {
     mockedClient.mockReturnValue(client({ kpis: vi.fn().mockResolvedValue({ ...kpis, live: false, closed_at: '2026-10-11T21:00:00.000Z' }) }));
     renderPage();

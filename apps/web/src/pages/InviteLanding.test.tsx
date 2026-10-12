@@ -37,6 +37,15 @@ beforeEach(() => {
 });
 
 describe('InviteLanding', () => {
+  it('en móvil muestra una banda hero compacta con el titular sobre la tarjeta', () => {
+    renderInvite();
+    const band = screen.getByTestId('hero-mobile');
+    expect(band).toHaveClass('md:hidden');
+    expect(band).toHaveTextContent('Te invitaron a ver algo juntos');
+    const card = screen.getByRole('heading', { name: 'Unirse a la sala' });
+    expect(band.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('canjea la invitación con el nick y guarda el guest token', async () => {
     mockedApi.mockResolvedValueOnce({ token: 'guest-tok', roomId: 'r1', nick: 'Ana' });
     renderInvite();

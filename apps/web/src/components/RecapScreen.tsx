@@ -1,6 +1,9 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react';
+import { m } from 'framer-motion';
 import { formatMmSs, type RecapMessage } from '../lib/socialSocket';
+import { ease, fadeUp, spring, stagger } from '../lib/motion';
 import { Button } from './ui/Button';
+import { CountUp } from './motion/CountUp';
 
 export interface RecapScreenProps {
   /** null mientras social-core prepara el recap. */
@@ -12,7 +15,7 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 
 function RecapCard({ icon, title, children }: { icon: string; title: string; children: ReactNode }) {
   return (
-    <li className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+    <m.li variants={fadeUp} className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
       <p className="text-[12px] uppercase tracking-[0.14em] text-tint-muted">
         <span aria-hidden="true" className="mr-1.5 text-base">
           {icon}
@@ -20,7 +23,7 @@ function RecapCard({ icon, title, children }: { icon: string; title: string; chi
         {title}
       </p>
       <div className="mt-2">{children}</div>
-    </li>
+    </m.li>
   );
 }
 
@@ -59,16 +62,25 @@ export function RecapScreen({ recap, onDismiss }: RecapScreenProps) {
   }, []);
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-black/75 px-4 py-8 backdrop-blur-sm">
-      <div
+    <m.div
+      data-recap-backdrop
+      className="fixed inset-0 z-50 grid place-items-center overflow-y-auto bg-black/75 px-4 py-8 backdrop-blur-sm"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.3, ease }}
+    >
+      <m.div
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
+        initial={{ opacity: 0, scale: 0.96, y: 12 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        transition={spring}
         className="w-full max-w-2xl rounded-3xl border border-tint-accent/30 bg-tint-surface p-6 shadow-2xl sm:p-8"
       >
         <div className="flex items-start justify-between gap-4">
           <div>
-            <p className="text-[11px] uppercase tracking-[0.18em] text-tint-accent">Fin de la función</p>
+            <p className="tint-eyebrow [text-shadow:0_0_14px_rgba(255,107,26,0.45)]">Fin de la función</p>
             <h2 id={titleId} className="mt-1 text-2xl font-bold tracking-tight text-white">
               Watch Party Recap
             </h2>
@@ -84,7 +96,7 @@ export function RecapScreen({ recap, onDismiss }: RecapScreenProps) {
           </p>
         ) : (
           <>
-            <ul className="mt-6 grid gap-3 sm:grid-cols-3">
+            <m.ul className="mt-6 grid gap-3 sm:grid-cols-3" variants={stagger(0.08, 0.12)} initial="hidden" animate="show">
               <RecapCard icon="🏆" title="Rey del emoji">
                 {recap.top_emoji_user ? (
                   <Highlight
@@ -119,7 +131,7 @@ export function RecapScreen({ recap, onDismiss }: RecapScreenProps) {
                   <Empty text="Sin reacciones registradas" />
                 )}
               </RecapCard>
-            </ul>
+            </m.ul>
 
             <ul aria-label="Totales de la sesión" className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
               {(
@@ -131,14 +143,14 @@ export function RecapScreen({ recap, onDismiss }: RecapScreenProps) {
                 ] as const
               ).map(([value, label]) => (
                 <li key={label} className="rounded-xl border border-white/10 bg-tint-bg/60 px-3 py-2 text-center">
-                  <span className="block text-xl font-bold tabular-nums text-white">{value}</span>
+                  <CountUp value={value} className="block text-xl font-bold text-white" />
                   <span className="block text-[12px] text-tint-muted">{label}</span>
                 </li>
               ))}
             </ul>
           </>
         )}
-      </div>
-    </div>
+      </m.div>
+    </m.div>
   );
 }

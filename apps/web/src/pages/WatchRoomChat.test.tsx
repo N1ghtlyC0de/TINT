@@ -149,7 +149,8 @@ describe('WatchRoom chat en vivo', () => {
     expect(list.className).toContain('min-h-0');
     expect(list.className).toContain('flex-1');
     const card = list.closest('div');
-    expect(card?.className).toContain('h-[560px]');
+    expect(card?.className).toContain('h-[60dvh]');
+    expect(card?.className).toContain('lg:h-[calc(100dvh-7rem)]');
     expect(container.querySelector('aside')?.className).toContain('min-h-0');
   });
 
@@ -173,5 +174,15 @@ describe('WatchRoom chat en vivo', () => {
     expect(other?.className).not.toContain('ml-auto');
     expect(other?.className).toContain('w-fit');
     expect(screen.getByText('Luis:')).toBeInTheDocument();
+  });
+
+  it('el formulario usa Input y Button con un pie de vidrio', async () => {
+    renderWatch();
+    const input = await screen.findByPlaceholderText('Escribe un mensaje');
+    expect(input).toHaveAttribute('id', 'chat-input');
+    expect(input).toHaveAttribute('maxLength', '280');
+    expect(input.className).toContain('rounded-xl');
+    expect(input.closest('form')?.className).toContain('tint-glass');
+    expect(screen.getByRole('button', { name: 'Enviar' }).className).toContain('rounded-full');
   });
 });
