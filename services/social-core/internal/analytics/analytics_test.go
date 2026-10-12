@@ -100,6 +100,29 @@ func TestEmitReaction(t *testing.T) {
 	})
 }
 
+func TestEmitTriviaAnswer(t *testing.T) {
+	e, client := newTestEmitter(t, 4)
+	e.EmitTrivia(TriviaAnswer{
+		EventID: "ev-4", RoomID: "room-1", UserID: "guest:x", QuestionID: "t-1",
+		Correct: true, ResponseMS: 2300, OccurredAt: occurred, ReceivedAt: received,
+	})
+	e.EmitTrivia(TriviaAnswer{EventID: "ev-5", RoomID: "room-1", UserID: "guest:y", QuestionID: "t-1"})
+	e.drain(context.Background())
+	entries, err := client.XRange(context.Background(), StreamKey, "-", "+").Result()
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("entries = %v %v", entries, err)
+	}
+	assertFields(t, entries[0].Values, map[string]string{
+		"event_id": "ev-4", "type": "trivia_answer", "source": "social-core",
+		"room_id": "room-1", "user_id": "guest:x", "question_id": "t-1",
+		"correct": "true", "response_ms": "2300",
+		"occurred_at": "2026-10-11T09:29:49.368Z", "received_at": "2026-10-11T09:29:49.411Z",
+	})
+	if entries[1].Values["correct"] != "false" || entries[1].Values["response_ms"] != "0" {
+		t.Fatalf("respuesta incorrecta = %v", entries[1].Values)
+	}
+}
+
 // Con el buffer lleno se descarta y se cuenta: nunca se bloquea al usuario.
 func TestEmitDropsWhenBufferFull(t *testing.T) {
 	e, _ := newTestEmitter(t, 1)
