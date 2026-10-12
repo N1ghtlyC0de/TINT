@@ -318,7 +318,7 @@ export function TriviaPopup({ trivia, isHost, onAnswer, onDismiss, error }: Triv
       role="region"
       aria-label="Trivia"
       aria-live="polite"
-      className="absolute inset-x-3 bottom-16 z-30 mx-auto max-w-md rounded-2xl border border-tint-accent/40 bg-tint-surface/95 p-4 shadow-2xl backdrop-blur sm:inset-x-auto sm:right-4"
+      className="tint-glass-panel absolute inset-x-3 bottom-16 z-30 mx-auto max-w-md rounded-2xl !border-tint-accent/40 p-4 sm:inset-x-auto sm:right-4"
     >
       {result ? (
         <div>

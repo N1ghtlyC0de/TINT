@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { RecapScreen } from './RecapScreen';
 import type { RecapMessage } from '../lib/socialSocket';
@@ -13,7 +13,7 @@ const full: RecapMessage = {
 };
 
 describe('RecapScreen', () => {
-  it('muestra la infografía completa', () => {
+  it('muestra la infografía completa', async () => {
     render(<RecapScreen recap={full} onDismiss={vi.fn()} />);
     const dialog = screen.getByRole('dialog', { name: 'Watch Party Recap' });
     expect(dialog).toHaveAttribute('aria-modal', 'true');
@@ -24,12 +24,25 @@ describe('RecapScreen', () => {
     expect(within(dialog).getByText('62:05')).toBeInTheDocument();
     expect(within(dialog).getByText('18 reacciones · 9 risas')).toBeInTheDocument();
     const totals = within(dialog).getByRole('list', { name: 'Totales de la sesión' });
-    expect(within(totals).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
-      '40Reacciones',
-      '5Pausas',
-      '2Retrocesos',
-      '1Encuestas',
-    ]);
+    // Los totales cuentan hasta su valor (CountUp) y terminan en el número exacto.
+    await waitFor(() =>
+      expect(within(totals).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+        '40Reacciones',
+        '5Pausas',
+        '2Retrocesos',
+        '1Encuestas',
+      ]),
+    );
+    for (const li of within(totals).getAllByRole('listitem')) expect(li.querySelector('.tabular-nums')).not.toBeNull();
+  });
+
+  it('el rótulo usa el eyebrow de TINT y los tres destacados son una lista', () => {
+    render(<RecapScreen recap={full} onDismiss={vi.fn()} />);
+    expect(screen.getByText('Fin de la función').className).toContain('tint-eyebrow');
+    const dialog = screen.getByRole('dialog');
+    const highlights = dialog.querySelector('ul:not([aria-label])') as HTMLElement;
+    expect(within(highlights).getAllByRole('listitem')).toHaveLength(3);
+    expect(dialog.closest('[data-recap-backdrop]')).not.toBeNull();
   });
 
   it('maneja los nulos con mensajes amables', () => {

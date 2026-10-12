@@ -1,4 +1,6 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent, type UIEvent } from 'react';
+import { m as motionM } from 'framer-motion';
+import { fadeUp } from '../../lib/motion';
 import { banErrorMessage, banGuest } from '../../lib/bans';
 import type { LocalIdentity } from '../../lib/identity';
 import {
@@ -11,7 +13,7 @@ import {
 } from '../../lib/socialSocket';
 import type { ChatSettingsView, SocialChatItem, SocialErrorInfo } from '../../hooks/useSocialSocket';
 import { Button } from '../ui/Button';
-import { Card } from '../ui/Primitives';
+import { Card, Input } from '../ui/Primitives';
 import { useCountdown } from '../../hooks/useCountdown';
 
 export interface ChatPanelProps {
@@ -27,6 +29,8 @@ export interface ChatPanelProps {
   onSetSlowMode: (seconds: number) => boolean;
   onMuteUser: (userId: string, muted: boolean) => boolean;
 }
+
+const MotionLi = motionM.li;
 
 /** Errores del canal que conciernen al chat (el resto los muestra su panel). */
 const CHAT_ERRORS = new Set(['SLOW_MODE', 'MUTED', 'RATE_LIMITED', 'UNAVAILABLE']);
@@ -153,7 +157,7 @@ function HostMessageMenu({
           role="menu"
           aria-label={`Moderar a ${message.nick}`}
           onKeyDown={onMenuKey}
-          className="absolute left-0 top-6 z-20 flex w-48 flex-col rounded-xl border border-white/10 bg-tint-surface p-1 text-left shadow-xl"
+          className="tint-glass-panel absolute left-0 top-6 z-20 flex w-48 flex-col rounded-xl p-1 text-left"
         >
           <button
             ref={firstItemRef}
@@ -190,13 +194,13 @@ function HostMessageMenu({
               setConfirming(false);
             }
           }}
-          className="absolute left-0 top-6 z-20 flex w-64 flex-col gap-2 rounded-xl border border-red-400/30 bg-tint-surface p-3 text-left shadow-xl"
+          className="tint-glass-panel absolute left-0 top-6 z-20 flex w-64 flex-col gap-2 rounded-xl p-3 text-left"
         >
           <span className="text-[13px] text-white">
             ¿Bloquear a {message.nick}? Saldrá de la sala y no podrá volver a entrar con el enlace.
           </span>
           <span className="flex gap-2">
-            <Button ref={confirmRef} className="px-3 py-1.5 text-[13px]" disabled={busy} onClick={ban}>
+            <Button ref={confirmRef} variant="danger" size="sm" disabled={busy} onClick={ban}>
               Sí, bloquear
             </Button>
             <Button
@@ -237,6 +241,8 @@ export function ChatPanel({
   const remaining = useCountdown(isHost ? null : cooldownUntil);
   const muted = !isHost && identity !== null && chatSettings.muted_user_ids.includes(identity.sub);
   const slow = chatSettings.slow_mode_s;
+  // Los mensajes del primer render (historial) aparecen sin animación; solo entran los nuevos.
+  const [initialMessageIds] = useState(() => new Set(messages.map((msg) => msg.event_id)));
 
   // Auto-scroll inteligente: baja al fondo solo si el usuario ya estaba abajo.
   const listRef = useRef<HTMLUListElement | null>(null);
@@ -277,7 +283,7 @@ export function ChatPanel({
   const chatError = lastError && CHAT_ERRORS.has(lastError.code) && !muted ? socialErrorMessage(lastError.code) : '';
 
   return (
-    <Card className="flex h-[560px] min-h-0 flex-col p-5 lg:h-[calc(100dvh-7rem)]">
+    <Card className="flex h-[60dvh] min-h-0 flex-col p-5 lg:h-[calc(100dvh-7rem)]">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-[15px] font-semibold text-white">Chat en vivo</h2>
         {isHost && (
@@ -310,18 +316,31 @@ export function ChatPanel({
       ) : (
         <ul ref={listRef} onScroll={onListScroll} className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto" aria-live="polite">
           {messages.map((m) => {
+            // Solo entran animados los mensajes que no estaban en el primer render.
+            const enter = !initialMessageIds.has(m.event_id);
+            const motionProps = {
+              'data-enter': String(enter),
+              variants: fadeUp,
+              initial: enter ? ('hidden' as const) : false,
+              animate: 'show' as const,
+            };
             if (m.type === 'notice') {
               return (
-                <li key={m.event_id} className="mx-auto w-fit px-3 py-1 text-center text-[12px] italic text-tint-muted/80">
+                <MotionLi
+                  key={m.event_id}
+                  {...motionProps}
+                  className="mx-auto w-fit px-3 py-1 text-center text-[12px] italic text-tint-muted/80"
+                >
                   {noticeText(m)}
-                </li>
+                </MotionLi>
               );
             }
             const isMine = identity !== null && m.user_id === identity.sub;
             const authorMuted = chatSettings.muted_user_ids.includes(m.user_id);
             return (
-              <li
+              <MotionLi
                 key={m.event_id}
+                {...motionProps}
                 className={
                   isMine
                     ? 'ml-auto w-fit max-w-[85%] rounded-xl bg-tint-accent/20 px-3 py-2 text-right text-[13px] break-words'
@@ -346,7 +365,7 @@ export function ChatPanel({
                     onBan={() => ban(m)}
                   />
                 )}
-              </li>
+              </MotionLi>
             );
           })}
         </ul>
@@ -359,11 +378,14 @@ export function ChatPanel({
           {modError || chatError}
         </p>
       )}
-      <form onSubmit={submit} className="mt-4 flex gap-2">
+      <form
+        onSubmit={submit}
+        className="tint-glass -mx-5 -mb-5 mt-4 flex gap-2 rounded-b-2xl border-x-0 border-b-0 px-4 py-3"
+      >
         <label htmlFor="chat-input" className="sr-only">
           Escribe un mensaje
         </label>
-        <input
+        <Input
           id="chat-input"
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -371,7 +393,7 @@ export function ChatPanel({
           disabled={muted}
           maxLength={CHAT_MAX_LENGTH}
           autoComplete="off"
-          className="min-w-0 flex-1 rounded-xl border border-white/10 bg-tint-bg px-3 py-2 text-sm text-white placeholder:text-tint-muted/70 focus:border-tint-accent focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+          className="min-h-10 min-w-0 flex-1 px-3 py-2 text-sm placeholder:text-tint-muted/70 disabled:cursor-not-allowed disabled:opacity-60"
         />
         <button
           type="button"
@@ -379,21 +401,22 @@ export function ChatPanel({
           onClick={() => setSpoiler((s) => !s)}
           disabled={muted}
           title="Marcar como spoiler"
-          className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-3 py-2 text-[12px] font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-tint-accent/60 disabled:opacity-50 ${
+          className={`inline-flex min-h-10 shrink-0 items-center gap-1 rounded-full border px-3 py-2 text-[12px] font-semibold transition focus:outline-none focus-visible:ring-2 focus-visible:ring-tint-accent/60 disabled:opacity-50 ${
             spoiler ? 'border-tint-accent bg-tint-accent/20 text-white' : 'border-white/15 text-tint-muted hover:text-white'
           }`}
         >
           <SpoilerIcon />
           Spoiler
         </button>
-        <button
+        <Button
           type="submit"
+          size="sm"
           disabled={muted || remaining > 0}
           aria-label={remaining > 0 ? `Espera ${remaining} s para enviar` : undefined}
-          className="shrink-0 rounded-full bg-tint-accent px-4 py-2 text-sm font-semibold tabular-nums text-tint-bg transition hover:bg-tint-accentHover active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
+          className="min-h-10 shrink-0 px-4 tabular-nums"
         >
           {remaining > 0 ? `${remaining} s` : 'Enviar'}
-        </button>
+        </Button>
       </form>
     </Card>
   );

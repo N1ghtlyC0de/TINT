@@ -1,11 +1,12 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { TintLogo } from '../brand/TintLogo';
+import { AmbientBackground } from './AmbientBackground';
 
 export function BrandMark({ to = '/dashboard' }: { to?: string }) {
   return (
-    <Link to={to} className="flex items-center gap-3" aria-label="TINT inicio">
-      <TintLogo size={36} decorative className="shrink-0" />
+    <Link to={to} className="group flex items-center gap-3" aria-label="TINT inicio">
+      <TintLogo size={36} decorative className="shrink-0 transition-[filter] duration-300 group-hover:drop-shadow-[0_0_14px_rgba(255,107,26,0.45)]" />
       <span className="flex flex-col leading-none">
         <span className="text-[17px] font-bold tracking-tight text-white">TINT</span>
         <span className="text-[11px] tracking-[0.14em] text-tint-muted/80">WATCH PARTY</span>
@@ -27,7 +28,9 @@ export function TopBar({ actions }: { actions?: ReactNode }) {
 
 export function AppShell({ children, actions }: { children: ReactNode; actions?: ReactNode }) {
   return (
-    <div className="min-h-[100dvh] bg-tint-bg text-tint-muted antialiased">
+    // `isolate`: el fondo ambiental (-z-10) queda sobre el bg de la página y bajo el contenido.
+    <div className="relative isolate min-h-[100dvh] bg-tint-bg text-tint-muted antialiased">
+      <AmbientBackground />
       <TopBar actions={actions} />
       <main className="mx-auto w-full max-w-7xl px-4 pb-16">{children}</main>
     </div>

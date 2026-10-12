@@ -9,7 +9,8 @@ Eres el agente especializado en la capa de presentación de **TINT**. Tu foco es
 - Vitest + Testing Library (`jsdom`) + cobertura `v8`
 - ESLint 9 (`typescript-eslint`, `react-hooks`)
 - `@msgpack/msgpack` — codificación MessagePack opcional del Canal Sync (implementación oficial, sin dependencias, mismo modelo de datos que el JSON del protocolo).
-- `framer-motion` 11.11.17 — animaciones declarativas (`AnimatePresence`, `MotionConfig reducedMotion="user"`) del cuestionario `/test-me`; respeta `prefers-reduced-motion` y evita escribir keyframes CSS a mano.
+- `framer-motion` 11.11.17 — animaciones declarativas en toda la app. `MotionProvider` (en `App`) carga `LazyMotion` con `domAnimation` en un chunk diferido (`motion/features.ts`; el bundle principal crece ≈ 12 KB gz; no uses `animate()` de framer en código del bundle principal: arrastra el motor completo, ~18 KB gz; sin `layout`/`layoutId`, que exigirían `domMax`) y `MotionConfig reducedMotion="user"`. Los componentes usan `m.*`; el cuestionario `/test-me` (lazy) sigue con `motion.*`. En pruebas `setupTests.ts` activa `MotionGlobalConfig.skipAnimations` y mapea `m` → `motion`; los stubs de `matchMedia` deben incluir `addListener`/`removeListener`.
+- Outfit (Google Fonts, `index.html`) — tipografía de la marca.
 
 ## Responsabilidades
 - Reproductor, sala, chat, reacciones, trivias y visualización Ambilight/Heatmap.
@@ -37,6 +38,19 @@ Eres el agente especializado en la capa de presentación de **TINT**. Tu foco es
 | `ChatSettings` | social-core | `chat_settings{slow_mode_s, muted_user_ids[]}` (al unirse y en cada cambio) |
 | `RoomBan` | identity-api (`GET/POST /rooms/:id/bans`, `DELETE /rooms/:id/bans/:banId`, host dueño) | `id`, `nick`, `createdAt`; `POST` recibe `{jti}` o `{sub}` (404 sin sesiones de invitado, 503 sin servicio) |
 | `LibraryVideo` | identity-api (`GET /videos`, host) | `id`, `title` (puede ser null → "Vídeo sin nombre"), `durationMs`, `status` (`processing`/`ready`), `createdAt`, `previewUrl`; se pone en la sala con `PUT /rooms/:id/media {videoId}` → `{mediaId, mediaKey}` (404 si no está disponible) |
+
+## Sistema visual (quiet luxury)
+Discord-dark + naranja, con vidrio **solo** en botones, inputs, chips y paneles flotantes: `Card` sigue sólida (decisión de producto).
+
+| Pieza | Rol |
+| :--- | :--- |
+| `tailwind.config.js` · `src/index.css` | Tokens `shadow-glow`/`shadow-lift`, `bg-accent-sheen` (gradiente cálido del primario), `bg-noise`; utilidades `.tint-glass` (vidrio ligero), `.tint-glass-panel` (diálogos, popovers, toasts; ≥ 80 % opaco para AA), `.tint-eyebrow`, `.tint-shimmer`. |
+| `src/lib/motion.ts` | Una curva (`ease`), un `spring` y variantes compartidas `fadeUp`, `fadeBlur`, `pop`, `scaleIn`, `stagger()` (etiquetas `hidden` → `show` → `exit`). No declares duraciones sueltas. `fadeBlur` termina en `filter: none` para no volver al wrapper bloque contenedor de los `fixed`. |
+| `src/components/motion/*` | `MotionProvider`, `PageTransition` (cada ruta, `AnimatePresence mode="wait"` en `App`), `StaggerList`/`StaggerItem`, `CountUp`. |
+| `src/components/ui/*` | `Button` (`primary`/`ghost`/`quiet`/`danger`, `md`/`sm`, press con spring), `ButtonLink`, `Input`, `useConfirm` (`ConfirmDialog`: `alertdialog` que reemplaza a `window.confirm`). |
+| `src/components/layout/AmbientBackground.tsx` | Orbes difusos y grano, decorativos; la raíz de la página necesita `relative isolate`. Estáticos con `prefers-reduced-motion`. |
+| `src/components/InvitePopover.tsx` · `WatchRoom` | Bajo `sm` la cabecera de la sala va en dos filas (marca/título/"Invitar" y estado de sincronía/chat); identidad y link de invitación pasan a un popover de vidrio (`aria-expanded`, Escape y clic fuera cierran, el foco vuelve al botón). El halo cálido del reproductor (`data-playing`) respira mientras el `<video>` reproduce y se atenúa en pausa; es el respaldo de `AmbilightGlow`: solo aparece si el vídeo no tiene paleta (`ambilightUrl` null), para no apilar brillos. |
+| Confirmaciones | Eliminar sala (Dashboard, CreateRoom) y revocar el link usan `useConfirm`; no uses `window.confirm`. Las pruebas pulsan los botones del `alertdialog`. |
 
 ## Canal Sync (implementado, contrato v2)
 | Pieza | Rol |
@@ -70,7 +84,7 @@ JSON sobre `useSocialSocket` (`src/lib/socialSocket.ts`); social-core es autorit
 | Encuestas | Envía `poll_create{question, options[2–4], duration_s}` (30/60/120/300 s), `poll_vote{poll_id, option}` (índice) y `poll_close{poll_id}`; recibe `poll_state{poll_id, question, options, counts, closes_at_ms, closed, my_vote?}`. `my_vote` solo llega en el `poll_state` dirigido a este cliente (al entrar o al votar): `useSocialSocket` recuerda el último visto por `poll_id` (y el propio, optimista). Expone `poll`, `lastError` (`error{code, event_id_ref}`: FORBIDDEN, POLL_ACTIVE, POLL_CLOSED, POLL_NOT_FOUND, UNAVAILABLE, RATE_LIMITED; se limpia al enviar), `createPoll` (pre-valida con `validatePollDraft`), `votePoll` y `closePoll`. |
 | `src/components/PollPanel.tsx` | Creador del host (pregunta, 2–4 opciones, duración; el botón "Crear encuesta" de la barra lo abre con el foco en la pregunta), tarjeta con botones de voto (`aria-pressed`), barras con porcentaje, cuenta atrás (solo informativa: el cierre lo decide `closed`, no el reloj local), "Cerrar encuesta" para el host y resultados finales. |
 | Moderación del chat | Envía `chat_slow_mode{seconds ∈ 0/5/10/30/60}` y `chat_mute{user_id, muted}` (host/cohost) y `chat_send{…, spoiler?}`; recibe `chat_settings` y `chat_message{…, spoiler?}`. `useSocialSocket` expone `chatSettings`, `setSlowMode`, `muteUser`, `send(text, {spoiler})` y `chatCooldownUntil` (reloj local: `retry_after_ms` del `error{code:"SLOW_MODE"}` o, para el invitado, `slow_mode_s` tras enviar). Errores nuevos (`socialErrorMessage`): SLOW_MODE (único con `retry_after_ms`), MUTED, UNAVAILABLE (chat sin servicio), TRIVIA_NOT_FOUND, TRIVIA_CLOSED (también al borrar una pregunta ya lanzada), ALREADY_ANSWERED. Host y cohost están exentos del modo lento y del silencio. |
-| `src/components/chat/ChatPanel.tsx` | Chat extraído de `WatchRoom`: selector "Modo lento" del host; aviso y cuenta regresiva en "Enviar" para el invitado; silenciado → campo deshabilitado "El host te silenció; puedes leer el chat"; menú del host (`aria-haspopup="menu"`, Escape) en mensajes ajenos con "Silenciar / Quitar silencio" y "Bloquear de la sala" (confirmación → `POST /rooms/:id/bans {sub}`); botón "Spoiler" (`aria-pressed`) y texto difuminado hasta hover, revelado con foco de teclado (`aria-label` "Spoiler oculto, enfoca para leer") y alternado con el toque. |
+| `src/components/chat/ChatPanel.tsx` | Chat extraído de `WatchRoom` (alto `60dvh`, pie de vidrio `tint-glass` con `Input`/`Button`; solo entran animados con `fadeUp` los mensajes que no estaban en el primer render, `data-enter`; menús y confirmaciones en `tint-glass-panel`, confirmar con `danger`): selector "Modo lento" del host; aviso y cuenta regresiva en "Enviar" para el invitado; silenciado → campo deshabilitado "El host te silenció; puedes leer el chat"; menú del host (`aria-haspopup="menu"`, Escape) en mensajes ajenos con "Silenciar / Quitar silencio" y "Bloquear de la sala" (confirmación → `POST /rooms/:id/bans {sub}`); botón "Spoiler" (`aria-pressed`) y texto difuminado hasta hover, revelado con foco de teclado (`aria-label` "Spoiler oculto, enfoca para leer") y alternado con el toque. |
 | Trivia | Envía `trivia_schedule{at_ms, question, options[2–4], correct, answer_window_s(10–60, 20)}`, `trivia_delete{trivia_id}`, `trivia_list` (tras programar/borrar; al conectar la agenda llega sola en la instantánea) y `trivia_answer{trivia_id, option}`. `useSocialSocket` expone `trivia` (`question`, `receivedAt`, `ack`, `result`, `myOption`), `triviaSchedule` (ordenada por `at_ms`), `scheduleTrivia` (pre-valida con `validateTriviaDraft`), `deleteTrivia`, `listTrivia`, `answerTrivia` y `dismissTrivia`. El puntaje y el disparo exacto son de social-core. |
 | `src/components/quiz/TriviaPanel.tsx` | `TriviaPanel`: el host pulsa "Agregar pregunta en este momento" (toma el `currentTime`, campo mm:ss editable con `parseMmSs`), escribe la pregunta, 2–4 respuestas con la correcta marcada y el tiempo para responder; lista por tiempo con estado ("Pendiente"/"En curso"/"Terminada") y "Eliminar"; `at_ms` de 0 a 24 h. `TriviaPopup`: tarjeta emergente sobre el reproductor con cuenta regresiva (anclada al reloj local de llegada + `closes_at_ms − opens_at_ms`, sin comparar relojes), opciones y "¡Responde rápido: más puntos!"; el `trivia_ack` solo muestra "Respuesta enviada" (no revela si acertó); al `trivia_result`, respuesta correcta, puntos propios, total en la sala, top 10 de la pregunta y ranking acumulado de la sala. |
 | Recap | Envía `recap_request{event_id, room_id}` y recibe `recap{room_id, event_id_ref?, top_emoji_user, most_paused, peak_reactions, totals}` (los tres primeros pueden ser null). `useSocialSocket` expone `recap` y `requestRecap`. |
@@ -103,7 +117,7 @@ El cálculo del drift es **autoritativo en sync-core**: el cliente solo aplica l
 | `src/components/analytics/*` · `src/lib/chartScale.ts` | Gráficos SVG propios (sin librería): espectadores en el tiempo (área + línea, crosshair por puntero y teclado como `role="slider"`), reacciones por emoji (barras, > 8 se agrupan en "Otros") y heatmap de reacciones por posición del vídeo (rampa ordinal de 4 pasos; > 60 columnas se agrupan). Cada uno tiene `aria-label` con resumen, tabla alternativa en `<details>` y estado vacío. Colores en `CHART_COLORS` (`ChartCard.tsx`), validados con la skill `dataviz` sobre `tint.card`. |
 
 ## Cuestionario oculto `/test-me`
-Ruta sin `ProtectedRoute` ni enlaces desde la UI (solo por URL) para aprender cómo funciona el monorepo. Se carga con `React.lazy` para que `framer-motion` no entre al bundle principal.
+Ruta sin `ProtectedRoute` ni enlaces desde la UI (solo por URL) para aprender cómo funciona el monorepo. Se carga con `React.lazy` para no sumar el banco de preguntas ni las features completas de `motion` al bundle principal.
 
 | Pieza | Rol |
 | :--- | :--- |
@@ -135,7 +149,7 @@ npm run test:coverage   # Vitest + umbral 85%
 | :--- | :--- | :--- |
 | `VITE_IDENTITY_API_URL` | `http://localhost:8081/api/v1` | identity-api (salas, invitaciones, sync-tickets). |
 | `VITE_SYNC_WS_URL` | `ws://localhost:8083/ws/sync` | Canal Sync de sync-core. |
-| `VITE_SOCIAL_WS_URL` | `ws://localhost:8082/ws/social` | Canal social de social-core (chat, reacciones, láser, encuestas y recap). |
+| `VITE_SOCIAL_WS_URL` | `ws://localhost:8082/ws/social` | Canal social de social-core (chat y su moderación, reacciones, láser, encuestas, trivia y recap). |
 | `VITE_SYNC_ENCODING` | `json` | Codificación del Canal Sync: `json` o `msgpack` (pide el subprotocolo `tint.sync.msgpack`; si sync-core no lo acepta, sigue en JSON). |
 | `VITE_DEMO_VIDEO_URL` | vacío | Vídeo de respaldo, solo si la sala no tiene vídeo asignado en identity-api (`mediaId: null`). |
 | `VITE_ANALYTICS_API_URL` | `http://localhost:8084/api/v1` | API de lectura de analytics (página `/rooms/:id/analytics`). |

@@ -120,7 +120,7 @@ beforeEach(() => {
   localStorage.clear();
   MockWebSocket.reset();
   vi.stubGlobal('WebSocket', MockWebSocket);
-  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true })));
+  vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addListener: vi.fn(), removeListener: vi.fn() })));
   vi.stubEnv('VITE_SYNC_ENCODING', 'json');
   playbackByCall = [{ mediaId: 'm1', url: 'https://minio/m1?sig=1', expiresAt: '2099-01-01T00:00:00Z' }];
   mockedApiFetch.mockReset();
@@ -193,6 +193,8 @@ describe('WatchRoom v2 — estado del procesamiento (Ambilight)', () => {
     await flush();
     expect(screen.getByRole('switch', { name: 'Ambilight' })).toHaveAttribute('aria-checked', 'true');
     expect(screen.getByTestId('ambilight-glow')).toBeInTheDocument();
+    // Con paleta, el brillo es el Ambilight: el halo cálido de respaldo no se apila.
+    expect(screen.queryByTestId('player-halo')).not.toBeInTheDocument();
     expect(fetch).toHaveBeenCalledWith('https://minio/m1/ambilight.json?sig=1', expect.anything());
     expect(screen.queryByRole('heading', { name: 'Ambilight' })).not.toBeInTheDocument();
     expect(container.textContent).not.toMatch(/ambilight\.json|media-worker/);
@@ -205,6 +207,7 @@ describe('WatchRoom v2 — estado del procesamiento (Ambilight)', () => {
     await flush();
     expect(screen.queryByRole('switch', { name: 'Ambilight' })).not.toBeInTheDocument();
     expect(screen.getByTestId('ambilight-glow')).toHaveAttribute('data-visible', 'false');
+    expect(screen.getByTestId('player-halo')).toBeInTheDocument();
   });
 
   it.each([

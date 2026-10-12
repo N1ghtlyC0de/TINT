@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from 'react';
+import { AnimatePresence, m, useReducedMotion } from 'framer-motion';
 import {
   POLL_DURATIONS_S,
   POLL_MAX_OPTIONS,
@@ -11,6 +12,8 @@ import {
 } from '../lib/socialSocket';
 import { formatTime } from '../lib/time';
 import { Button } from './ui/Button';
+import { Input } from './ui/Primitives';
+import { ease, pop } from '../lib/motion';
 
 export interface PollPanelProps {
   poll: PollView | null;
@@ -36,8 +39,7 @@ const POLL_ERRORS: Record<string, string> = {
 
 const DURATION_LABELS: Record<number, string> = { 30: '30 s', 60: '1 min', 120: '2 min', 300: '5 min' };
 
-const INPUT_CLASS =
-  'w-full rounded-xl border border-white/10 bg-tint-bg px-3 py-2 text-sm text-white placeholder:text-tint-muted/50 focus:border-tint-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-tint-accent/60';
+const INPUT_CLASS = 'px-3 py-2 text-sm';
 
 const votesLabel = (n: number) => `${n} ${n === 1 ? 'voto' : 'votos'}`;
 
@@ -91,7 +93,7 @@ function PollCreator({
         <label htmlFor={`${ids}-q`} className="text-[13px] font-medium text-white">
           Pregunta
         </label>
-        <input
+        <Input
           ref={questionRef}
           id={`${ids}-q`}
           value={question}
@@ -107,7 +109,7 @@ function PollCreator({
           <label htmlFor={`${ids}-o${i}`} className="sr-only">
             Opción {i + 1}
           </label>
-          <input
+          <Input
             id={`${ids}-o${i}`}
             value={value}
             maxLength={POLL_OPTION_MAX}
@@ -212,7 +214,21 @@ export function PollPanel({
         </p>
       )}
 
-      {isHost && creatorOpen && !active && <PollCreator onCreate={create} onCancel={() => onCreatorOpenChange(false)} />}
+      <AnimatePresence initial={false}>
+        {isHost && creatorOpen && !active && (
+          <m.div
+            key="creator"
+            // Margen negativo + padding: el overflow-hidden del colapso no recorta los anillos de foco.
+            className="-mx-1 overflow-hidden px-1 pb-1"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.35, ease }}
+          >
+            <PollCreator onCreate={create} onCancel={() => onCreatorOpenChange(false)} />
+          </m.div>
+        )}
+      </AnimatePresence>
 
       {poll ? (
         <PollCard poll={poll} isHost={isHost} onVote={onVote} onClose={onClose} />
@@ -243,14 +259,17 @@ function PollCard({
   const percents = pollPercentages(poll.counts);
   const total = poll.counts.reduce((a, b) => a + b, 0);
   const max = Math.max(...poll.counts, 0);
+  const reduced = useReducedMotion();
 
+  // Las barras crecen desde 0 hasta su porcentaje y siguen los votos en vivo.
   const bar = (i: number, highlight: boolean) => (
     <span aria-hidden="true" className="mt-1 block h-1.5 overflow-hidden rounded-full bg-white/10">
-      <span
-        className={`block h-full rounded-full transition-[width] duration-300 motion-reduce:transition-none ${
-          highlight ? 'bg-tint-accent' : 'bg-tint-muted/60'
-        }`}
-        style={{ width: `${percents[i] ?? 0}%` }}
+      <m.span
+        data-bar
+        className={`block h-full rounded-full ${highlight ? 'bg-accent-sheen' : 'bg-tint-muted/60'}`}
+        initial={{ width: '0%' }}
+        animate={{ width: `${percents[i] ?? 0}%` }}
+        transition={reduced ? { duration: 0 } : { duration: 0.7, ease }}
       />
     </span>
   );
@@ -295,12 +314,28 @@ function PollCard({
               aria-pressed={poll.my_vote === i}
               disabled={poll.my_vote !== null}
               onClick={() => onVote(poll.poll_id, i)}
-              className={`block w-full rounded-xl border px-3 py-2 text-left text-[13px] text-white transition focus:outline-none focus-visible:ring-2 focus-visible:ring-tint-accent disabled:cursor-default ${
-                poll.my_vote === i ? 'border-tint-accent bg-tint-accent/15' : 'border-white/10 hover:bg-white/5'
+              className={`block min-h-10 w-full rounded-xl border px-3 py-2 text-left text-[13px] text-white transition-[background-color,border-color,box-shadow] duration-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-tint-accent disabled:cursor-default ${
+                poll.my_vote === i
+                  ? 'border-tint-accent/70 bg-tint-accent/15 ring-2 ring-tint-accent/30'
+                  : 'border-white/10 hover:bg-white/5'
               }`}
             >
               <span className="flex justify-between gap-2">
-                <span>{label}</span>
+                <span className="inline-flex items-center gap-1.5">
+                  {label}
+                  {poll.my_vote === i && (
+                    <m.span
+                      data-check
+                      aria-hidden="true"
+                      variants={pop}
+                      initial="hidden"
+                      animate="show"
+                      className="grid h-4 w-4 place-items-center rounded-full bg-tint-accent text-[10px] font-bold leading-none text-tint-bg"
+                    >
+                      ✓
+                    </m.span>
+                  )}
+                </span>
                 <span className="tabular-nums text-tint-muted">{percents[i]} %</span>
               </span>
               {bar(i, poll.my_vote === i)}

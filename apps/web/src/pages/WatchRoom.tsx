@@ -1,6 +1,7 @@
 
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { m, useReducedMotion } from 'framer-motion';
 
 import { ReactionBar } from '../components/ReactionBar';
 import { ReactionOverlay } from '../components/ReactionOverlay';
@@ -10,6 +11,7 @@ import { RecapScreen } from '../components/RecapScreen';
 import { CopyButton } from '../components/CopyButton';
 import { ChatPanel } from '../components/chat/ChatPanel';
 import { TriviaPanel, TriviaPopup } from '../components/quiz/TriviaPanel';
+import { InvitePopover } from '../components/InvitePopover';
 import { SyncedPlayer } from '../components/SyncedPlayer';
 import { AmbilightGlow } from '../components/player/AmbilightGlow';
 import { ChangeVideoPanel } from '../components/host/ChangeVideoPanel';
@@ -18,8 +20,10 @@ import { ReconnectStatus, SyncQualityIndicator } from '../components/sync/SyncSt
 import { ToastStack } from '../components/sync/SyncToasts';
 import { BackLink } from '../components/ui/BackLink';
 import { BrandMark } from '../components/layout/AppShell';
+import { AmbientBackground } from '../components/layout/AmbientBackground';
 import { Button } from '../components/ui/Button';
-import { Card, Field } from '../components/ui/Primitives';
+import { Card, Field, Input } from '../components/ui/Primitives';
+import { ease } from '../lib/motion';
 import { apiFetch } from '../lib/api';
 import { toAbsoluteInviteLink, pickLatestActiveInvitation, parseInviteCode } from '../lib/invite';
 import { getLocalIdentity, guestTokenGrantsRoom } from '../lib/identity';
@@ -42,6 +46,34 @@ const MEDIA_STATUS_UI: Record<MediaStatus, { text: string; tone: string; dot: st
   },
 };
 
+const HALO_GRADIENT =
+  'radial-gradient(ellipse at 50% 45%, rgba(255, 107, 26, 0.32) 0%, rgba(196, 82, 10, 0.16) 45%, transparent 72%)';
+
+/**
+ * Halo ambiental detrás del reproductor: respira lento mientras el vídeo suena y se
+ * atenúa en pausa. Decorativo (aria-hidden) y estático con movimiento reducido.
+ */
+function PlayerHalo({ playing }: { playing: boolean }) {
+  const reduced = useReducedMotion();
+  const breathing = playing && !reduced;
+  return (
+    <m.div
+      aria-hidden="true"
+      data-testid="player-halo"
+      data-playing={String(playing)}
+      className="pointer-events-none absolute -inset-6 -z-10 rounded-[2.5rem] blur-3xl"
+      style={{ background: HALO_GRADIENT }}
+      initial={false}
+      animate={
+        breathing
+          ? { opacity: [0.55, 0.9, 0.55], scale: [0.98, 1.02, 0.98] }
+          : { opacity: playing ? 0.7 : 0.22, scale: 1 }
+      }
+      transition={breathing ? { duration: 7, repeat: Infinity, ease: 'easeInOut' } : { duration: 1.2, ease }}
+    />
+  );
+}
+
 /** Pantalla terminal de la sala (sin reintentos): expulsión, invitación inválida, etc. */
 function RoomNotice({
   title,
@@ -55,7 +87,8 @@ function RoomNotice({
   linkLabel?: string;
 }) {
   return (
-    <div className="grid min-h-[100dvh] place-items-center bg-tint-bg px-4 text-tint-muted">
+    <div className="relative isolate grid min-h-[100dvh] place-items-center bg-tint-bg px-4 text-tint-muted">
+      <AmbientBackground />
       <Card className="max-w-md p-8 text-center">
         <p role="alert" className="text-lg font-semibold tracking-tight text-white">
           {title}
@@ -187,6 +220,23 @@ export default function WatchRoom() {
     await apiFetch(`/rooms/${encodeURIComponent(roomId ?? '')}`, { method: 'DELETE' }, 'host');
     navigate('/dashboard');
   };
+  // Estado de reproducción local, solo para el halo (el estado maestro es de sync-core).
+  const [playing, setPlaying] = useState(false);
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const on = () => setPlaying(true);
+    const off = () => setPlaying(false);
+    setPlaying(!video.paused && !video.ended);
+    video.addEventListener('play', on);
+    video.addEventListener('pause', off);
+    video.addEventListener('ended', off);
+    return () => {
+      video.removeEventListener('play', on);
+      video.removeEventListener('pause', off);
+      video.removeEventListener('ended', off);
+    };
+  }, [videoSrc]);
   const [invite, setInvite] = useState('');
   const [inviteHint, setInviteHint] = useState('');
   const [roomTitle, setRoomTitle] = useState<string | null>(null);
@@ -302,18 +352,18 @@ export default function WatchRoom() {
 
   if (!hasAccess) {
     return (
-      <div className="grid min-h-[100dvh] place-items-center bg-tint-bg px-4 text-tint-muted">
+      <div className="relative isolate grid min-h-[100dvh] place-items-center bg-tint-bg px-4 text-tint-muted">
+        <AmbientBackground />
         <Card className="w-full max-w-md p-8">
-          <p className="text-[11px] uppercase tracking-[0.18em] text-tint-accent">Sala privada</p>
+          <p className="tint-eyebrow">Sala privada</p>
           <h1 className="mt-2 text-2xl font-bold tracking-tight text-white">Únete a esta sala</h1>
           <p className="mt-2 text-sm leading-relaxed">
             Necesitas un link de invitación o ser el host para ver el contenido y chatear.
           </p>
           <form onSubmit={handleGateJoin} className="mt-6 space-y-4">
             <Field label="Link de invitación" htmlFor="gate-invite" error={undefined}>
-              <input
+              <Input
                 id="gate-invite"
-                className="w-full rounded-xl border border-white/10 bg-tint-bg px-4 py-2.5 text-white placeholder:text-tint-muted/50 focus:border-tint-accent focus:outline-none"
                 value={invite}
                 onChange={(e) => setInvite(e.target.value)}
                 placeholder="Pega el link o el código"
@@ -340,9 +390,11 @@ export default function WatchRoom() {
   }
 
   return (
-    <div className="min-h-[100dvh] bg-tint-bg text-tint-muted">
-      <header className="sticky top-0 z-30 border-b border-white/10 bg-tint-bg/90 backdrop-blur">
-        <div className="mx-auto flex h-16 max-w-[1400px] items-center justify-between gap-4 px-4">
+    <div className="relative isolate min-h-[100dvh] overflow-x-clip bg-tint-bg text-tint-muted">
+      <AmbientBackground />
+      <header className="sticky top-0 z-30 border-b border-white/10 bg-tint-bg/80 backdrop-blur-xl">
+        {/* < sm: fila 1 = marca + volver + título (+ Invitar); fila 2 = estados. ≥ sm: una fila. */}
+        <div className="mx-auto flex max-w-[1400px] flex-col gap-2 px-4 py-2.5 sm:h-16 sm:flex-row sm:items-center sm:justify-between sm:gap-4 sm:py-0">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             {/* El dashboard exige sesión de host: el invitado vuelve al inicio. */}
             <BrandMark to={homePath} />
@@ -350,8 +402,13 @@ export default function WatchRoom() {
             <h1 className="min-w-0 flex-1 truncate text-[15px] font-semibold tracking-tight text-white" title={heading}>
               {heading}
             </h1>
+            <InvitePopover
+              className="shrink-0 sm:hidden"
+              identity={identity && { nick: identity.nick, role: isGuest ? 'participante' : 'host' }}
+              inviteLink={inviteLink}
+            />
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="hidden shrink-0 items-center gap-2 sm:flex">
             {identity && (
               <span
                 className="hidden max-w-[180px] truncate rounded-full border border-tint-accent/30 bg-tint-accent/10 px-3 py-1 text-[12px] font-semibold text-white sm:inline-flex sm:items-center sm:gap-1.5"
@@ -383,7 +440,7 @@ export default function WatchRoom() {
               </span>
             )}
           </div>
-          <div className="flex shrink-0 items-center gap-3">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[12px] sm:shrink-0 sm:flex-nowrap">
             {sync.connected && <SyncQualityIndicator rttMs={sync.rttMs} driftMs={sync.driftMs} />}
             <div role="status" aria-label="Estado de sincronía" aria-live="polite">
               <ReconnectStatus connected={sync.connected} reconnect={sync.reconnect} />
@@ -396,61 +453,65 @@ export default function WatchRoom() {
       </header>
 
       <main className="mx-auto grid w-full max-w-[1400px] gap-4 px-4 py-6 lg:grid-cols-[2fr_360px]">
-        <section aria-label="Reproductor">
+        <section aria-label="Reproductor" className="min-w-0">
           <AmbilightGlow url={playback.ambilightUrl} videoRef={videoRef}>
-          <Card className="overflow-hidden">
-            <div className="relative">
-              <SyncedPlayer
-                src={videoSrc}
-                qualities={playback.qualities}
-                canControl={canControl}
-                delegated={delegated}
-                sync={sync}
-                videoRef={videoRef}
-                emptyMessage={emptyMessage}
-                laserOn={laserOn}
-                onToggleLaser={isGuest ? undefined : () => setLaserOn((on) => !on)}
-                onOpenPoll={isGuest ? undefined : () => setPollCreatorOpen(true)}
-                onEnded={onVideoEnded}
-                overlay={<LaserOverlay points={laser} drawing={laserDrawing} onPoint={sendLaser} />}
-              />
-              <ReactionOverlay reactions={reactions} />
-              <TriviaPopup
-                trivia={trivia}
-                isHost={!isGuest}
-                onAnswer={answerTrivia}
-                onDismiss={dismissTrivia}
-                error={socialError?.code ?? null}
-              />
+            <div className="relative isolate">
+              {/* Respaldo cálido: con paleta Ambilight el brillo lo pone AmbilightGlow. */}
+              {!playback.ambilightUrl && <PlayerHalo playing={playing} />}
+              <Card className="overflow-hidden">
+                <div className="relative">
+                  <SyncedPlayer
+                    src={videoSrc}
+                    qualities={playback.qualities}
+                    canControl={canControl}
+                    delegated={delegated}
+                    sync={sync}
+                    videoRef={videoRef}
+                    emptyMessage={emptyMessage}
+                    laserOn={laserOn}
+                    onToggleLaser={isGuest ? undefined : () => setLaserOn((on) => !on)}
+                    onOpenPoll={isGuest ? undefined : () => setPollCreatorOpen(true)}
+                    onEnded={onVideoEnded}
+                    overlay={<LaserOverlay points={laser} drawing={laserDrawing} onPoint={sendLaser} />}
+                  />
+                  <ReactionOverlay reactions={reactions} />
+                  <TriviaPopup
+                    trivia={trivia}
+                    isHost={!isGuest}
+                    onAnswer={answerTrivia}
+                    onDismiss={dismissTrivia}
+                    error={socialError?.code ?? null}
+                  />
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-4 p-4">
+                  <div>
+                    <p className="text-sm font-medium text-white">Reproducción sincronizada</p>
+                    <p className="mt-0.5 text-[13px]">
+                      {canControl ? 'Controlas la reproducción de la sala' : 'El host controla la reproducción'}
+                    </p>
+                    <p
+                      role="status"
+                      aria-live="polite"
+                      aria-label="Estado del vídeo"
+                      className={`mt-1 flex items-center gap-2 text-[13px] ${mediaStatusUi?.tone ?? ''}`}
+                    >
+                      {mediaStatusUi && (
+                        <>
+                          <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${mediaStatusUi.dot}`} />
+                          {mediaStatusUi.text}
+                        </>
+                      )}
+                    </p>
+                  </div>
+                  <ReactionBar
+                    onReact={(r) => {
+                      // La reacción se ancla al instante del vídeo (REQ-21).
+                      sendReaction(r, Math.round((videoRef.current?.currentTime ?? 0) * 1000));
+                    }}
+                  />
+                </div>
+              </Card>
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-4 p-4">
-              <div>
-                <p className="text-sm font-medium text-white">Reproducción sincronizada</p>
-                <p className="mt-0.5 text-[13px]">
-                  {canControl ? 'Controlas la reproducción de la sala' : 'El host controla la reproducción'}
-                </p>
-                <p
-                  role="status"
-                  aria-live="polite"
-                  aria-label="Estado del vídeo"
-                  className={`mt-1 flex items-center gap-2 text-[13px] ${mediaStatusUi?.tone ?? ''}`}
-                >
-                  {mediaStatusUi && (
-                    <>
-                      <span aria-hidden="true" className={`h-2 w-2 shrink-0 rounded-full ${mediaStatusUi.dot}`} />
-                      {mediaStatusUi.text}
-                    </>
-                  )}
-                </p>
-              </div>
-              <ReactionBar
-                onReact={(r) => {
-                  // La reacción se ancla al instante del vídeo (REQ-21).
-                  sendReaction(r, Math.round((videoRef.current?.currentTime ?? 0) * 1000));
-                }}
-              />
-            </div>
-          </Card>
           </AmbilightGlow>
 
           {!isGuest && (
@@ -510,7 +571,7 @@ export default function WatchRoom() {
         </aside>
       </main>
 
-      <ToastStack toasts={toasts} className="fixed right-4 top-20 z-40" />
+      <ToastStack toasts={toasts} className="fixed right-4 top-28 z-40 sm:top-20" />
       {recapGate.open && (
         <RecapScreen
           recap={recapGate.recap}

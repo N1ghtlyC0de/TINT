@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiFetch, ApiError } from '../../lib/api';
@@ -192,5 +192,19 @@ describe('ParticipantsPanel — bloqueos', () => {
     render(<ParticipantsPanel roomId="r1" />);
     expect(await screen.findByRole('list', { name: 'Invitados' })).toBeInTheDocument();
     expect(await screen.findByText('No se pudo cargar la lista de bloqueados.')).toBeInTheDocument();
+  });
+});
+
+describe('ParticipantsPanel — salida animada', () => {
+  it('un invitado que desaparece de la lista sale (fade + colapso) y se desmonta', async () => {
+    let calls = 0;
+    route({ guests: () => Promise.resolve(calls++ === 0 ? { guests } : { guests: [guests[0]] }) });
+    render(<ParticipantsPanel roomId="r1" />);
+    const list = await screen.findByRole('list', { name: 'Invitados' });
+    expect(within(list).getAllByRole('listitem')).toHaveLength(2);
+    expect(within(list).getAllByRole('listitem')[0].className).toContain('overflow-hidden');
+    await userEvent.click(screen.getByRole('button', { name: 'Actualizar participantes' }));
+    await waitFor(() => expect(within(list).getAllByRole('listitem')).toHaveLength(1));
+    expect(within(list).queryByText('Beto')).not.toBeInTheDocument();
   });
 });
