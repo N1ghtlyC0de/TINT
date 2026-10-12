@@ -62,10 +62,12 @@ var (
 
 // ChatSend es el mensaje que envía el cliente.
 type ChatSend struct {
-	EventID    string    `json:"event_id"`
-	Type       Type      `json:"type"`
-	RoomID     string    `json:"room_id"`
-	Text       string    `json:"text"`
+	EventID string `json:"event_id"`
+	Type    Type   `json:"type"`
+	RoomID  string `json:"room_id"`
+	Text    string `json:"text"`
+	// Spoiler marca el mensaje para que la web lo difumine (opcional).
+	Spoiler    bool      `json:"spoiler,omitempty"`
 	OccurredAt time.Time `json:"occurred_at"`
 }
 
@@ -103,12 +105,14 @@ func ClampOccurred(occurred, received time.Time) time.Time {
 
 // ChatMessage es el broadcast del servidor.
 type ChatMessage struct {
-	EventID    string    `json:"event_id"`
-	Type       Type      `json:"type"`
-	RoomID     string    `json:"room_id"`
-	UserID     string    `json:"user_id"`
-	Nick       string    `json:"nick"`
-	Text       string    `json:"text"`
+	EventID string `json:"event_id"`
+	Type    Type   `json:"type"`
+	RoomID  string `json:"room_id"`
+	UserID  string `json:"user_id"`
+	Nick    string `json:"nick"`
+	Text    string `json:"text"`
+	// Spoiler viaja tal cual y se persiste en el historial (omitido = false).
+	Spoiler    bool      `json:"spoiler,omitempty"`
 	OccurredAt time.Time `json:"occurred_at"`
 	ReceivedAt time.Time `json:"received_at"`
 }
@@ -266,6 +270,8 @@ type ErrorEnvelope struct {
 	Type       Type   `json:"type"`
 	Code       string `json:"code"`
 	EventIDRef string `json:"event_id_ref,omitempty"`
+	// RetryAfterMS solo viaja con SLOW_MODE: ms que faltan para escribir.
+	RetryAfterMS int64 `json:"retry_after_ms,omitempty"`
 }
 
 func trim(s string) string {

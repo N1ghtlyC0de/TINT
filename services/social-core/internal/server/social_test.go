@@ -139,15 +139,15 @@ func TestSocialChatBroadcastAndHistory(t *testing.T) {
 	exp := time.Now().Add(time.Hour)
 	a := dial(t, wsBase, guestToken(t, secret, "guest:a", "r1", exp))
 	defer a.Close(websocket.StatusNormalClosure, "")
-	b := dial(t, wsBase, guestToken(t, secret, "guest:b", "r1", exp))
-	defer b.Close(websocket.StatusNormalClosure, "")
-
 	if m := readJSON(t, a); m["type"] != "history" {
 		t.Fatalf("primer mensaje A = %v, want history", m)
 	}
 	if m := readJSON(t, a); m["type"] != "notice" || m["kind"] != "joined" {
 		t.Fatalf("segundo mensaje A = %v, want notice joined propio", m)
 	}
+	// B entra cuando A ya avisó su entrada (si no, B recibía el aviso de A).
+	b := dial(t, wsBase, guestToken(t, secret, "guest:b", "r1", exp))
+	defer b.Close(websocket.StatusNormalClosure, "")
 	if m := readJSON(t, b); m["type"] != "history" {
 		t.Fatalf("primer mensaje B = %v, want history", m)
 	}

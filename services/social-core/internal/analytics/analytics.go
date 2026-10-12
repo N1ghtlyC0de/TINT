@@ -68,6 +68,20 @@ type Reaction struct {
 	ReceivedAt time.Time
 }
 
+// TriviaAnswer es una respuesta de trivia evaluada por el servidor.
+// question_id es el trivia_id; response_ms se mide con el reloj del
+// servidor (respuesta − apertura).
+type TriviaAnswer struct {
+	EventID    string
+	RoomID     string
+	UserID     string
+	QuestionID string
+	Correct    bool
+	ResponseMS int64
+	OccurredAt time.Time
+	ReceivedAt time.Time
+}
+
 // FormatTime da el formato del contrato: RFC 3339, UTC, con milisegundos.
 func FormatTime(t time.Time) string {
 	return t.UTC().Format(timeLayout)
@@ -118,6 +132,15 @@ func (e *Emitter) EmitReaction(r Reaction) bool {
 	ev := base("reaction", r.EventID, r.RoomID, r.UserID, r.OccurredAt, r.ReceivedAt)
 	ev["emoji"] = r.Emoji
 	ev["position_ms"] = strconv.FormatInt(r.PositionMS, 10)
+	return e.enqueue(ev)
+}
+
+// EmitTrivia encola un trivia_answer. Devuelve false si se descartó.
+func (e *Emitter) EmitTrivia(a TriviaAnswer) bool {
+	ev := base("trivia_answer", a.EventID, a.RoomID, a.UserID, a.OccurredAt, a.ReceivedAt)
+	ev["question_id"] = a.QuestionID
+	ev["correct"] = strconv.FormatBool(a.Correct)
+	ev["response_ms"] = strconv.FormatInt(a.ResponseMS, 10)
 	return e.enqueue(ev)
 }
 
