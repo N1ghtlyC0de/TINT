@@ -211,6 +211,37 @@ describe('WatchRoom v2 — vídeo de la sala (F3)', () => {
     expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m1/360p?sig=2');
   });
 
+  it('tras un LOAD, mientras llega la URL nueva, el heartbeat no reporta la posición del vídeo viejo', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    let playbackCalls = 0;
+    mockedApiFetch.mockImplementation(((path: string, init?: RequestInit) => {
+      if (path.endsWith('/playback')) {
+        playbackCalls += 1;
+        // La URL de m2 aún no llega.
+        return playbackCalls === 1 ? Promise.resolve(playbackByCall[0]) : new Promise(() => {});
+      }
+      return routeApi(path, init);
+    }) as typeof apiFetch);
+    renderWatch();
+    await flush();
+    const ws = MockWebSocket.last();
+    act(() => ws.open());
+    act(() => ws.receive(state));
+    await flush();
+    const video = screen.getByLabelText('Vídeo de la sala') as HTMLVideoElement;
+    video.currentTime = 42;
+    act(() => ws.receive({ type: 'HEARTBEAT', server_time_ms: 1_000 }));
+    expect(ws.sentJson().at(-1)).toMatchObject({ type: 'SYNC_CHECK', position_ms: 42_000 });
+    act(() => ws.receive({ ...state, type: 'LOAD', event_id: 'e', position_ms: 0, version: 2, media_id: 'm2' }));
+    await flush();
+    expect(screen.getByLabelText('Vídeo de la sala')).toHaveAttribute('src', 'https://minio/m1?sig=1');
+    // El <video> sigue con m1 (p. ej. siguió avanzando o no pudo buscar).
+    video.currentTime = 42;
+    act(() => ws.receive({ type: 'HEARTBEAT', server_time_ms: 2_000 }));
+    // Posición esperada del estado maestro (m2 en pausa en 0), no los 42 s de m1.
+    expect(ws.sentJson().at(-1)).toMatchObject({ type: 'SYNC_CHECK', position_ms: 0, version: 2 });
+  });
+
   it('si falla el playback muestra el error en el reproductor', async () => {
     localStorage.setItem('tint_guest_token', testGuestToken());
     mockedApiFetch.mockImplementation(((path: string) =>

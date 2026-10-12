@@ -160,10 +160,24 @@ export default function WatchRoom() {
     () => (videoRef.current ? videoRef.current.currentTime * 1000 : null),
     [],
   );
-  const sync = useSyncSocket({ roomId: roomId ?? '', role, getPositionMs, enabled: hasAccess });
+  // Tras un LOAD, hasta que llega la URL nueva el <video> aún tiene el vídeo anterior: su
+  // posición no dice nada del nuevo. Entonces el heartbeat no la informa (null) y
+  // useSyncSocket responde con la posición esperada del estado maestro (sin corrección).
+  const roomMediaRef = useRef('');
+  const loadedMediaRef = useRef<string | null>(null);
+  const getHeartbeatPositionMs = useCallback(() => {
+    const roomMedia = roomMediaRef.current;
+    if (roomMedia && roomMedia !== loadedMediaRef.current) return null;
+    return getPositionMs();
+  }, [getPositionMs]);
+  const sync = useSyncSocket({ roomId: roomId ?? '', role, getPositionMs: getHeartbeatPositionMs, enabled: hasAccess });
   const playback = useRoomPlayback(roomId ?? '', sync.state ? sync.state.media_id : undefined, {
     role,
     enabled: hasAccess && !sync.revoked,
+  });
+  useEffect(() => {
+    roomMediaRef.current = sync.state?.media_id ?? '';
+    loadedMediaRef.current = playback.mediaId;
   });
   const toasts = useSyncToasts(sync.lastBroadcast);
   // Las URLs firmadas refrescadas se adoptan solo cuando el `src` cambia igualmente (otra
