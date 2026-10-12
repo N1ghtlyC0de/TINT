@@ -49,6 +49,11 @@ describe('Login', () => {
     expect(screen.getByText('Iniciar sesión con Google')).toBeInTheDocument();
   });
 
+  it('muestra el logo de TINT', () => {
+    renderLogin();
+    expect(screen.getByRole('img', { name: 'TINT' })).toHaveAttribute('data-variant', 'full');
+  });
+
   it('guarda el token y navega al dashboard si /auth/verify responde ok', async () => {
     mockedSignIn.mockResolvedValueOnce({
       user: { getIdToken: () => Promise.resolve('tok-123') },

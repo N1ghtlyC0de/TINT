@@ -1,12 +1,11 @@
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
+import { TintLogo } from '../brand/TintLogo';
 
 export function BrandMark({ to = '/dashboard' }: { to?: string }) {
   return (
     <Link to={to} className="flex items-center gap-3" aria-label="TINT inicio">
-      <span aria-hidden="true" className="grid h-9 w-9 place-items-center rounded-xl bg-tint-accent">
-        <span className="block h-3.5 w-3.5 rounded-[4px] bg-tint-bg" />
-      </span>
+      <TintLogo size={36} decorative className="shrink-0" />
       <span className="flex flex-col leading-none">
         <span className="text-[17px] font-bold tracking-tight text-white">TINT</span>
         <span className="text-[11px] tracking-[0.14em] text-tint-muted/80">WATCH PARTY</span>
