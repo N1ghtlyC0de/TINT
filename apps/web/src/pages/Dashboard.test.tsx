@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { vi, beforeEach } from 'vitest';
 import Dashboard from './Dashboard';
@@ -96,35 +96,43 @@ describe('Dashboard', () => {
 
   it('elimina la sala con confirmación y la quita de la lista', async () => {
     const user = (await import('@testing-library/user-event')).default;
-    vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
+    const confirmSpy = vi.spyOn(window, 'confirm');
     mockedApi.mockResolvedValueOnce({ rooms: [{ id: '1', title: 'Sala 1' }] });
     mockedApi.mockResolvedValueOnce({ success: true });
     renderDashboard();
     await waitFor(() => expect(screen.getByText('Sala 1')).toBeInTheDocument());
     await user.click(screen.getByRole('button', { name: /eliminar sala 1/i }));
+    const dialog = await screen.findByRole('alertdialog', { name: '¿Eliminar la sala "Sala 1"?' });
+    expect(dialog).toHaveTextContent('Sus links dejarán de funcionar.');
+    expect(mockedApi).toHaveBeenCalledTimes(1);
+    await user.click(within(dialog).getByRole('button', { name: 'Eliminar' }));
+    expect(confirmSpy).not.toHaveBeenCalled();
     await waitFor(() => expect(mockedApi).toHaveBeenCalledWith('/rooms/1', { method: 'DELETE' }));
     await waitFor(() => expect(screen.queryByText('Sala 1')).not.toBeInTheDocument());
   });
 
   it('muestra error si eliminar falla', async () => {
     const user = (await import('@testing-library/user-event')).default;
-    vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
     mockedApi.mockResolvedValueOnce({ rooms: [{ id: '1', title: 'Sala 1' }] });
     mockedApi.mockRejectedValueOnce(new ApiError(403, 'Forbidden'));
     renderDashboard();
     await waitFor(() => expect(screen.getByText('Sala 1')).toBeInTheDocument());
     await user.click(screen.getByRole('button', { name: /eliminar sala 1/i }));
+    const dialog = await screen.findByRole('alertdialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Eliminar' }));
     await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument());
     expect(screen.getByText('Sala 1')).toBeInTheDocument();
   });
 
   it('no elimina si se cancela la confirmación', async () => {
     const user = (await import('@testing-library/user-event')).default;
-    vi.spyOn(window, 'confirm').mockReturnValueOnce(false);
     mockedApi.mockResolvedValueOnce({ rooms: [{ id: '1', title: 'Sala 1' }] });
     renderDashboard();
     await waitFor(() => expect(screen.getByText('Sala 1')).toBeInTheDocument());
     await user.click(screen.getByRole('button', { name: /eliminar sala 1/i }));
+    const dialog = await screen.findByRole('alertdialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Cancelar' }));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument());
     expect(mockedApi).toHaveBeenCalledTimes(1);
     expect(screen.getByText('Sala 1')).toBeInTheDocument();
   });
@@ -173,8 +181,44 @@ describe('Dashboard', () => {
     mockedApi.mockResolvedValueOnce({ rooms: [{ id: '1', title: 'Sala 1' }] });
     renderDashboard();
     await waitFor(() => expect(screen.getByText('Sala 1')).toBeInTheDocument());
+    // Primario de la base visual: degradado de acento (bg-accent-sheen).
     expect(screen.getByRole('link', { name: /abrir sala 1/i }).className).toContain(
-      'bg-tint-accent',
+      'bg-accent-sheen',
     );
+  });
+
+  it('Crear sala usa el botón primario en la barra y en el estado vacío', async () => {
+    mockedApi.mockResolvedValueOnce({ rooms: [] });
+    renderDashboard();
+    await screen.findByText('Sin salas por ahora');
+    const links = screen.getAllByRole('link', { name: 'Crear sala' });
+    expect(links).toHaveLength(2);
+    for (const link of links) {
+      expect(link).toHaveAttribute('href', '/rooms/new');
+      expect(link.className).toContain('bg-accent-sheen');
+    }
+  });
+
+  it('cada card sigue el puntero con un brillo radial (variables --mx/--my)', async () => {
+    mockedApi.mockResolvedValueOnce({ rooms: [{ id: '1', title: 'Sala 1' }] });
+    renderDashboard();
+    await screen.findByText('Sala 1');
+    const card = screen.getByTestId('room-card-1');
+    card.getBoundingClientRect = () => ({ left: 10, top: 20, width: 200, height: 100 }) as DOMRect;
+    fireEvent.pointerMove(card, { clientX: 60, clientY: 50 });
+    expect(card.style.getPropertyValue('--mx')).toBe('50px');
+    expect(card.style.getPropertyValue('--my')).toBe('30px');
+  });
+
+  it('las salas se listan como lista con un elemento por sala', async () => {
+    mockedApi.mockResolvedValueOnce({
+      rooms: [
+        { id: '1', title: 'Sala 1' },
+        { id: '2', title: 'Sala 2' },
+      ],
+    });
+    renderDashboard();
+    await screen.findByText('Sala 2');
+    expect(screen.getAllByRole('listitem')).toHaveLength(2);
   });
 });
