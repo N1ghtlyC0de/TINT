@@ -1,6 +1,7 @@
 package reactions
 
 import (
+	"sync"
 	"testing"
 	"time"
 )
@@ -63,5 +64,31 @@ func TestBucketIndexFiveSeconds(t *testing.T) {
 	}
 	if got := BucketIndex(12345 * time.Millisecond); got != 2 {
 		t.Fatalf("BucketIndex(12345ms) = %d, want 2", got)
+	}
+}
+
+func TestBucketsConcurrentAdd(t *testing.T) {
+	b := NewBuckets()
+	const workers = 10
+	const perWorker = 50
+	var wg sync.WaitGroup
+	emojis := []string{"👏", "❤️", "😂", "😮", "😱"}
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			em := emojis[w%len(emojis)]
+			for j := 0; j < perWorker; j++ {
+				b.Add("r1", 5, em)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Cada emoji fue añadido por 2 workers * 50 = 100 veces concurrentemente
+	for _, em := range emojis {
+		if got := b.Count("r1", 5, em); got != 100 {
+			t.Fatalf("Count(r1,5,%s) = %d, want 100", em, got)
+		}
 	}
 }
