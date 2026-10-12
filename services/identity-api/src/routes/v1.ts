@@ -509,7 +509,7 @@ router.post('/rooms/:id/guests/:jti/revoke', requireAuthHost, requireRoomOwner, 
 
 // Bloqueo por dispositivo. Los invitados son anónimos: el bloqueo se ata al
 // deviceId que la web guarda en el navegador, así que borrar los datos del
-// navegador lo evade (ver docs/usuarios-e-identidad.md §2.4).
+// navegador lo evade (ver docs/usuarios-e-identidad.md §6.6).
 const createBanSchema = z
   .object({
     jti: z.string().uuid().optional(),

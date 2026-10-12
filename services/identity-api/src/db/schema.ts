@@ -43,7 +43,7 @@ export const guestSessions = pgTable('guest_sessions', {
 // Bloqueos de invitados por dispositivo (migración 0007). Un invitado bloqueado no
 // puede volver a reclamar una invitación de la sala desde el mismo navegador.
 // device_id es null si la sesión venía de un cliente sin deviceId: ese bloqueo
-// solo queda registrado por `sub` y no impide volver a entrar (ver usuarios-e-identidad §2.4).
+// solo queda registrado por `sub` y no impide volver a entrar (ver usuarios-e-identidad §6.6).
 export const roomBans = pgTable('room_bans', {
   id: uuid('id').primaryKey().defaultRandom(),
   roomId: uuid('room_id').notNull().references(() => rooms.id, { onDelete: 'cascade' }),
