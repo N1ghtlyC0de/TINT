@@ -44,6 +44,16 @@ beforeEach(() => {
 });
 
 describe('Login', () => {
+  it('en móvil muestra una banda hero compacta con el titular sobre la tarjeta', () => {
+    renderLogin();
+    const band = screen.getByTestId('hero-mobile');
+    expect(band).toHaveClass('md:hidden');
+    expect(band).toHaveTextContent('Mira junto, siente al mismo tiempo');
+    // La banda va antes que la tarjeta en el orden del documento.
+    const card = screen.getByRole('heading', { name: 'Bienvenido de nuevo' });
+    expect(band.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('renders login button', () => {
     renderLogin();
     expect(screen.getByText('Iniciar sesión con Google')).toBeInTheDocument();
