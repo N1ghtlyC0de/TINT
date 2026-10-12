@@ -15,7 +15,8 @@ Este repositorio es un monorepo multi-lenguaje (Go, TypeScript y Python). **Ante
 
 ## Documentación
 La documentación de features vive en [`docs/`](docs/README.md), con diagramas Mermaid:
-- [Arquitectura](docs/arquitectura.md): servicios, almacenes, **contratos entre dominios**, puertos y CI.
+- [Arquitectura](docs/arquitectura.md): servicios, **contratos entre dominios**, vistas de componentes y conectores y de despliegue, almacenes, puertos y CI/CD.
+- [Decisiones de arquitectura (ADRs)](docs/adr/README.md): una decisión por archivo; una decisión nueva va como ADR en el mismo PR.
 - [Usuarios, identidad y permisos](docs/usuarios-e-identidad.md): tipos de usuario, permisos, esquema de BD y tokens.
 - [Dominio de Reproducción](docs/dominio-reproduccion.md): Canal Sync v2.
 - [Contrato de eventos de analítica](docs/contrato-eventos-analitica.md): `analytics:events` y la API de KPIs.
