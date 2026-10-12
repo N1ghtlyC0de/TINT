@@ -473,7 +473,7 @@ Umbrales: `sync_broadcast_latency_ms` p99 < 100 ms, `sync_drift_ms` p99 < 500 ms
 
 - [`AGENTS.md`](AGENTS.md): protocolo del Canal Sync, límites, reglas y variables (referencia detallada).
 - [`docs/dominio-reproduccion.md`](../../docs/dominio-reproduccion.md): flujos de punta a punta del dominio de reproducción.
-- [`docs/arquitectura.md`](../../docs/arquitectura.md): vista de componentes y conectores (C&C), contratos compartidos y puertos.
+- [`docs/arquitectura.md`](../../docs/arquitectura.md): [vista de componentes y conectores (C&C)](../../docs/arquitectura.md#vista-de-componentes-y-conectores), contratos compartidos y puertos.
 - [`docs/contrato-eventos-analitica.md`](../../docs/contrato-eventos-analitica.md): contrato de `analytics:events`.
 - [`docs/usuarios-e-identidad.md`](../../docs/usuarios-e-identidad.md#4-esquemas-de-tokens): esquema de los tokens.
 - [`loadtest/README.md`](loadtest/README.md): prueba de carga SYNC-TEST-01.
