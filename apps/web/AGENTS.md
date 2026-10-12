@@ -9,7 +9,8 @@ Eres el agente especializado en la capa de presentación de **TINT**. Tu foco es
 - Vitest + Testing Library (`jsdom`) + cobertura `v8`
 - ESLint 9 (`typescript-eslint`, `react-hooks`)
 - `@msgpack/msgpack` — codificación MessagePack opcional del Canal Sync (implementación oficial, sin dependencias, mismo modelo de datos que el JSON del protocolo).
-- `framer-motion` 11.11.17 — animaciones declarativas (`AnimatePresence`, `MotionConfig reducedMotion="user"`) del cuestionario `/test-me`; respeta `prefers-reduced-motion` y evita escribir keyframes CSS a mano.
+- `framer-motion` 11.11.17 — animaciones declarativas en toda la app. `MotionProvider` (en `App`) carga `LazyMotion` con `domAnimation` (≈ +15 KB gz en el bundle principal; sin `layout`/`layoutId`, que exigirían `domMax`) y `MotionConfig reducedMotion="user"`. Los componentes usan `m.*`; el cuestionario `/test-me` (lazy) sigue con `motion.*`. En pruebas `setupTests.ts` activa `MotionGlobalConfig.skipAnimations` y mapea `m` → `motion`; los stubs de `matchMedia` deben incluir `addListener`/`removeListener`.
+- Outfit (Google Fonts, `index.html`) — tipografía de la marca.
 
 ## Responsabilidades
 - Reproductor, sala, chat, reacciones, trivias y visualización Ambilight/Heatmap.
@@ -34,6 +35,17 @@ Eres el agente especializado en la capa de presentación de **TINT**. Tu foco es
 | `Reaction` | social-core | `user_id`, `emoji`, `position_ms` (bucket de 5 s) |
 | `AmbilightFrame` | media-worker (`ambilight.json`) | `t_ms`, `top`, `bottom`, `left`, `right` (hex) |
 | `TriviaQuestion` / `Leaderboard` | social-core | `trivia_id`, `options`, `score` |
+
+## Sistema visual (quiet luxury)
+Discord-dark + naranja, con vidrio **solo** en botones, inputs, chips y paneles flotantes: `Card` sigue sólida (decisión de producto).
+
+| Pieza | Rol |
+| :--- | :--- |
+| `tailwind.config.js` · `src/index.css` | Tokens `shadow-glow`/`shadow-lift`, `bg-accent-sheen` (gradiente cálido del primario), `bg-noise`; utilidades `.tint-glass` (vidrio ligero), `.tint-glass-panel` (diálogos, popovers, toasts; ≥ 80 % opaco para AA), `.tint-eyebrow`, `.tint-shimmer`. |
+| `src/lib/motion.ts` | Una curva (`ease`), un `spring` y variantes compartidas `fadeUp`, `fadeBlur`, `pop`, `scaleIn`, `stagger()` (etiquetas `hidden` → `show` → `exit`). No declares duraciones sueltas. `fadeBlur` termina en `filter: none` para no volver al wrapper bloque contenedor de los `fixed`. |
+| `src/components/motion/*` | `MotionProvider`, `PageTransition` (cada ruta, `AnimatePresence mode="wait"` en `App`), `StaggerList`/`StaggerItem`, `CountUp`. |
+| `src/components/ui/*` | `Button` (`primary`/`ghost`/`quiet`/`danger`, `md`/`sm`, press con spring), `ButtonLink`, `Input`, `useConfirm` (`ConfirmDialog`: `alertdialog` que reemplaza a `window.confirm`). |
+| `src/components/layout/AmbientBackground.tsx` | Orbes difusos y grano, decorativos; la raíz de la página necesita `relative isolate`. Estáticos con `prefers-reduced-motion`. |
 
 ## Canal Sync (implementado, contrato v2)
 | Pieza | Rol |
@@ -84,7 +96,7 @@ El cálculo del drift es **autoritativo en sync-core**: el cliente solo aplica l
 | `src/components/analytics/*` · `src/lib/chartScale.ts` | Gráficos SVG propios (sin librería): espectadores en el tiempo (área + línea, crosshair por puntero y teclado como `role="slider"`), reacciones por emoji (barras, > 8 se agrupan en "Otros") y heatmap de reacciones por posición del vídeo (rampa ordinal de 4 pasos; > 60 columnas se agrupan). Cada uno tiene `aria-label` con resumen, tabla alternativa en `<details>` y estado vacío. Colores en `CHART_COLORS` (`ChartCard.tsx`), validados con la skill `dataviz` sobre `tint.card`. |
 
 ## Cuestionario oculto `/test-me`
-Ruta sin `ProtectedRoute` ni enlaces desde la UI (solo por URL) para aprender cómo funciona el monorepo. Se carga con `React.lazy` para que `framer-motion` no entre al bundle principal.
+Ruta sin `ProtectedRoute` ni enlaces desde la UI (solo por URL) para aprender cómo funciona el monorepo. Se carga con `React.lazy` para no sumar el banco de preguntas ni las features completas de `motion` al bundle principal.
 
 | Pieza | Rol |
 | :--- | :--- |
