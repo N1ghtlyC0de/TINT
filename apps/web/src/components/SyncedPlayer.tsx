@@ -42,6 +42,14 @@ const RATE_CHECK_INTERVAL_MS = 200;
 const FADE_MS = 180;
 /** Un salto mayor a esto al aplicar estado se suaviza con fundido. */
 const FADE_JUMP_MS = 2_000;
+/**
+ * Deriva tolerada al aplicar un estado mientras la sala reproduce: por debajo no se hace
+ * seek (cada seek vacía el búfer y congela la imagen). Así un broadcast que no mueve el
+ * ancla (VOLUME, QUALITY, RATE) no hace saltar a todos los clientes.
+ */
+export const APPLY_SEEK_TOLERANCE_PLAYING_MS = 250;
+/** Igual, con la sala en pausa: el seek no interrumpe nada y se busca el fotograma exacto. */
+export const APPLY_SEEK_TOLERANCE_PAUSED_MS = 50;
 /** Marcadores de saltos del host que se conservan. */
 const MAX_SEEK_MARKS = 5;
 
@@ -142,11 +150,14 @@ export function SyncedPlayer({
 
   const tryPlay = useCallback((video: HTMLVideoElement) => {
     const result = video.play() as Promise<void> | undefined;
-    // play() puede rechazarse por la política de autoplay: pedimos un gesto.
+    // Solo la política de autoplay (NotAllowedError) pide un gesto; un play() interrumpido
+    // por un pause() o un cambio de src (AbortError) no es un bloqueo.
     if (result && typeof result.then === 'function') {
       result.then(
         () => setNeedsGesture(false),
-        () => setNeedsGesture(true),
+        (err: unknown) => {
+          if ((err as { name?: unknown } | null)?.name === 'NotAllowedError') setNeedsGesture(true);
+        },
       );
     }
   }, []);
@@ -155,9 +166,14 @@ export function SyncedPlayer({
     (video: HTMLVideoElement, snap: SyncSnapshot) => {
       cancelRateCorrection();
       const expected = expectedPosition(snap, estimateServerNow(snap, nowRef.current()));
-      if (Math.abs(video.currentTime * 1000 - expected) > FADE_JUMP_MS) fade();
+      const jump = Math.abs(video.currentTime * 1000 - expected);
+      const tolerance =
+        snap.status === 'playing' ? APPLY_SEEK_TOLERANCE_PLAYING_MS : APPLY_SEEK_TOLERANCE_PAUSED_MS;
       video.playbackRate = snap.rate;
-      video.currentTime = expected / 1000;
+      if (jump > tolerance) {
+        if (jump > FADE_JUMP_MS) fade();
+        video.currentTime = expected / 1000;
+      }
       if (snap.status === 'playing') {
         tryPlay(video);
       } else {
