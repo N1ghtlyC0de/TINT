@@ -17,6 +17,7 @@ import (
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/analytics"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/auth"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/chat"
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/moderation"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/polls"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/reactions"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/recap"
@@ -82,6 +83,10 @@ type Deps struct {
 	// Recap acumula las métricas de la sala en Redis. Nil (modo memoria) =
 	// no se cuentan y recap_request responde UNAVAILABLE.
 	Recap *recap.Store
+	// Moderation guarda modo lento y silenciados en Redis. Nil (modo
+	// memoria) = chat sin moderación y chat_slow_mode/chat_mute responden
+	// UNAVAILABLE.
+	Moderation *moderation.Store
 	// syncHook observa cada evento de sync procesado (solo tests).
 	syncHook func(recap.Kind)
 	// pollTimers es el timer de cierre de la encuesta vigente por sala.
@@ -381,6 +386,8 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 	}
 	histRaw, _ := json.Marshal(socialevent.HistoryEnvelope{Type: socialevent.TypeHistory, RoomID: roomID, Messages: recent})
 	_ = writeMsg(ctx, c, histRaw, d.writeTimeout())
+	// Estado de moderación del chat (modo lento y silenciados).
+	d.sendChatSettingsOnJoin(ctx, c, roomID)
 	// Encuesta vigente (con el voto de este usuario), si la hay.
 	d.sendPollOnJoin(ctx, c, roomID, claims.Subject)
 
@@ -455,6 +462,12 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		case socialevent.TypeRecapRequest:
 			d.handleRecapRequest(ctx, c, roomID, raw, claims, actionLimiter)
 			continue
+		case socialevent.TypeChatSlowMode:
+			d.handleSlowMode(ctx, c, roomID, claims, raw)
+			continue
+		case socialevent.TypeChatMute:
+			d.handleMute(ctx, c, roomID, claims, raw)
+			continue
 		}
 		var in socialevent.ChatSend
 		if err := json.Unmarshal(raw, &in); err != nil {
@@ -478,6 +491,15 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		}
 		if !limiter.Allow(claims.Subject, d.now()) {
 			writeError(ctx, c, "RATE_LIMITED", in.EventID)
+			continue
+		}
+		// Silencio y modo lento al final: el freno solo se toma si el
+		// mensaje es válido y pasó el límite de tasa.
+		if code, retry := d.admitChat(ctx, roomID, claims); code == "SLOW_MODE" {
+			writeSlowMode(ctx, c, in.EventID, retry)
+			continue
+		} else if code != "" {
+			writeError(ctx, c, code, in.EventID)
 			continue
 		}
 		text := trimText(in.Text)

@@ -270,6 +270,8 @@ type ErrorEnvelope struct {
 	Type       Type   `json:"type"`
 	Code       string `json:"code"`
 	EventIDRef string `json:"event_id_ref,omitempty"`
+	// RetryAfterMS solo viaja con SLOW_MODE: ms que faltan para escribir.
+	RetryAfterMS int64 `json:"retry_after_ms,omitempty"`
 }
 
 func trim(s string) string {

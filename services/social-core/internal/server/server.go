@@ -12,6 +12,7 @@ import (
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/analytics"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/auth"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/chat"
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/moderation"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/polls"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/reactions"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/recap"
@@ -86,6 +87,7 @@ func DefaultDeps(getenv func(string) string) *Deps {
 		d.PublishReaction = st.PublishReaction
 		d.PublishRaw = st.PublishRaw
 		d.Polls = polls.NewStore(st.Client(), chat.HistoryTTL)
+		d.Moderation = moderation.NewStore(st.Client(), chat.HistoryTTL)
 		rc := recap.NewStore(st.Client(), chat.HistoryTTL)
 		d.Recap = rc
 		d.OnPollCreated = func(ctx context.Context, roomID string) {

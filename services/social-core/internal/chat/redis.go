@@ -198,6 +198,8 @@ func decodeInbound(fromSync bool, raw []byte) (Inbound, bool) {
 		v = &socialevent.Laser{}
 	case socialevent.TypePollState:
 		v = &socialevent.PollState{}
+	case socialevent.TypeChatSettings:
+		v = &socialevent.ChatSettings{}
 	default:
 		return Inbound{}, false
 	}
