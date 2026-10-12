@@ -3,6 +3,9 @@ import { getLocalIdentity } from '../lib/identity';
 import {
   buildChatSend,
   buildLaserPoint,
+  buildPollClose,
+  buildPollCreate,
+  buildPollVote,
   buildReactionSend,
   buildSocialUrl,
   CHAT_HISTORY_LIMIT,
@@ -10,8 +13,11 @@ import {
   isReactionEmoji,
   newEventId,
   parseSocialMessage,
+  validatePollDraft,
   type ChatMessage,
   type LaserPoint,
+  type PollState,
+  type PollView,
   type PresenceNotice,
   type ReactionBroadcast,
   type ReactionEmoji,
@@ -26,6 +32,12 @@ export const REACTION_STREAM_LIMIT = 30;
 export const LASER_STREAM_LIMIT = 64;
 
 export type SocialStatus = 'connecting' | 'open' | 'reconnecting' | 'closed';
+
+/** Último `error{code, event_id_ref}` de social-core (FORBIDDEN, POLL_ACTIVE, POLL_CLOSED…). */
+export interface SocialErrorInfo {
+  code: string;
+  event_id_ref?: string;
+}
 
 interface UseSocialSocketOptions {
   /** Factoría inyectable para tests (por defecto el WebSocket global). */
@@ -58,6 +70,10 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
   const [messages, setMessages] = useState<SocialChatItem[]>([]);
   const [reactions, setReactions] = useState<ReactionBroadcast[]>([]);
   const [laser, setLaser] = useState<LaserPoint[]>([]);
+  const [poll, setPoll] = useState<PollView | null>(null);
+  const [lastError, setLastError] = useState<SocialErrorInfo | null>(null);
+  /** Último voto propio visto por poll_id: los broadcasts no traen my_vote. */
+  const myVotesRef = useRef<Map<string, number>>(new Map());
   const wsRef = useRef<WebSocket | null>(null);
   const attemptRef = useRef(0);
   const timerRef = useRef<number | null>(null);
@@ -103,6 +119,11 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     [remember],
   );
 
+  const applyPoll = useCallback((msg: PollState) => {
+    if (typeof msg.my_vote === 'number') myVotesRef.current.set(msg.poll_id, msg.my_vote);
+    setPoll({ ...msg, my_vote: myVotesRef.current.get(msg.poll_id) ?? null });
+  }, []);
+
   useEffect(() => {
     if (!roomId) {
       setStatus('closed');
@@ -141,8 +162,11 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
           pushReaction(parsed);
         } else if (parsed.type === 'laser') {
           pushLaser({ ...parsed, end: parsed.end === true });
+        } else if (parsed.type === 'poll_state') {
+          applyPoll(parsed);
+        } else if (parsed.type === 'error') {
+          setLastError({ code: parsed.code, event_id_ref: parsed.event_id_ref });
         }
-        // Los errores (RATE_LIMITED, etc.) se ignoran en esta fase.
       };
       ws.onclose = () => {
         // Solo el socket vigente puede cambiar el estado/programar
@@ -174,7 +198,7 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [roomId, pushMessage, pushReaction, pushLaser, remember]);
+  }, [roomId, pushMessage, pushReaction, pushLaser, applyPoll, remember]);
 
   const send = useCallback(
     (text: string) => {
@@ -223,5 +247,54 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     [roomId, pushLaser],
   );
 
-  return { status, messages, reactions, laser, send, sendReaction, sendLaser };
+  /** Envía un frame ya armado si el socket está abierto (y limpia el último error). */
+  const sendFrame = useCallback((build: (room: string) => string) => {
+    if (!roomId) return false;
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    setLastError(null);
+    ws.send(build(roomId));
+    return true;
+  }, [roomId]);
+
+  const createPoll = useCallback(
+    (question: string, options: string[], durationS: number) => {
+      if (validatePollDraft(question, options, durationS)) return false;
+      return sendFrame((room) => buildPollCreate(room, question, options, durationS));
+    },
+    [sendFrame],
+  );
+
+  const votePoll = useCallback(
+    (pollId: string, option: number) => {
+      const ok = sendFrame((room) => buildPollVote(room, pollId, option));
+      if (ok) {
+        // Optimista hasta que llegue el poll_state con my_vote.
+        myVotesRef.current.set(pollId, option);
+        setPoll((prev) => (prev && prev.poll_id === pollId ? { ...prev, my_vote: option } : prev));
+      }
+      return ok;
+    },
+    [sendFrame],
+  );
+
+  const closePoll = useCallback(
+    (pollId: string) => sendFrame((room) => buildPollClose(room, pollId)),
+    [sendFrame],
+  );
+
+  return {
+    status,
+    messages,
+    reactions,
+    laser,
+    poll,
+    lastError,
+    send,
+    sendReaction,
+    sendLaser,
+    createPoll,
+    votePoll,
+    closePoll,
+  };
 }

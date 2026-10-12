@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ReactionBar } from '../components/ReactionBar';
 import { ReactionOverlay } from '../components/ReactionOverlay';
 import { LaserOverlay } from '../components/LaserOverlay';
+import { PollPanel } from '../components/PollPanel';
 import { CopyButton } from '../components/CopyButton';
 import { SyncedPlayer } from '../components/SyncedPlayer';
 import { ChangeVideoPanel } from '../components/host/ChangeVideoPanel';
@@ -79,9 +80,20 @@ export default function WatchRoom() {
   // Sin ningún token válido no hay cómo autenticar el socket: se muestra la puerta.
   const hasAccess = !!hostToken || !!guestToken;
   // Canal Social (/ws/social): el estado maestro del chat vive en social-core.
-  const { messages, reactions, laser, send, sendReaction, sendLaser, status } = useSocialSocket(
-    hasAccess ? roomId : undefined,
-  );
+  const {
+    messages,
+    reactions,
+    laser,
+    poll,
+    lastError: socialError,
+    send,
+    sendReaction,
+    sendLaser,
+    createPoll,
+    votePoll,
+    closePoll,
+    status,
+  } = useSocialSocket(hasAccess ? roomId : undefined);
   // Si hay sesión de host, manda el host aunque queden restos de invitado
   // (p. ej. guest token de una visita anterior al login). Coherente con
   // apiFetch, que prefiere el header de host.
@@ -125,6 +137,7 @@ export default function WatchRoom() {
   // Puntero láser: solo el host (social-core rechaza el resto con FORBIDDEN).
   const [laserOn, setLaserOn] = useState(false);
   const laserDrawing = laserOn && !isGuest && canControl;
+  const [pollCreatorOpen, setPollCreatorOpen] = useState(false);
   const [chat, setChat] = useState('');
   const [invite, setInvite] = useState('');
   const [inviteHint, setInviteHint] = useState('');
@@ -359,6 +372,7 @@ export default function WatchRoom() {
                 emptyMessage={emptyMessage}
                 laserOn={laserOn}
                 onToggleLaser={isGuest ? undefined : () => setLaserOn((on) => !on)}
+                onOpenPoll={isGuest ? undefined : () => setPollCreatorOpen(true)}
                 overlay={<LaserOverlay points={laser} drawing={laserDrawing} onPoint={sendLaser} />}
               />
               <ReactionOverlay reactions={reactions} />
@@ -394,6 +408,19 @@ export default function WatchRoom() {
               </Card>
             </div>
           )}
+
+          <Card className="mt-4 p-5">
+            <PollPanel
+              poll={poll}
+              isHost={!isGuest}
+              creatorOpen={pollCreatorOpen}
+              onCreatorOpenChange={setPollCreatorOpen}
+              onCreate={createPoll}
+              onVote={votePoll}
+              onClose={closePoll}
+              error={socialError?.code ?? null}
+            />
+          </Card>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
             <Card className="p-5">

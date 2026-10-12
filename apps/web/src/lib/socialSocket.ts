@@ -76,12 +76,40 @@ export interface LaserPoint extends LaserBroadcast {
   own?: boolean;
 }
 
+/** Estado de una encuesta (autoritativo en social-core). `option`/`my_vote` son índices de `options`. */
+export interface PollState {
+  type: 'poll_state';
+  event_id?: string;
+  room_id?: string;
+  poll_id: string;
+  question: string;
+  options: string[];
+  counts: number[];
+  /** Unix ms (reloj del servidor): solo para mostrar la cuenta atrás. */
+  closes_at_ms: number;
+  closed: boolean;
+  /** Solo en el poll_state dirigido a este cliente (al entrar o en respuesta a su voto). */
+  my_vote?: number;
+}
+
+/** Encuesta para la UI: `my_vote` resuelto (último visto para ese poll_id, o null). */
+export interface PollView extends Omit<PollState, 'my_vote'> {
+  my_vote: number | null;
+}
+
+export const POLL_MIN_OPTIONS = 2;
+export const POLL_MAX_OPTIONS = 4;
+export const POLL_QUESTION_MAX = 140;
+export const POLL_OPTION_MAX = 60;
+export const POLL_DURATIONS_S = [30, 60, 120, 300] as const;
+
 export type SocialIncoming =
   | ChatMessage
   | HistoryEnvelope
   | PresenceNotice
   | ReactionBroadcast
   | LaserBroadcast
+  | PollState
   | SocialError;
 
 export function newEventId(): string {
@@ -97,6 +125,53 @@ export function clamp01(value: number): number {
 
 /** Coordenada normalizada con 4 decimales (frames pequeños a 30 puntos/s). */
 const round4 = (value: number) => Math.round(clamp01(value) * 10_000) / 10_000;
+
+/** Pre-validación del creador (social-core es quien decide); null si es válido. */
+export function validatePollDraft(question: string, options: string[], durationS: number): string | null {
+  const q = question.trim();
+  if (!q) return 'Escribe la pregunta.';
+  if (q.length > POLL_QUESTION_MAX) return `La pregunta admite hasta ${POLL_QUESTION_MAX} caracteres.`;
+  if (options.length < POLL_MIN_OPTIONS || options.length > POLL_MAX_OPTIONS) {
+    return `Añade entre ${POLL_MIN_OPTIONS} y ${POLL_MAX_OPTIONS} opciones.`;
+  }
+  const opts = options.map((o) => o.trim());
+  if (opts.some((o) => !o)) return 'Completa todas las opciones.';
+  if (opts.some((o) => o.length > POLL_OPTION_MAX)) return `Cada opción admite hasta ${POLL_OPTION_MAX} caracteres.`;
+  if (new Set(opts.map((o) => o.toLowerCase())).size !== opts.length) return 'Las opciones deben ser distintas.';
+  if (!(POLL_DURATIONS_S as readonly number[]).includes(durationS)) return 'Elige una duración válida.';
+  return null;
+}
+
+/** Porcentaje entero de cada opción (0 si no hay votos). */
+export function pollPercentages(counts: number[]): number[] {
+  const total = counts.reduce((a, b) => a + b, 0);
+  return counts.map((c) => (total > 0 ? Math.round((c / total) * 100) : 0));
+}
+
+export function buildPollCreate(
+  roomId: string,
+  question: string,
+  options: string[],
+  durationS: number,
+  eventId = newEventId(),
+): string {
+  return JSON.stringify({
+    type: 'poll_create',
+    event_id: eventId,
+    room_id: roomId,
+    question: question.trim(),
+    options: options.map((o) => o.trim()),
+    duration_s: durationS,
+  });
+}
+
+export function buildPollVote(roomId: string, pollId: string, option: number, eventId = newEventId()): string {
+  return JSON.stringify({ type: 'poll_vote', event_id: eventId, room_id: roomId, poll_id: pollId, option });
+}
+
+export function buildPollClose(roomId: string, pollId: string, eventId = newEventId()): string {
+  return JSON.stringify({ type: 'poll_close', event_id: eventId, room_id: roomId, poll_id: pollId });
+}
 
 export function buildLaserPoint(roomId: string, x: number, y: number, end = false, eventId = newEventId()): string {
   const frame: Record<string, unknown> = { type: 'laser_point', event_id: eventId, room_id: roomId, x: round4(x), y: round4(y) };
@@ -140,7 +215,8 @@ export function parseSocialMessage(raw: string): SocialIncoming | null {
     type === 'error' ||
     type === 'notice' ||
     type === 'reaction' ||
-    type === 'laser'
+    type === 'laser' ||
+    type === 'poll_state'
   ) {
     return data as SocialIncoming;
   }

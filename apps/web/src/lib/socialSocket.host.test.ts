@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { buildLaserPoint, clamp01, parseSocialMessage } from './socialSocket';
+import {
+  buildLaserPoint,
+  buildPollClose,
+  buildPollCreate,
+  buildPollVote,
+  clamp01,
+  parseSocialMessage,
+  pollPercentages,
+  POLL_DURATIONS_S,
+  validatePollDraft,
+} from './socialSocket';
 
 describe('canal social — puntero láser', () => {
   it('parsea el broadcast laser', () => {
@@ -25,5 +35,56 @@ describe('canal social — puntero láser', () => {
     [2, 1],
   ])('clamp01(%f) → %f', (v, out) => {
     expect(clamp01(v)).toBe(out);
+  });
+});
+
+describe('canal social — encuestas', () => {
+  it('parsea poll_state y error', () => {
+    const state = { type: 'poll_state', poll_id: 'p1', question: '¿Quién fue?', options: ['A', 'B'], counts: [1, 2], closes_at_ms: 5, closed: false };
+    expect(parseSocialMessage(JSON.stringify(state))).toEqual(state);
+    expect(parseSocialMessage(JSON.stringify({ type: 'error', code: 'POLL_ACTIVE', event_id_ref: 'e' }))).toMatchObject({ code: 'POLL_ACTIVE' });
+  });
+
+  it('arma poll_create, poll_vote y poll_close', () => {
+    expect(JSON.parse(buildPollCreate('r1', ' ¿Final? ', [' Sí ', 'No'], 60, 'e1'))).toEqual({
+      type: 'poll_create',
+      event_id: 'e1',
+      room_id: 'r1',
+      question: '¿Final?',
+      options: ['Sí', 'No'],
+      duration_s: 60,
+    });
+    expect(JSON.parse(buildPollVote('r1', 'p1', 1, 'e2'))).toEqual({ type: 'poll_vote', event_id: 'e2', room_id: 'r1', poll_id: 'p1', option: 1 });
+    expect(JSON.parse(buildPollClose('r1', 'p1', 'e3'))).toEqual({ type: 'poll_close', event_id: 'e3', room_id: 'r1', poll_id: 'p1' });
+    expect(typeof JSON.parse(buildPollVote('r1', 'p1', 0)).event_id).toBe('string');
+    expect(typeof JSON.parse(buildPollClose('r1', 'p1')).event_id).toBe('string');
+    expect(typeof JSON.parse(buildPollCreate('r1', 'q', ['a', 'b'], 30)).event_id).toBe('string');
+  });
+
+  it.each([
+    ['', ['a', 'b'], 60, 'Escribe la pregunta.'],
+    ['x'.repeat(141), ['a', 'b'], 60, 'La pregunta admite hasta 140 caracteres.'],
+    ['¿?', ['a'], 60, 'Añade entre 2 y 4 opciones.'],
+    ['¿?', ['a', 'b', 'c', 'd', 'e'], 60, 'Añade entre 2 y 4 opciones.'],
+    ['¿?', ['a', ' '], 60, 'Completa todas las opciones.'],
+    ['¿?', ['a', 'y'.repeat(61)], 60, 'Cada opción admite hasta 60 caracteres.'],
+    ['¿?', ['a', 'A '], 60, 'Las opciones deben ser distintas.'],
+    ['¿?', ['a', 'b'], 7, 'Elige una duración válida.'],
+    ['¿?', ['a', 'b'], 60, null],
+  ])('validatePollDraft(%s, %j, %i) → %s', (q, opts, d, out) => {
+    expect(validatePollDraft(q, opts, d)).toBe(out);
+  });
+
+  it('duraciones ofrecidas', () => {
+    expect(POLL_DURATIONS_S).toEqual([30, 60, 120, 300]);
+  });
+
+  it.each([
+    [[0, 0], [0, 0]],
+    [[1, 1], [50, 50]],
+    [[1, 2], [33, 67]],
+    [[3, 0, 1], [75, 0, 25]],
+  ])('pollPercentages(%j) → %j', (counts, out) => {
+    expect(pollPercentages(counts)).toEqual(out);
   });
 });

@@ -104,3 +104,78 @@ describe('useSocialSocket — puntero láser', () => {
     expect(result.current.laser).toEqual([]);
   });
 });
+
+const pollState = (over: Record<string, unknown> = {}) => ({
+  type: 'poll_state',
+  poll_id: 'p1',
+  question: '¿Quién es el culpable?',
+  options: ['El mayordomo', 'La tía'],
+  counts: [0, 0],
+  closes_at_ms: 60_000,
+  closed: false,
+  ...over,
+});
+
+describe('useSocialSocket — encuestas', () => {
+  it('createPoll envía poll_create y limpia el último error', () => {
+    const { result, ws } = connected();
+    act(() => ws.receive({ type: 'error', code: 'POLL_ACTIVE', event_id_ref: 'x' }));
+    expect(result.current.lastError).toEqual({ code: 'POLL_ACTIVE', event_id_ref: 'x' });
+    let ok = false;
+    act(() => {
+      ok = result.current.createPoll('¿Final feliz?', ['Sí', 'No'], 60);
+    });
+    expect(ok).toBe(true);
+    expect(ws.sentJson()[0]).toMatchObject({ type: 'poll_create', room_id: 'r1', question: '¿Final feliz?', options: ['Sí', 'No'], duration_s: 60 });
+    expect(result.current.lastError).toBeNull();
+  });
+
+  it('createPoll pre-valida el borrador', () => {
+    const { result, ws } = connected();
+    expect(result.current.createPoll('', ['a', 'b'], 60)).toBe(false);
+    expect(ws.sent).toHaveLength(0);
+  });
+
+  it('expone poll_state y recuerda el voto propio si el servidor no lo envía', () => {
+    const { result, ws } = connected();
+    expect(result.current.poll).toBeNull();
+    act(() => ws.receive(pollState()));
+    expect(result.current.poll).toMatchObject({ poll_id: 'p1', my_vote: null });
+    act(() => {
+      result.current.votePoll('p1', 1);
+    });
+    expect(ws.sentJson()[0]).toMatchObject({ type: 'poll_vote', poll_id: 'p1', option: 1 });
+    expect(result.current.poll?.my_vote).toBe(1);
+    act(() => ws.receive(pollState({ counts: [0, 1] })));
+    expect(result.current.poll).toMatchObject({ counts: [0, 1], my_vote: 1 });
+    // El servidor manda si informa my_vote.
+    act(() => ws.receive(pollState({ counts: [1, 1], my_vote: 0 })));
+    expect(result.current.poll?.my_vote).toBe(0);
+    // Otra encuesta: sin voto.
+    act(() => ws.receive(pollState({ poll_id: 'p2' })));
+    expect(result.current.poll?.my_vote).toBeNull();
+  });
+
+  it('closePoll envía poll_close', () => {
+    const { result, ws } = connected();
+    act(() => {
+      result.current.closePoll('p1');
+    });
+    expect(ws.sentJson()[0]).toMatchObject({ type: 'poll_close', poll_id: 'p1' });
+  });
+
+  it('las acciones con el socket cerrado devuelven false', () => {
+    const { result } = renderHook(() =>
+      useSocialSocket('r1', { createSocket: (url) => new FakeSocket(url) as unknown as WebSocket }),
+    );
+    expect(result.current.createPoll('¿?', ['a', 'b'], 60)).toBe(false);
+    expect(result.current.votePoll('p1', 0)).toBe(false);
+    expect(result.current.closePoll('p1')).toBe(false);
+  });
+
+  it('un error sin event_id_ref también se expone', () => {
+    const { result, ws } = connected();
+    act(() => ws.receive({ type: 'error', code: 'FORBIDDEN' }));
+    expect(result.current.lastError).toEqual({ code: 'FORBIDDEN', event_id_ref: undefined });
+  });
+});

@@ -25,6 +25,11 @@ function baseSocial(over: Record<string, unknown> = {}) {
     send: vi.fn(() => true),
     sendReaction: vi.fn(() => true),
     sendLaser: vi.fn(() => true),
+    poll: null,
+    lastError: null,
+    createPoll: vi.fn(() => true),
+    votePoll: vi.fn(() => true),
+    closePoll: vi.fn(() => true),
     ...over,
   };
 }
@@ -105,5 +110,44 @@ describe('WatchRoom — puntero láser', () => {
     await flush();
     expect(screen.queryByRole('button', { name: 'Puntero láser' })).not.toBeInTheDocument();
     expect(screen.getByTestId('laser-overlay').className).toContain('pointer-events-none');
+  });
+});
+
+describe('WatchRoom — encuestas', () => {
+  it('el botón de la barra abre el creador con el foco en la pregunta', async () => {
+    localStorage.setItem('tint_token', 'host-token');
+    renderWatch();
+    await flush();
+    fireEvent.click(screen.getByRole('button', { name: 'Crear encuesta' }));
+    expect(screen.getByLabelText('Pregunta')).toHaveFocus();
+    fireEvent.change(screen.getByLabelText('Pregunta'), { target: { value: '¿Final?' } });
+    fireEvent.change(screen.getByLabelText('Opción 1'), { target: { value: 'Sí' } });
+    fireEvent.change(screen.getByLabelText('Opción 2'), { target: { value: 'No' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Lanzar encuesta' }));
+    expect(social.current.createPoll).toHaveBeenCalledWith('¿Final?', ['Sí', 'No'], 60);
+    expect(screen.queryByLabelText('Pregunta')).not.toBeInTheDocument();
+  });
+
+  it('el invitado vota en la encuesta activa y ve los errores del canal', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    social.current = baseSocial({
+      poll: {
+        type: 'poll_state',
+        poll_id: 'p1',
+        question: '¿Quién fue?',
+        options: ['A', 'B'],
+        counts: [0, 0],
+        closes_at_ms: Date.now() + 30_000,
+        closed: false,
+        my_vote: null,
+      },
+      lastError: { code: 'POLL_CLOSED' },
+    });
+    renderWatch();
+    await flush();
+    expect(screen.queryByRole('button', { name: 'Crear encuesta' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /^B/ }));
+    expect(social.current.votePoll).toHaveBeenCalledWith('p1', 1);
+    expect(screen.getByText('La encuesta ya está cerrada.')).toBeInTheDocument();
   });
 });
