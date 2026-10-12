@@ -18,7 +18,7 @@ func sample() syncevent.Event {
 		PositionMs: 61_000, OccurredAt: at, ReceivedAt: at.Add(40 * time.Millisecond), Version: 42,
 		Status: "playing", Rate: 1.25, UpdatedAtMs: 1_791_655_200_160, ServerTimeMs: 1_791_655_200_160,
 		TargetMs: syncevent.Int64(0), Online: syncevent.Bool(false), CanControl: syncevent.Bool(true),
-		MediaID: "m-1", RTTMs: 35, DriftMs: -620, Strategy: "rate",
+		MediaID: "m-1", RTTMs: 35, DriftMs: -620, Strategy: "rate", DurationMs: 850,
 	}
 }
 
@@ -105,6 +105,22 @@ func TestDecodeErrors(t *testing.T) {
 	empty, _ := msgpack.Marshal(map[string]any{"event_id": "x"})
 	if err := MsgPack.Decode(empty, &ev); err != nil || !ev.OccurredAt.IsZero() {
 		t.Errorf("sin timestamps: %v %v", err, ev.OccurredAt)
+	}
+}
+
+// BUFFERING tal como lo envía la web por MessagePack (mismas claves que el
+// JSON del contrato): duration_ms debe llegar al evento.
+func TestMsgPackDecodesBuffering(t *testing.T) {
+	raw, _ := msgpack.Marshal(map[string]any{
+		"event_id": "6f1c2a8e-8a4e-4d0a-9f5b-1c2d3e4f5a6b", "type": "BUFFERING", "room_id": "room-1",
+		"position_ms": 12345, "duration_ms": 850, "occurred_at": "2026-10-10T18:00:00.123Z",
+	})
+	var ev syncevent.Event
+	if err := MsgPack.Decode(raw, &ev); err != nil {
+		t.Fatal(err)
+	}
+	if ev.Type != syncevent.Buffering || ev.DurationMs != 850 || ev.PositionMs != 12345 {
+		t.Errorf("BUFFERING msgpack = %+v", ev)
 	}
 }
 

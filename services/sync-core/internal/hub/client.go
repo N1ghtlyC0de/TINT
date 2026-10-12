@@ -36,6 +36,8 @@ type Client struct {
 	// Rate limit por ventana fija; solo lo toca la goroutine lectora.
 	windowStartMs int64
 	windowCount   int
+	// Último BUFFERING aceptado (unix ms); solo lo toca la goroutine lectora.
+	lastBufferingMs int64
 
 	// Hasta encolar el STATE inicial, lo que llega por la sala se retiene
 	// (HU-SYNC-01: el STATE va primero). Protegidos por Hub.mu.
@@ -123,4 +125,13 @@ func (c *Client) allow(nowMs int64) bool {
 	}
 	c.windowCount++
 	return c.windowCount <= MaxMsgsPerSecond
+}
+
+// allowBuffering acepta como máximo un BUFFERING por BufferingInterval.
+func (c *Client) allowBuffering(nowMs int64) bool {
+	if c.lastBufferingMs != 0 && nowMs-c.lastBufferingMs < BufferingInterval.Milliseconds() {
+		return false
+	}
+	c.lastBufferingMs = nowMs
+	return true
 }

@@ -58,6 +58,9 @@ const (
 	// HandoffAfter: tiempo sin host/cohost tras el cual un participante
 	// recibe el control (CONTROL_HANDOFF_AFTER).
 	HandoffAfter = 5 * time.Minute
+	// BufferingInterval: mínimo entre dos BUFFERING aceptados de una misma
+	// conexión; los que llegan antes se descartan en silencio.
+	BufferingInterval = time.Second
 
 	ioTimeout = 2 * time.Second
 )
@@ -83,9 +86,12 @@ type Bus interface {
 	Publish(ctx context.Context, roomID string, payload []byte) error
 }
 
-// Telemetry recibe las métricas de drift (ver package telemetry).
+// Telemetry recibe los eventos de analítica (ver package telemetry). Cada
+// método solo encola: nunca bloquea ni hace I/O en el camino del mensaje.
 type Telemetry interface {
 	EmitDrift(telemetry.DriftSample) bool
+	EmitPlayback(telemetry.PlaybackSample) bool
+	EmitBuffering(telemetry.BufferingSample) bool
 }
 
 // Hub gestiona las salas con clientes conectados a esta réplica.
@@ -564,7 +570,24 @@ func (h *Hub) Handle(ctx context.Context, c *Client, raw []byte) {
 		h.handleCommand(ctx, c, ev, now)
 		return
 	}
+	if ev.Type == syncevent.Buffering {
+		h.handleBuffering(c, ev, now)
+		return
+	}
 	h.handleSyncCheck(ctx, c, ev, now)
+}
+
+// handleBuffering publica el stall del reproductor en analytics:events. Lo
+// puede enviar cualquier rol; no responde, no difunde y no toca Redis en
+// este camino (la telemetría solo encola).
+func (h *Hub) handleBuffering(c *Client, ev syncevent.Event, now time.Time) {
+	if !c.allowBuffering(now.UnixMilli()) {
+		return
+	}
+	h.tel.EmitBuffering(telemetry.BufferingSample{
+		EventID: ev.EventID, RoomID: c.claims.RoomID, DurationMs: ev.DurationMs, PositionMs: ev.PositionMs,
+		Role: string(c.claims.Role), OccurredAt: ev.OccurredAt, ReceivedAt: now,
+	})
 }
 
 func (h *Hub) handleCommand(ctx context.Context, c *Client, ev syncevent.Event, now time.Time) {
@@ -603,6 +626,10 @@ func (h *Hub) handleCommand(ctx context.Context, c *Client, ev syncevent.Event, 
 		h.m.commands.With("duplicate").Inc()
 	} else {
 		h.m.commands.With("ok").Inc()
+		h.tel.EmitPlayback(telemetry.PlaybackSample{
+			EventID: ev.EventID, RoomID: room, Command: string(ev.Type), PositionMs: st.PositionMs,
+			Role: string(c.claims.Role), OccurredAt: ev.OccurredAt, ReceivedAt: now,
+		})
 	}
 	ack := baseEvent(syncevent.Ack, room, now)
 	ack.RefEventID = ev.EventID
@@ -656,7 +683,7 @@ func (h *Hub) handleSyncCheck(ctx context.Context, c *Client, ev syncevent.Event
 	c.enqueueEvent(out)
 	h.tel.EmitDrift(telemetry.DriftSample{
 		RoomID: room, DriftMs: corr.DriftMs, RTTMs: rtt, Strategy: string(corr.Strategy),
-		Role: string(c.claims.Role), OccurredAt: ev.OccurredAt, ReceivedAt: now,
+		Role: string(c.claims.Role), PositionMs: corr.TargetMs, OccurredAt: ev.OccurredAt, ReceivedAt: now,
 	})
 }
 

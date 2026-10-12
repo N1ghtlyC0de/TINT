@@ -378,6 +378,13 @@ func TestMsgPackClient(t *testing.T) {
 	}
 	h.beatAll()
 	readMP(syncevent.Heartbeat)
+	raw, _ = codec.MsgPack.Encode(syncevent.Event{
+		EventID: "mp-buf", Type: syncevent.Buffering, RoomID: room, PositionMs: 7000, DurationMs: 640, OccurredAt: t0,
+	})
+	h.Handle(context.Background(), hc, raw)
+	if b := e.tel.bufferingList(); len(b) != 1 || b[0].DurationMs != 640 || b[0].PositionMs != 7000 {
+		t.Errorf("BUFFERING msgpack = %+v", b)
+	}
 	h.Handle(context.Background(), hc, []byte("{json}"))
 	if ev := readMP(syncevent.Error); ev.Code != syncevent.CodeInvalid {
 		t.Errorf("JSON en conexión msgpack = %+v", ev)

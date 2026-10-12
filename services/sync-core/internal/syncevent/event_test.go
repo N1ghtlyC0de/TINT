@@ -330,3 +330,48 @@ func TestValidateInboundQuality(t *testing.T) {
 		t.Errorf("quality debe serializarse: %s", raw)
 	}
 }
+
+func TestValidateInboundBuffering(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Event)
+		want   error
+	}{
+		{"buffering válido", func(e *Event) { e.DurationMs = 850 }, nil},
+		{"duración cero", func(e *Event) { e.DurationMs = 0 }, nil},
+		{"duración máxima", func(e *Event) { e.DurationMs = MaxBufferingMs }, nil},
+		{"duración negativa", func(e *Event) { e.DurationMs = -1 }, ErrInvalidBuffering},
+		{"duración excesiva", func(e *Event) { e.DurationMs = MaxBufferingMs + 1 }, ErrInvalidBuffering},
+		{"posición negativa", func(e *Event) { e.PositionMs = -1 }, ErrNegativePosition},
+		{"sin occurred_at", func(e *Event) { e.OccurredAt = time.Time{} }, ErrMissingTimestamp},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := validEvent()
+			e.Type = Buffering
+			tt.mutate(&e)
+			if err := e.ValidateInbound(); !errors.Is(err, tt.want) {
+				t.Errorf("ValidateInbound() = %v, want %v", err, tt.want)
+			}
+		})
+	}
+	// BUFFERING no es un comando: no cambia el Reloj Maestro.
+	if (Event{Type: Buffering}).IsCommand() {
+		t.Error("BUFFERING no debe ser comando")
+	}
+}
+
+func TestJSONContractBuffering(t *testing.T) {
+	var e Event
+	raw := `{"event_id":"6f1c2a8e-8a4e-4d0a-9f5b-1c2d3e4f5a6b","type":"BUFFERING","room_id":"room-1","position_ms":12345,"duration_ms":850,"occurred_at":"2026-10-10T18:00:00.123Z"}`
+	if err := json.Unmarshal([]byte(raw), &e); err != nil {
+		t.Fatal(err)
+	}
+	if e.Type != Buffering || e.DurationMs != 850 || e.PositionMs != 12345 {
+		t.Errorf("BUFFERING JSON = %+v", e)
+	}
+	out, _ := json.Marshal(validEvent())
+	if strings.Contains(string(out), "duration_ms") {
+		t.Errorf("duration_ms vacío no debe serializarse: %s", out)
+	}
+}
