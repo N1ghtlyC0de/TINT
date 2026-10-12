@@ -58,6 +58,7 @@ class FakeRepository:
         self.statuses = {}
         self.durations = {}
         self.storage_keys = {}
+        self.renditions = {}
         self.history = []
 
     def start_processing(self, video_id):
@@ -66,9 +67,10 @@ class FakeRepository:
         self._set(video_id, "processing")
         return True
 
-    def mark_ready(self, video_id, duration_ms, storage_key):
+    def mark_ready(self, video_id, duration_ms, storage_key, renditions=()):
         self.durations[video_id] = duration_ms
         self.storage_keys[video_id] = storage_key
+        self.renditions[video_id] = list(renditions)
         self._set(video_id, "ready")
 
     def mark_failed(self, video_id):

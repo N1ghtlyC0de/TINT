@@ -105,7 +105,7 @@ def process_video(
         blobs.put_json(ambilight_key(video_id), palette)
         # Calidades reducidas: opcionales, una que falle se omite sin marcar `failed`.
         renditions = generate_renditions(video_id, normalized, height, blobs, runner)
-    repo.mark_ready(video_id, duration_ms, storage_key)
+    repo.mark_ready(video_id, duration_ms, storage_key, renditions)
     logger.info(
         "vídeo %s listo (%d ms, %d muestras, calidades %s)",
         video_id,

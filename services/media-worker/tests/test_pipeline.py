@@ -300,6 +300,7 @@ def test_hd_video_publishes_lower_quality_renditions_from_the_normalized(upload)
     ((_, normalized),) = runner.seen
     assert [target for target, _ in runner.renditions] == [720, 360]
     assert all(src == normalized for _, src in runner.renditions)
+    assert repo.renditions["v1"] == [720, 360]
 
 
 def test_renditions_are_published_after_source_and_ambilight(upload):
@@ -314,6 +315,7 @@ def test_small_video_has_no_renditions(upload):
     process_video("v1", upload, repo, blobs, runner, two_red_frames())
     assert runner.renditions == []
     assert sorted(blobs.objects) == ["v1/ambilight.json", "v1/source.mp4"]
+    assert repo.renditions["v1"] == []
 
 
 def test_failed_rendition_is_skipped_and_the_video_is_still_ready(upload, caplog):
@@ -326,6 +328,7 @@ def test_failed_rendition_is_skipped_and_the_video_is_still_ready(upload, caplog
     assert "v1/720p.mp4" not in blobs.objects
     assert blobs.objects["v1/360p.mp4"] == b"360p-bytes"
     assert "720" in caplog.text
+    assert repo.renditions["v1"] == [360]
 
 
 def test_no_renditions_when_normalization_or_ambilight_fails(upload):
@@ -359,3 +362,5 @@ def test_reprocessing_an_hd_video_overwrites_the_same_renditions(upload):
         "v1/ambilight.json",
         "v1/source.mp4",
     ]
+    assert repo.renditions["v1"] == [720, 360]
+    assert [status for _, status in repo.history] == ["processing", "ready"] * 2
