@@ -53,10 +53,13 @@ Eres el agente especializado en la capa de presentación de **TINT**. Tu foco es
 ## Canal Social: interacción del host
 JSON sobre `useSocialSocket` (`src/lib/socialSocket.ts`); social-core es autoritativo (permisos, conteos, cierres).
 
+- **Credencial:** social-core solo acepta láser y crear/cerrar encuestas con tokens HS256 de identity-api con `role` host/cohost de la sala (el ID token de Firebase recibe `FORBIDDEN`). Por eso `WatchRoom` abre el canal con `role: 'host'` → `useSocialSocket` pide un sync-ticket (`POST /rooms/:id/sync-ticket`) en cada (re)conexión (403/404/410 → deja de reintentar, `status: 'closed'`); con `role: 'guest'` usa `tint_guest_token`.
+- **Límites de social-core:** láser 30/s (incluido `end: true`); votos + `recap_request` comparten 10/s.
+
 | Pieza | Rol |
 | :--- | :--- |
 | Puntero láser | Envía `laser_point{type, event_id, room_id, x, y, end?}` (x, y normalizados 0..1, 4 decimales) y recibe `laser{event_id, user_id, nick, x, y, end}`. `useSocialSocket` expone `laser` (últimos 64 puntos) y `sendLaser(x, y, end?)`, que pinta el punto propio al instante y descarta su eco por `event_id`. |
-| `src/components/LaserOverlay.tsx` | Lienzo sobre el área del vídeo (`SyncedPlayer.overlay`); el host con el modo láser dibuja con eventos de puntero (máx. 30 puntos/s con `useThrottle`; el punto final siempre se envía) y todos ven un trazo rojo brillante que se desvanece en 1.5 s (`requestAnimationFrame`, con guardas para jsdom). La edad de cada punto usa el reloj local de llegada, nunca el del emisor. |
+| `src/components/LaserOverlay.tsx` | Lienzo sobre el área del vídeo (`SyncedPlayer.overlay`); el host con el modo láser dibuja con eventos de puntero (ventana deslizante de 30 puntos/s contando el final: los movimientos usan como máximo 29 y dejan el hueco del `end`) y todos ven un trazo rojo brillante que se desvanece en 1.5 s (`requestAnimationFrame`, con guardas para jsdom). La edad de cada punto usa el reloj local de llegada, nunca el del emisor. |
 | Encuestas | Envía `poll_create{question, options[2–4], duration_s}` (30/60/120/300 s), `poll_vote{poll_id, option}` (índice) y `poll_close{poll_id}`; recibe `poll_state{poll_id, question, options, counts, closes_at_ms, closed, my_vote?}`. `my_vote` solo llega en el `poll_state` dirigido a este cliente (al entrar o al votar): `useSocialSocket` recuerda el último visto por `poll_id` (y el propio, optimista). Expone `poll`, `lastError` (`error{code, event_id_ref}`: FORBIDDEN, POLL_ACTIVE, POLL_CLOSED, POLL_NOT_FOUND, UNAVAILABLE, RATE_LIMITED; se limpia al enviar), `createPoll` (pre-valida con `validatePollDraft`), `votePoll` y `closePoll`. |
 | `src/components/PollPanel.tsx` | Creador del host (pregunta, 2–4 opciones, duración; el botón "Crear encuesta" de la barra lo abre con el foco en la pregunta), tarjeta con botones de voto (`aria-pressed`), barras con porcentaje, cuenta atrás (solo informativa: el cierre lo decide `closed`, no el reloj local), "Cerrar encuesta" para el host y resultados finales. |
 | Recap | Envía `recap_request{event_id, room_id}` y recibe `recap{room_id, event_id_ref?, top_emoji_user, most_paused, peak_reactions, totals}` (los tres primeros pueden ser null). `useSocialSocket` expone `recap` y `requestRecap`. |
@@ -102,6 +105,6 @@ npm run test:coverage   # Vitest + umbral 85%
 | :--- | :--- | :--- |
 | `VITE_IDENTITY_API_URL` | `http://localhost:8081/api/v1` | identity-api (salas, invitaciones, sync-tickets). |
 | `VITE_SYNC_WS_URL` | `ws://localhost:8083/ws/sync` | Canal Sync de sync-core. |
-| `VITE_SOCIAL_WS_URL` | `ws://localhost:8082/ws/social` | Canal social de social-core (chat y reacciones). |
+| `VITE_SOCIAL_WS_URL` | `ws://localhost:8082/ws/social` | Canal social de social-core (chat, reacciones, láser, encuestas y recap). |
 | `VITE_SYNC_ENCODING` | `json` | Codificación del Canal Sync: `json` o `msgpack` (pide el subprotocolo `tint.sync.msgpack`; si sync-core no lo acepta, sigue en JSON). |
 | `VITE_DEMO_VIDEO_URL` | vacío | Vídeo de respaldo, solo si la sala no tiene vídeo asignado en identity-api (`mediaId: null`). |

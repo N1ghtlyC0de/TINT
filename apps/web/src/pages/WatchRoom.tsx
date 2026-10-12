@@ -96,7 +96,7 @@ export default function WatchRoom() {
     closePoll,
     requestRecap,
     status,
-  } = useSocialSocket(hasAccess ? roomId : undefined);
+  } = useSocialSocket(hasAccess ? roomId : undefined, { role: hostToken ? 'host' : 'guest' });
   // Si hay sesión de host, manda el host aunque queden restos de invitado
   // (p. ej. guest token de una visita anterior al login). Coherente con
   // apiFetch, que prefiere el header de host.

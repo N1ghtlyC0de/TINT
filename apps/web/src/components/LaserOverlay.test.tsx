@@ -182,19 +182,23 @@ describe('LaserOverlay', () => {
       expect(onPoint).not.toHaveBeenCalled();
     });
 
-    it('limita a 30 puntos por segundo, pero siempre envía el final', () => {
+    it('máx. 30 puntos/s contando el final: los movimientos le reservan su hueco', () => {
       const { onPoint, surface } = renderDrawing();
       fireEvent.pointerDown(surface, { clientX: 200, clientY: 100 });
       for (let i = 0; i < 50; i += 1) fireEvent.pointerMove(surface, { clientX: 200 + i, clientY: 100 });
-      expect(onPoint).toHaveBeenCalledTimes(30);
+      expect(onPoint).toHaveBeenCalledTimes(29);
       fireEvent.pointerLeave(surface, { clientX: 250, clientY: 100 });
-      expect(onPoint).toHaveBeenCalledTimes(31);
+      expect(onPoint).toHaveBeenCalledTimes(30);
       expect(onPoint).toHaveBeenLastCalledWith(0.75, 0.5, true);
+      // Ventana llena: ni otro trazo ni otro final hasta que pase el segundo.
+      fireEvent.pointerDown(surface, { clientX: 200, clientY: 100 });
+      fireEvent.pointerUp(surface, { clientX: 200, clientY: 100 });
+      expect(onPoint).toHaveBeenCalledTimes(30);
       vi.advanceTimersByTime(1_000);
       fireEvent.pointerDown(surface, { clientX: 200, clientY: 100 });
-      expect(onPoint).toHaveBeenCalledTimes(32);
+      expect(onPoint).toHaveBeenCalledTimes(31);
       fireEvent.pointerCancel(surface);
-      expect(onPoint).toHaveBeenCalledTimes(33);
+      expect(onPoint).toHaveBeenCalledTimes(32);
     });
 
     it('ignora superficies sin tamaño', () => {

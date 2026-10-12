@@ -13,8 +13,13 @@ vi.mock('../lib/api', async (orig) => ({
 const mockedApiFetch = vi.mocked(apiFetch);
 
 // Canal social controlable: cada prueba fija lo que "llega" de social-core.
-const social = vi.hoisted(() => ({ current: {} as Record<string, unknown> }));
-vi.mock('../hooks/useSocialSocket', () => ({ useSocialSocket: () => social.current }));
+const social = vi.hoisted(() => ({ current: {} as Record<string, unknown>, args: [] as unknown[] }));
+vi.mock('../hooks/useSocialSocket', () => ({
+  useSocialSocket: (...args: unknown[]) => {
+    social.args = args;
+    return social.current;
+  },
+}));
 
 function baseSocial(over: Record<string, unknown> = {}) {
   return {
@@ -191,5 +196,20 @@ describe('WatchRoom — Watch Party Recap', () => {
     renderWatch();
     await flush();
     expect(screen.getByRole('dialog', { name: 'Watch Party Recap' })).toBeInTheDocument();
+  });
+});
+
+describe('WatchRoom — credencial del canal social', () => {
+  it('el host abre /ws/social con rol host (sync-ticket) y el invitado con rol guest', async () => {
+    localStorage.setItem('tint_token', 'host-token');
+    const { unmount } = renderWatch();
+    await flush();
+    expect(social.args).toEqual(['r1', { role: 'host' }]);
+    unmount();
+    localStorage.clear();
+    localStorage.setItem('tint_guest_token', testGuestToken());
+    renderWatch();
+    await flush();
+    expect(social.args).toEqual(['r1', { role: 'guest' }]);
   });
 });

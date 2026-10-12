@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, type PointerEvent as ReactPointerEvent } from 'react';
-import { useThrottle } from '../hooks/useThrottle';
 import { clamp01, type LaserPoint } from '../lib/socialSocket';
 
 /** Tiempo en que un punto del trazo se desvanece por completo. */
 export const LASER_FADE_MS = 1_500;
-/** Máximo de puntos enviados por segundo mientras el host dibuja. */
+/** Límite de social-core: 30 laser_point por segundo, incluido el `end: true`. */
 export const LASER_POINTS_PER_SECOND = 30;
+const LASER_WINDOW_MS = 1_000;
 
 export interface LaserTrailPoint {
   x: number;
@@ -67,12 +67,11 @@ export interface LaserOverlayProps {
 }
 
 const defaultNow = () => performance.now();
-const noop = () => {};
 
 /**
  * Lienzo sobre el vídeo (como ReactionOverlay). Todos ven el trazo rojo del host que se
- * desvanece en 1.5 s; quien tiene el modo láser dibuja con el puntero (máx. 30 puntos/s,
- * el punto final siempre se envía).
+ * desvanece en 1.5 s; quien tiene el modo láser dibuja con el puntero (máx. 30 puntos/s
+ * contando el final, al que los movimientos le reservan un hueco).
  */
 export function LaserOverlay({ points, drawing = false, onPoint, now = defaultNow }: LaserOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -134,7 +133,21 @@ export function LaserOverlay({ points, drawing = false, onPoint, now = defaultNo
     [],
   );
 
-  const emit = useThrottle(onPoint ?? noop, LASER_POINTS_PER_SECOND, 1_000);
+  /** Envíos en la ventana deslizante (mismo patrón que useThrottle, con hueco reservado). */
+  const sentRef = useRef<number[]>([]);
+
+  /**
+   * Ventana deslizante compartida por movimientos y finales: los movimientos dejan libre el
+   * último hueco para que el `end` del trazo quepa dentro del límite del servidor.
+   */
+  const emit = (x: number, y: number, end: boolean) => {
+    const t = Date.now();
+    sentRef.current = sentRef.current.filter((c) => t - c < LASER_WINDOW_MS);
+    const cap = end ? LASER_POINTS_PER_SECOND : LASER_POINTS_PER_SECOND - 1;
+    if (sentRef.current.length >= cap) return;
+    sentRef.current.push(t);
+    onPoint?.(x, y, end);
+  };
 
   const locate = (e: ReactPointerEvent<HTMLDivElement>): { x: number; y: number } | null => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -164,14 +177,13 @@ export function LaserOverlay({ points, drawing = false, onPoint, now = defaultNo
     if (!activeRef.current) return;
     activeRef.current = false;
     const pos = locate(e) ?? lastRef.current;
-    // El final no pasa por el throttle: si se perdiera, el trazo quedaría abierto.
-    onPoint?.(pos.x, pos.y, true);
+    emit(pos.x, pos.y, true);
   };
 
   const onPointerCancel = () => {
     if (!activeRef.current) return;
     activeRef.current = false;
-    onPoint?.(lastRef.current.x, lastRef.current.y, true);
+    emit(lastRef.current.x, lastRef.current.y, true);
   };
 
   return (

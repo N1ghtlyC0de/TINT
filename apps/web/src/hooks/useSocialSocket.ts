@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { apiFetch } from '../lib/api';
+import { errorStatus } from '../lib/errorStatus';
 import { getLocalIdentity } from '../lib/identity';
 import {
   buildChatSend,
@@ -48,6 +50,12 @@ interface UseSocialSocketOptions {
   maxMessages?: number;
   reconnectBaseMs?: number;
   reconnectMaxMs?: number;
+  /**
+   * Credencial del canal. `host` → sync-ticket fresco de identity-api en cada (re)conexión
+   * (social-core solo acepta láser y encuestas con tokens HS256 de host/cohost, no el ID
+   * token de Firebase); `guest` → `tint_guest_token`. Sin rol: el token guardado.
+   */
+  role?: 'host' | 'guest';
 }
 
 function resolveToken(): string {
@@ -55,6 +63,9 @@ function resolveToken(): string {
     localStorage.getItem('tint_token') || localStorage.getItem('tint_guest_token') || ''
   );
 }
+
+/** Sync-ticket rechazado sin remedio: no es el dueño (403) o la sala no existe (404/410). */
+const FATAL_TICKET_STATUS = [403, 404, 410];
 
 const SEEN_CAP = 200;
 
@@ -82,6 +93,7 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
   const timerRef = useRef<number | null>(null);
   const closedRef = useRef(false);
   // Refs para no reconectar cuando el padre re-renderiza con callbacks inline.
+  const role = opts.role;
   const optsRef = useRef(opts);
   optsRef.current = opts;
   // event_id ya vistos: traga ecos/redeliveries del servidor.
@@ -134,18 +146,45 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     }
     closedRef.current = false;
     attemptRef.current = 0;
+    // Por efecto: un ticket que llega tras desmontar (o tras cambiar de sala) se descarta.
+    let disposed = false;
+
+    const scheduleReconnect = () => {
+      const { reconnectBaseMs = 500, reconnectMaxMs = 8000 } = optsRef.current;
+      const delay = Math.min(reconnectBaseMs * 2 ** attemptRef.current, reconnectMaxMs);
+      attemptRef.current += 1;
+      setStatus('reconnecting');
+      timerRef.current = window.setTimeout(connect, delay);
+    };
 
     const connect = () => {
+      setStatus(attemptRef.current === 0 ? 'connecting' : 'reconnecting');
+      if (role === 'host') {
+        apiFetch(`/rooms/${encodeURIComponent(roomId)}/sync-ticket`, { method: 'POST' })
+          .then((ticket: { token: string }) => {
+            if (!disposed) openSocket(ticket.token);
+          })
+          .catch((err: unknown) => {
+            if (disposed) return;
+            const status = errorStatus(err);
+            if (status !== null && FATAL_TICKET_STATUS.includes(status)) {
+              setStatus('closed');
+              return;
+            }
+            scheduleReconnect();
+          });
+        return;
+      }
+      openSocket(role === 'guest' ? (localStorage.getItem('tint_guest_token') ?? '') : resolveToken());
+    };
+
+    const openSocket = (token: string) => {
       const {
         createSocket = (url: string) => new WebSocket(url),
         baseUrl,
         maxMessages = CHAT_HISTORY_LIMIT,
-        reconnectBaseMs = 500,
-        reconnectMaxMs = 8000,
       } = optsRef.current;
-      const token = resolveToken();
       const url = buildSocialUrl(resolveBaseUrl(baseUrl), roomId, token);
-      setStatus(attemptRef.current === 0 ? 'connecting' : 'reconnecting');
       const ws = createSocket(url);
       wsRef.current = ws;
 
@@ -183,13 +222,7 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
           setStatus('closed');
           return;
         }
-        const delay = Math.min(
-          reconnectBaseMs * 2 ** attemptRef.current,
-          reconnectMaxMs,
-        );
-        attemptRef.current += 1;
-        setStatus('reconnecting');
-        timerRef.current = window.setTimeout(connect, delay);
+        scheduleReconnect();
       };
       ws.onerror = () => {
         ws.close();
@@ -198,12 +231,13 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
 
     connect();
     return () => {
+      disposed = true;
       closedRef.current = true;
       if (timerRef.current !== null) window.clearTimeout(timerRef.current);
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [roomId, pushMessage, pushReaction, pushLaser, applyPoll, remember]);
+  }, [roomId, role, pushMessage, pushReaction, pushLaser, applyPoll, remember]);
 
   const send = useCallback(
     (text: string) => {
