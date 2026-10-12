@@ -1,17 +1,47 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { apiFetch } from '../lib/api';
+import { errorStatus } from '../lib/errorStatus';
+import { getLocalIdentity } from '../lib/identity';
 import {
   buildChatSend,
+  buildLaserPoint,
+  buildPollClose,
+  buildPollCreate,
+  buildPollVote,
+  buildRecapRequest,
+  buildReactionSend,
   buildSocialUrl,
   CHAT_HISTORY_LIMIT,
+  clamp01,
+  isReactionEmoji,
+  newEventId,
   parseSocialMessage,
+  validatePollDraft,
   type ChatMessage,
+  type LaserPoint,
+  type PollState,
+  type PollView,
+  type RecapMessage,
   type PresenceNotice,
+  type ReactionBroadcast,
+  type ReactionEmoji,
 } from '../lib/socialSocket';
 
 /** Mensaje visible en el chat: texto o aviso de presencia. */
 export type SocialChatItem = ChatMessage | PresenceNotice;
 
+/** Tope de reacciones en memoria para el overlay (efímeras, fuera del chat). */
+export const REACTION_STREAM_LIMIT = 30;
+/** Puntos del láser en memoria (~2 s a 30 puntos/s; el overlay los desvanece en 1.5 s). */
+export const LASER_STREAM_LIMIT = 64;
+
 export type SocialStatus = 'connecting' | 'open' | 'reconnecting' | 'closed';
+
+/** Último `error{code, event_id_ref}` de social-core (FORBIDDEN, POLL_ACTIVE, POLL_CLOSED…). */
+export interface SocialErrorInfo {
+  code: string;
+  event_id_ref?: string;
+}
 
 interface UseSocialSocketOptions {
   /** Factoría inyectable para tests (por defecto el WebSocket global). */
@@ -20,6 +50,12 @@ interface UseSocialSocketOptions {
   maxMessages?: number;
   reconnectBaseMs?: number;
   reconnectMaxMs?: number;
+  /**
+   * Credencial del canal. `host` → sync-ticket fresco de identity-api en cada (re)conexión
+   * (social-core solo acepta láser y encuestas con tokens HS256 de host/cohost, no el ID
+   * token de Firebase); `guest` → `tint_guest_token`. Sin rol: el token guardado.
+   */
+  role?: 'host' | 'guest';
 }
 
 function resolveToken(): string {
@@ -28,13 +64,14 @@ function resolveToken(): string {
   );
 }
 
+/** Sync-ticket rechazado sin remedio: no es el dueño (403) o la sala no existe (404/410). */
+const FATAL_TICKET_STATUS = [403, 404, 410];
+
 const SEEN_CAP = 200;
 
 function resolveBaseUrl(override?: string): string {
   if (override) return override;
-  const fromEnv = (import.meta as unknown as { env?: Record<string, string> }).env
-    ?.VITE_SOCIAL_WS_URL;
-  return fromEnv || 'ws://localhost:8082/ws/social';
+  return import.meta.env.VITE_SOCIAL_WS_URL || 'ws://localhost:8082/ws/social';
 }
 
 /**
@@ -44,11 +81,19 @@ function resolveBaseUrl(override?: string): string {
 export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocketOptions = {}) {
   const [status, setStatus] = useState<SocialStatus>('connecting');
   const [messages, setMessages] = useState<SocialChatItem[]>([]);
+  const [reactions, setReactions] = useState<ReactionBroadcast[]>([]);
+  const [laser, setLaser] = useState<LaserPoint[]>([]);
+  const [poll, setPoll] = useState<PollView | null>(null);
+  const [lastError, setLastError] = useState<SocialErrorInfo | null>(null);
+  const [recap, setRecap] = useState<RecapMessage | null>(null);
+  /** Último voto propio visto por poll_id: los broadcasts no traen my_vote. */
+  const myVotesRef = useRef<Map<string, number>>(new Map());
   const wsRef = useRef<WebSocket | null>(null);
   const attemptRef = useRef(0);
   const timerRef = useRef<number | null>(null);
   const closedRef = useRef(false);
   // Refs para no reconectar cuando el padre re-renderiza con callbacks inline.
+  const role = opts.role;
   const optsRef = useRef(opts);
   optsRef.current = opts;
   // event_id ya vistos: traga ecos/redeliveries del servidor.
@@ -73,6 +118,27 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     [remember],
   );
 
+  const pushReaction = useCallback(
+    (msg: ReactionBroadcast) => {
+      if (remember(msg.event_id)) return;
+      setReactions((prev) => [...prev.slice(-(REACTION_STREAM_LIMIT - 1)), msg]);
+    },
+    [remember],
+  );
+
+  const pushLaser = useCallback(
+    (msg: LaserPoint) => {
+      if (remember(msg.event_id)) return;
+      setLaser((prev) => [...prev.slice(-(LASER_STREAM_LIMIT - 1)), msg]);
+    },
+    [remember],
+  );
+
+  const applyPoll = useCallback((msg: PollState) => {
+    if (typeof msg.my_vote === 'number') myVotesRef.current.set(msg.poll_id, msg.my_vote);
+    setPoll({ ...msg, my_vote: myVotesRef.current.get(msg.poll_id) ?? null });
+  }, []);
+
   useEffect(() => {
     if (!roomId) {
       setStatus('closed');
@@ -80,18 +146,45 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     }
     closedRef.current = false;
     attemptRef.current = 0;
+    // Por efecto: un ticket que llega tras desmontar (o tras cambiar de sala) se descarta.
+    let disposed = false;
+
+    const scheduleReconnect = () => {
+      const { reconnectBaseMs = 500, reconnectMaxMs = 8000 } = optsRef.current;
+      const delay = Math.min(reconnectBaseMs * 2 ** attemptRef.current, reconnectMaxMs);
+      attemptRef.current += 1;
+      setStatus('reconnecting');
+      timerRef.current = window.setTimeout(connect, delay);
+    };
 
     const connect = () => {
+      setStatus(attemptRef.current === 0 ? 'connecting' : 'reconnecting');
+      if (role === 'host') {
+        apiFetch(`/rooms/${encodeURIComponent(roomId)}/sync-ticket`, { method: 'POST' })
+          .then((ticket: { token: string }) => {
+            if (!disposed) openSocket(ticket.token);
+          })
+          .catch((err: unknown) => {
+            if (disposed) return;
+            const status = errorStatus(err);
+            if (status !== null && FATAL_TICKET_STATUS.includes(status)) {
+              setStatus('closed');
+              return;
+            }
+            scheduleReconnect();
+          });
+        return;
+      }
+      openSocket(role === 'guest' ? (localStorage.getItem('tint_guest_token') ?? '') : resolveToken());
+    };
+
+    const openSocket = (token: string) => {
       const {
         createSocket = (url: string) => new WebSocket(url),
         baseUrl,
         maxMessages = CHAT_HISTORY_LIMIT,
-        reconnectBaseMs = 500,
-        reconnectMaxMs = 8000,
       } = optsRef.current;
-      const token = resolveToken();
       const url = buildSocialUrl(resolveBaseUrl(baseUrl), roomId, token);
-      setStatus(attemptRef.current === 0 ? 'connecting' : 'reconnecting');
       const ws = createSocket(url);
       wsRef.current = ws;
 
@@ -107,8 +200,17 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
           setMessages(parsed.messages.slice(-maxMessages));
         } else if (parsed.type === 'chat_message' || parsed.type === 'notice') {
           pushMessage(parsed);
+        } else if (parsed.type === 'reaction') {
+          pushReaction(parsed);
+        } else if (parsed.type === 'laser') {
+          pushLaser({ ...parsed, end: parsed.end === true });
+        } else if (parsed.type === 'poll_state') {
+          applyPoll(parsed);
+        } else if (parsed.type === 'recap') {
+          setRecap(parsed);
+        } else if (parsed.type === 'error') {
+          setLastError({ code: parsed.code, event_id_ref: parsed.event_id_ref });
         }
-        // Los errores (RATE_LIMITED, etc.) se ignoran en esta fase.
       };
       ws.onclose = () => {
         // Solo el socket vigente puede cambiar el estado/programar
@@ -120,13 +222,7 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
           setStatus('closed');
           return;
         }
-        const delay = Math.min(
-          reconnectBaseMs * 2 ** attemptRef.current,
-          reconnectMaxMs,
-        );
-        attemptRef.current += 1;
-        setStatus('reconnecting');
-        timerRef.current = window.setTimeout(connect, delay);
+        scheduleReconnect();
       };
       ws.onerror = () => {
         ws.close();
@@ -135,12 +231,13 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
 
     connect();
     return () => {
+      disposed = true;
       closedRef.current = true;
       if (timerRef.current !== null) window.clearTimeout(timerRef.current);
       wsRef.current?.close();
       wsRef.current = null;
     };
-  }, [roomId, pushMessage, remember]);
+  }, [roomId, role, pushMessage, pushReaction, pushLaser, applyPoll, remember]);
 
   const send = useCallback(
     (text: string) => {
@@ -154,5 +251,93 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
     [roomId],
   );
 
-  return { status, messages, send };
+  const sendReaction = useCallback(
+    (emoji: string, positionMs = 0) => {
+      if (!roomId || !isReactionEmoji(emoji)) return false;
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      ws.send(buildReactionSend(roomId, emoji as ReactionEmoji, positionMs));
+      return true;
+    },
+    [roomId],
+  );
+
+  /** Envía un punto del láser (x, y en 0..1) y lo pinta al instante; su eco se descarta. */
+  const sendLaser = useCallback(
+    (x: number, y: number, end = false) => {
+      if (!roomId) return false;
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+      const eventId = newEventId();
+      ws.send(buildLaserPoint(roomId, x, y, end, eventId));
+      const me = getLocalIdentity();
+      pushLaser({
+        type: 'laser',
+        event_id: eventId,
+        user_id: me?.sub ?? '',
+        nick: me?.nick ?? '',
+        x: clamp01(x),
+        y: clamp01(y),
+        end,
+        own: true,
+      });
+      return true;
+    },
+    [roomId, pushLaser],
+  );
+
+  /** Envía un frame ya armado si el socket está abierto (y limpia el último error). */
+  const sendFrame = useCallback((build: (room: string) => string) => {
+    if (!roomId) return false;
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return false;
+    setLastError(null);
+    ws.send(build(roomId));
+    return true;
+  }, [roomId]);
+
+  const createPoll = useCallback(
+    (question: string, options: string[], durationS: number) => {
+      if (validatePollDraft(question, options, durationS)) return false;
+      return sendFrame((room) => buildPollCreate(room, question, options, durationS));
+    },
+    [sendFrame],
+  );
+
+  const votePoll = useCallback(
+    (pollId: string, option: number) => {
+      const ok = sendFrame((room) => buildPollVote(room, pollId, option));
+      if (ok) {
+        // Optimista hasta que llegue el poll_state con my_vote.
+        myVotesRef.current.set(pollId, option);
+        setPoll((prev) => (prev && prev.poll_id === pollId ? { ...prev, my_vote: option } : prev));
+      }
+      return ok;
+    },
+    [sendFrame],
+  );
+
+  const closePoll = useCallback(
+    (pollId: string) => sendFrame((room) => buildPollClose(room, pollId)),
+    [sendFrame],
+  );
+
+  const requestRecap = useCallback(() => sendFrame((room) => buildRecapRequest(room)), [sendFrame]);
+
+  return {
+    status,
+    messages,
+    reactions,
+    laser,
+    poll,
+    recap,
+    lastError,
+    send,
+    sendReaction,
+    sendLaser,
+    createPoll,
+    votePoll,
+    closePoll,
+    requestRecap,
+  };
 }

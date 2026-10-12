@@ -23,6 +23,14 @@ export async function create(user: NewUser) {
   return result[0];
 }
 
+/**
+ * Crea o recupera el usuario en un solo `INSERT ... ON CONFLICT (provider, provider_sub)
+ * DO UPDATE`: dos primeros logins concurrentes ya no pueden duplicarlo. En cada login se
+ * refrescan email, nombre y avatar con lo que trae el ID token de Firebase.
+ *
+ * Al insertar por primera vez, asigna el rol indicado o 'participant' por defecto.
+ * En logins subsecuentes, conserva el rol existente.
+ */
 export async function upsertByProvider(userData: {
   providerSub: string;
   email?: string | null;
@@ -32,20 +40,26 @@ export async function upsertByProvider(userData: {
   role?: 'public_host' | 'private_host' | 'participant';
   roleId?: string | null;
 }) {
-  const provider = userData.provider || 'firebase';
-  const existing = await findByProviderSub(userData.providerSub, provider);
-  if (existing) {
-    return existing;
-  }
-  return create({
-    provider,
-    providerSub: userData.providerSub,
-    email: userData.email,
-    displayName: userData.displayName,
-    avatarUrl: userData.avatarUrl,
-    role: userData.role || 'participant',
-    roleId: userData.roleId || null,
-  });
+  const profile = {
+    email: userData.email ?? null,
+    displayName: userData.displayName ?? null,
+    avatarUrl: userData.avatarUrl ?? null,
+  };
+  const result = await db
+    .insert(users)
+    .values({
+      provider: userData.provider || 'firebase',
+      providerSub: userData.providerSub,
+      ...profile,
+      role: userData.role || 'participant',
+      roleId: userData.roleId ?? null,
+    })
+    .onConflictDoUpdate({
+      target: [users.provider, users.providerSub],
+      set: { ...profile, updatedAt: new Date() },
+    })
+    .returning();
+  return result[0];
 }
 
 export async function updateRole(id: string, role: string, roleId?: string | null) {
@@ -63,3 +77,4 @@ export async function updateRole(id: string, role: string, roleId?: string | nul
     .returning();
   return result[0] || null;
 }
+

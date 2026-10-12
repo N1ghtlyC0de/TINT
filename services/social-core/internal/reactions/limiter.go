@@ -23,7 +23,19 @@ type Limiter struct {
 
 // NewLimiter crea un limitador con el límite por defecto de TINT.
 func NewLimiter() *Limiter {
-	return &Limiter{limit: MaxPerSecond, window: time.Second, history: make(map[string][]time.Time)}
+	return NewLimiterWith(MaxPerSecond, time.Second)
+}
+
+// NewLimiterWith crea un limitador de limit eventos por window y usuario
+// (p. ej. el puntero láser, 30/s). Valores ≤ 0 usan los de TINT (5/s).
+func NewLimiterWith(limit int, window time.Duration) *Limiter {
+	if limit <= 0 {
+		limit = MaxPerSecond
+	}
+	if window <= 0 {
+		window = time.Second
+	}
+	return &Limiter{limit: limit, window: window, history: make(map[string][]time.Time)}
 }
 
 // Allow indica si el usuario puede emitir una reacción en el instante now.

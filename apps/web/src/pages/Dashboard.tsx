@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { apiFetch, ApiError } from '../lib/api';
+import { apiFetch, ApiError, loginRedirectPath } from '../lib/api';
 import { toAbsoluteInviteLink } from '../lib/invite';
 import { Link, useNavigate } from 'react-router-dom';
 import { AppShell } from '../components/layout/AppShell';
@@ -21,7 +21,7 @@ export default function Dashboard() {
       .catch((e: unknown) => {
         if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
           localStorage.removeItem('tint_token');
-          navigate('/login');
+          navigate(loginRedirectPath('/dashboard'));
         } else {
           setError(e instanceof Error ? e.message : 'Error desconocido');
         }
@@ -161,6 +161,13 @@ export default function Dashboard() {
                       className="rounded-full px-3 py-1.5 text-[13px] text-tint-muted transition hover:bg-white/5 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tint-accent"
                     >
                       Gestionar
+                    </Link>
+                    <Link
+                      to={`/rooms/${room.id}/analytics`}
+                      aria-label={`Análisis de ${room.title}`}
+                      className="rounded-full px-3 py-1.5 text-[13px] text-tint-muted transition hover:bg-white/5 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-tint-accent"
+                    >
+                      Análisis
                     </Link>
                     <button
                       type="button"

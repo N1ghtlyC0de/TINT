@@ -29,6 +29,54 @@ export function issueGuestToken(roomId: string, nick: string): { token: string; 
     exp,
     iat: now,
   };
-  const token = jwt.sign(payload, env.JWT_SECRET);
+  const token = jwt.sign(payload, env.JWT_SECRET, { algorithm: 'HS256' });
   return { token, payload };
 }
+
+export interface SyncTicketPayload {
+  sub: string;
+  room_id: string;
+  role: 'host';
+  nick: string;
+  jti: string;
+  iss: string;
+  aud: string;
+  exp: number;
+  iat: number;
+}
+
+export interface SyncTicketInput {
+  userId: string;
+  roomId: string;
+  nick?: string | null;
+}
+
+export type HostTicketPayload = SyncTicketPayload;
+export type HostTicketInput = SyncTicketInput;
+
+/**
+ * Ticket de host de corta duración (HS256, mismo secreto que los guest tokens,
+ * TTL `SYNC_TICKET_TTL_SECONDS`). Lo usan los servicios que solo validan JWT
+ * simétricos y no conocen los ID tokens de Firebase: el WebSocket /ws/sync de
+ * sync-core (sync-ticket) y la API de lectura de analytics (analytics-ticket).
+ */
+export function generateHostTicket({ userId, roomId, nick }: HostTicketInput): { token: string; expiresAt: Date } {
+  const now = Math.floor(Date.now() / 1000);
+  const exp = now + env.SYNC_TICKET_TTL_SECONDS;
+  const payload: SyncTicketPayload = {
+    sub: userId,
+    room_id: roomId,
+    role: 'host',
+    nick: nick?.trim() || 'Host',
+    jti: uuidv4(),
+    iss: env.JWT_ISSUER,
+    aud: env.JWT_AUDIENCE,
+    exp,
+    iat: now,
+  };
+  const token = jwt.sign(payload, env.JWT_SECRET, { algorithm: 'HS256' });
+  return { token, expiresAt: new Date(exp * 1000) };
+}
+
+/** Sync-ticket para /ws/sync: mismo ticket de host. */
+export const generateSyncTicket = generateHostTicket;

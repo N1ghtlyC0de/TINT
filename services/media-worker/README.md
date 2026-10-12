@@ -1,0 +1,79 @@
+# media-worker
+
+Prepara los vídeos subidos a TINT antes de publicarlos: los valida con ffprobe, los normaliza a MP4 H.264 + AAC y calcula la paleta Ambilight con FFmpeg. Requiere `ffprobe` y `ffmpeg` en el `PATH`.
+
+Para ver dónde encaja en el flujo completo y quién hace qué, lee [docs/Flujo general de TINT.pdf](docs/Flujo%20general%20de%20TINT.pdf).
+
+El núcleo se invoca con `media_worker.pipeline.process_video(video_id, source, repo, blobs)`, donde `source` es la ruta local del archivo.
+
+## Disparador (`python -m media_worker`)
+
+El navegador sube el original directo al bucket, a la zona de staging `incoming/{video_id}/original.<ext>` (URL PUT firmada por identity-api), y al confirmar identity-api hace `XADD media:uploads * video_id <id>`. El disparador es quien llama al núcleo:
+
+1. `consumer.StreamConsumer` lee `media:uploads` con el grupo `media-workers` (`XREADGROUP`) y confirma con `XACK` cada evento procesado. Un fallo de SQL o S3 deja el evento pendiente: espera 5 s y lo reintenta hasta que salga bien, sin tumbar el worker.
+2. `jobs.handle_upload` descarta ids que no son UUID (antes de tocar SQL), lee `status` y `storage_key` de `videos`, descarga el original a un archivo temporal y llama a `process_video` **sin modificarlo**. No reprocesa un vídeo ya publicado; si el original no está en el bucket, lo marca `failed`.
+3. `process_video` publica `{video_id}/source.mp4` (el vídeo normalizado) solo si el vídeo es válido. El staging lo borra la regla de ciclo de vida de `minio-init` a los 2 días (no se borra al publicar para no cortar a quien ya lo reproducía).
+
+Corre como servicio en `docker compose` (`tint-media-worker`). La tabla `videos` es de `identity-api`: el worker solo actualiza `status`, `duration_ms`, `storage_key`, `renditions` y `updated_at`, nunca crea filas ni cambia el esquema.
+
+Variables propias del disparador (aparte de `Settings`, que no conoce Redis):
+
+| Variable | Por defecto |
+| :-- | :-- |
+| `REDIS_URL` | `redis://localhost:6379` |
+| `MEDIA_WORKER_CONSUMER` | nombre del host (estable por réplica: al reiniciar recupera sus pendientes) |
+
+## Preprocesamiento (`pipeline.process_video`)
+
+El vídeo **nunca se guarda en el bucket sin preprocesar**:
+
+1. Valida `video_id` (solo ids planos: `[A-Za-z0-9][A-Za-z0-9_-]{0,127}`); si no, lanza `InvalidVideoIdError` sin tocar SQL ni el bucket.
+2. Comprueba la extensión del archivo: solo `.mp4`, `.mov`, `.mkv` y `.webm` (sin distinguir mayúsculas). Cualquier otra lanza `UnsupportedFormatError` sin tocar SQL ni el bucket. Si el evento llega por el disparador (`jobs.py`), la extensión de la clave `incoming/…` se comprueba **antes de descargar**: el vídeo queda en `failed` y no se descarga nada.
+3. Marca `processing` (si la fila no existe, lanza `VideoNotFoundError`).
+4. Inspecciona el archivo con ffprobe y obtiene la duración en ms y la altura del primer stream de vídeo (en la misma llamada; si la altura falta no se generan calidades, pero el vídeo no falla).
+5. Si el original ya es MP4 con vídeo H.264 `yuv420p` y audio AAC (o sin audio), según ffprobe (`normalize.is_normalized`), **no se re-codifica**: se publica tal cual. Si no, normaliza con FFmpeg a MP4 (H.264 yuv420p + AAC, `-movflags +faststart`) en un archivo temporal que se borra siempre al terminar. Al re-codificar usa `libx264 -preset veryfast -crf 23` y `aac 128k`, con timeout de 4 h (`normalize.DEFAULT_TIMEOUT_S`) tras el cual mata FFmpeg.
+6. Sobre el vídeo **normalizado**, extrae un fotograma por segundo con FFmpeg y calcula el color de la franja del 10 % de cada borde.
+7. Sube el normalizado como `source.mp4` y `ambilight.json` (siempre las mismas claves).
+8. Genera las calidades reducidas (`renditions.py`): para cada altura de `(720, 360)` estrictamente menor que la del original, re-codifica el normalizado con `scale=-2:H`, `libx264 -preset veryfast -crf 23`, `aac 128k` y `+faststart` en un temporal y lo sube a `{video_id}/{H}p.mp4`. Una calidad que FFmpeg no logra generar se omite con un aviso, **sin marcar `failed`**.
+9. Marca `ready` con `duration_ms`, `storage_key` y `renditions` (jsonb con las alturas publicadas, p. ej. `[720,360]`, o `[]`).
+
+Si el archivo está corrupto, no existe o FFmpeg falla (normalización o Ambilight, incluido el timeout), el vídeo queda en `failed` y no se sube nada. Si falla la infraestructura (SQL, MinIO), la excepción se propaga sin marcar `failed`, para que quien llama decida si reintenta.
+
+## Pruebas locales con películas reales (2026-10-11)
+
+Se ejecutó `process_video` con `ffprobe`/`ffmpeg` reales, pero con repositorio y bucket en memoria (`tests/fakes.py`): no se tocó PostgreSQL ni MinIO y los resultados no se guardaron en disco.
+
+| Archivo | Formato | Resultado | Binarios | Tiempo |
+| :-- | :-- | :-- | :-- | :-- |
+| `source.mp4` (2 h, 710 MB) | H.264 + AAC, mp4 | `ready`, publicado sin re-codificar | solo `ffprobe` | 153 s |
+| `silence.mp4` (~2 h, 1,9 GB) | H.264 + AAC, mp4 | `ready`, publicado sin re-codificar | solo `ffprobe` | 305 s |
+| `BadApple.webm` (3,6 min) | AV1 + Opus, webm | `ready`, re-codificado a MP4 | `ffprobe` + `ffmpeg` | 23 s |
+| MKV de 30 s (copia de stream) | H.264 + AAC, mkv | `is_normalized` = `False` (se normalizaría) | solo la comprobación | — |
+
+En lo ya normalizado el tiempo es casi todo Ambilight (7 149 y 7 112 muestras). La re-codificación completa de una película de 2 h no se ha medido todavía.
+
+## Configuración (`config.Settings.from_env`)
+
+| Variable | Obligatoria | Por defecto |
+| :-- | :-- | :-- |
+| `DATABASE_URL` | sí | — (p. ej. `postgresql://tint:tint@localhost:5432/tint`) |
+| `S3_ACCESS_KEY` / `S3_SECRET_KEY` | sí | `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` si existen |
+| `S3_ENDPOINT_URL` | no | `http://localhost:9000` |
+| `MINIO_BUCKET` | no | `tint-media` |
+
+## Desarrollo
+
+```bash
+pip install -r requirements-dev.txt
+ruff check . && ruff format --check .
+pytest --cov=src --cov-fail-under=85
+pytest -m stress          # solo las pruebas de estrés (MED-TEST-01)
+pytest -m "not stress"    # ciclo rápido sin las pruebas de estrés
+```
+
+Las pruebas nunca ejecutan FFmpeg, S3, Redis ni PostgreSQL reales: se inyectan dobles (`tests/fakes.py`). El flujo con servicios reales se prueba desde identity-api: `WAIT_WORKER=1 npm run test:integration`.
+
+## Documentación
+
+- Estado, decisiones y pendientes: [STATUS.md](STATUS.md).
+- Reglas del dominio: [AGENTS.md](AGENTS.md).

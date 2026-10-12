@@ -64,3 +64,29 @@ func HistoryKey(roomID string) string {
 func ChannelKey(roomID string) string {
 	return "room:" + roomID + ":social"
 }
+
+// SyncChannelKey es el canal Pub/Sub de sync-core por el que identity-api
+// publica REVOKED (contrato v2 §5). social-core solo lee REVOKED de ahí.
+func SyncChannelKey(roomID string) string {
+	return "room:" + roomID + ":sync"
+}
+
+// RevokedKey marca un token revocado por identity-api (SET … EXAT exp).
+func RevokedKey(jti string) string {
+	return "token:revoked:" + jti
+}
+
+// Inbound es un evento recibido por Pub/Sub para una sala: o bien un payload
+// para reenviar a los clientes locales (deduplicado por EventID), o bien la
+// revocación de un token (RevokedJTI), que nunca llega a los clientes.
+type Inbound struct {
+	EventID string
+	// Type es el tipo del evento social (p. ej. poll_state agenda timers).
+	Type       socialevent.Type
+	Payload    []byte
+	RevokedJTI string
+	// Sync es un comando de reproducción de sync-core (PLAY, PAUSE, SEEK,
+	// RATE, LOAD) leído de room:{id}:sync para el recap; nunca llega a los
+	// clientes.
+	Sync *socialevent.SyncEvent
+}

@@ -2,6 +2,8 @@ package chat
 
 import (
 	"context"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -63,14 +65,14 @@ func TestRedisPubSubAndTrack(t *testing.T) {
 	}
 	select {
 	case got := <-sub:
-		if got.EventID != "9" || got.Text != "hola pubsub" {
+		if got.EventID != "9" || !strings.Contains(string(got.Payload), "hola pubsub") || got.RevokedJTI != "" {
 			t.Fatalf("sub = %+v", got)
 		}
 	case <-ctx.Done():
 		t.Fatal("timeout esperando Pub/Sub")
 	}
-	if err := s.TrackChat(ctx, m, 11); err != nil {
-		t.Fatalf("TrackChat: %v", err)
+	if s.Client() == nil {
+		t.Fatal("Client() no debe ser nil")
 	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -86,4 +88,168 @@ func TestNewRedisStoreDefaultsAndBadURL(t *testing.T) {
 		t.Fatalf("Parse URL válida: %v", err)
 	}
 	_ = s.Close()
+}
+
+// identity-api revoca con SET token:revoked:{jti} y PUBLISH REVOKED en
+// room:{id}:sync (contrato v2 §5). La suscripción de sala lo entrega como
+// RevokedJTI e ignora el resto del tráfico de sync-core.
+func TestRedisSubscribeDeliversRevoked(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+	s := NewRedisStoreWithClient(client, 3, time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sub, stop := s.Subscribe(ctx, "r1")
+	defer stop()
+	waitSubscribers(t, mr, SyncChannelKey("r1"))
+
+	for _, raw := range []string{
+		`{"type":"HEARTBEAT","room_id":"r1","event_id":"h1"}`,
+		`{"type":"PAUSE","room_id":"r1"}`,
+		`{"type":"SEEK","room_id":"r1","event_id":"s0","position_ms":-5}`,
+		`no-json`,
+		`{"type":"REVOKED","room_id":"r1"}`,
+		`{"event_id":"x","type":"REVOKED","room_id":"r1","jti":"J1","position_ms":0,"version":0}`,
+	} {
+		if err := client.Publish(ctx, SyncChannelKey("r1"), raw).Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Basura en el canal social tampoco se reenvía.
+	_ = client.Publish(ctx, ChannelKey("r1"), "no-json").Err()
+	_ = client.Publish(ctx, ChannelKey("r1"), `{"type":"otro","event_id":"z"}`).Err()
+	select {
+	case got := <-sub:
+		if got.RevokedJTI != "J1" || got.Payload != nil {
+			t.Fatalf("sub = %+v, want RevokedJTI J1", got)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout esperando REVOKED")
+	}
+}
+
+func TestRedisPublishReactionRelayed(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+	s := NewRedisStoreWithClient(client, 3, time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sub, stop := s.Subscribe(ctx, "r1")
+	defer stop()
+	waitSubscribers(t, mr, ChannelKey("r1"))
+	now := time.Now().UTC()
+	r := socialevent.Reaction{
+		EventID: "re1", Type: socialevent.TypeReaction, RoomID: "r1", UserID: "u1",
+		Nick: "Ana", Emoji: "👏", PositionMS: 5000, OccurredAt: now, ReceivedAt: now,
+	}
+	if err := s.PublishReaction(ctx, "r1", r); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-sub:
+		if got.EventID != "re1" || !strings.Contains(string(got.Payload), `"type":"reaction"`) {
+			t.Fatalf("sub = %+v", got)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout esperando la reacción")
+	}
+}
+
+// Los comandos de reproducción de sync-core alimentan el recap: se
+// entregan como Sync (nunca como payload para los clientes).
+func TestRedisSubscribeDeliversSyncCommands(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+	s := NewRedisStoreWithClient(client, 3, time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sub, stop := s.Subscribe(ctx, "r1")
+	defer stop()
+	waitSubscribers(t, mr, SyncChannelKey("r1"))
+	raw := `{"event_id":"s1","type":"SEEK","room_id":"r1","position_ms":42000,"status":"playing","rate":1.5,"updated_at_ms":99,"version":7}`
+	if err := client.Publish(ctx, SyncChannelKey("r1"), raw).Err(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-sub:
+		want := socialevent.SyncEvent{EventID: "s1", Type: "SEEK", PositionMS: 42000, Status: "playing", Rate: 1.5, UpdatedAtMS: 99, Version: 7}
+		if got.Sync == nil || *got.Sync != want || got.Payload != nil || got.EventID != "" {
+			t.Fatalf("sub = %+v, want Sync %+v", got, want)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout esperando el SEEK")
+	}
+}
+
+// El puntero láser viaja por el mismo canal, re-serializado por tipo.
+func TestRedisPublishRawLaserRelayed(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+	s := NewRedisStoreWithClient(client, 3, time.Hour)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	sub, stop := s.Subscribe(ctx, "r1")
+	defer stop()
+	waitSubscribers(t, mr, ChannelKey("r1"))
+	raw := `{"event_id":"l1","type":"laser","room_id":"r1","user_id":"h","nick":"Ana","x":0.5,"y":0.25,"end":false,"extra":"x"}`
+	if err := s.PublishRaw(ctx, "r1", []byte(raw)); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-sub:
+		if got.EventID != "l1" || !strings.Contains(string(got.Payload), `"x":0.5`) || strings.Contains(string(got.Payload), "extra") {
+			t.Fatalf("sub = %+v, want laser re-serializado", got)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout esperando el láser")
+	}
+	// poll_state también se reenvía y lleva su tipo (el relay agenda timers).
+	poll := `{"event_id":"ps1","type":"poll_state","room_id":"r1","poll_id":"p1","question":"q","options":["a","b"],"counts":[1,0],"closes_at_ms":5,"closed":false}`
+	if err := s.Client().Publish(ctx, ChannelKey("r1"), poll).Err(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-sub:
+		if got.EventID != "ps1" || got.Type != socialevent.TypePollState || !strings.Contains(string(got.Payload), `"counts":[1,0]`) {
+			t.Fatalf("sub = %+v, want poll_state", got)
+		}
+	case <-ctx.Done():
+		t.Fatal("timeout esperando poll_state")
+	}
+}
+
+func waitSubscribers(t *testing.T, mr *miniredis.Miniredis, channel string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for mr.PubSubNumSub(channel)[channel] == 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("sin suscriptores en %s", channel)
+		}
+		runtime.Gosched()
+	}
+}
+
+func TestRedisIsRevoked(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+	s := NewRedisStoreWithClient(client, 3, time.Hour)
+	ctx := context.Background()
+	if err := mr.Set(RevokedKey("J1"), "1"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.IsRevoked(ctx, "J1"); err != nil || !ok {
+		t.Fatalf("J1 = %v, %v, want revocado", ok, err)
+	}
+	if ok, err := s.IsRevoked(ctx, "J2"); err != nil || ok {
+		t.Fatalf("J2 = %v, %v, want vigente", ok, err)
+	}
+	mr.Close()
+	if _, err := s.IsRevoked(ctx, "J2"); err == nil {
+		t.Fatal("con Redis caído debe devolver error (el handshake falla cerrado)")
+	}
 }

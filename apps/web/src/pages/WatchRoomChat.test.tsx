@@ -1,9 +1,11 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import { vi, beforeEach } from 'vitest';
 import WatchRoom from './WatchRoom';
+import { MockWebSocket } from '../test/mockWebSocket';
 import { formatChatTime } from '../lib/socialSocket';
+import { testGuestToken } from '../test/guestToken';
 
 vi.mock('../lib/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../lib/api')>();
@@ -11,6 +13,7 @@ vi.mock('../lib/api', async (importOriginal) => {
 });
 
 const sendMock = vi.fn(() => true);
+const sendReactionMock = vi.fn(() => true);
 
 vi.mock('../hooks/useSocialSocket', () => ({
   useSocialSocket: () => ({
@@ -36,8 +39,41 @@ vi.mock('../hooks/useSocialSocket', () => ({
         text: 'Pedro entró al chat',
         occurred_at: '2026-10-10T10:06:00Z',
       },
+      {
+        event_id: 'm2',
+        type: 'chat_message',
+        room_id: 'r1',
+        user_id: 'u3',
+        nick: 'Luis',
+        text: 'Buenas noches',
+        occurred_at: '2026-10-10T10:07:00Z',
+        received_at: '2026-10-10T10:07:01Z',
+      },
+    ],
+    reactions: [
+      {
+        event_id: 'e9',
+        type: 'reaction',
+        room_id: 'r1',
+        user_id: 'u3',
+        nick: 'Luis',
+        emoji: '❤️',
+        position_ms: 12000,
+        occurred_at: '2026-10-10T10:07:00Z',
+        received_at: '2026-10-10T10:07:00Z',
+      },
     ],
     send: sendMock,
+    sendReaction: sendReactionMock,
+    laser: [],
+    sendLaser: vi.fn(() => true),
+    poll: null,
+    lastError: null,
+    createPoll: vi.fn(() => true),
+    votePoll: vi.fn(() => true),
+    closePoll: vi.fn(() => true),
+    recap: null,
+    requestRecap: vi.fn(() => true),
   }),
 }));
 
@@ -53,8 +89,12 @@ function renderWatch() {
 
 describe('WatchRoom chat en vivo', () => {
   beforeEach(() => {
+  // El Canal Sync (/ws/sync) se prueba en WatchRoom.sync.test.tsx: aquí no abre sockets reales.
+  vi.stubGlobal('WebSocket', MockWebSocket);
     vi.clearAllMocks();
     localStorage.clear();
+    // El chat se prueba como invitado con sesión (sin token sale la puerta).
+    localStorage.setItem('tint_guest_token', testGuestToken());
   });
 
   it('muestra el historial del socket y envía por el canal social', async () => {
@@ -85,6 +125,22 @@ describe('WatchRoom chat en vivo', () => {
     expect(notice.closest('li')).not.toHaveClass('bg-white/5');
   });
 
+  it('flota la reacción de otros usuarios sobre el reproductor', async () => {
+    renderWatch();
+    expect(await screen.findByText('Hola grupo')).toBeInTheDocument();
+    // El ❤️ de Luis flota (overlay) y no aparece como mensaje del chat.
+    const floats = screen.getAllByText('❤️');
+    expect(floats.length).toBeGreaterThanOrEqual(1);
+    expect(within(screen.getByRole('list')).queryByText('❤️')).not.toBeInTheDocument();
+  });
+
+  it('envía la reacción al pulsar la barra', async () => {
+    renderWatch();
+    await screen.findByText('Hola grupo');
+    await userEvent.click(screen.getByRole('button', { name: /corazón/i }));
+    expect(sendReactionMock).toHaveBeenCalledWith('❤️', 0);
+  });
+
   it('la lista de mensajes tiene altura acotada con scroll interno', async () => {
     const { container } = renderWatch();
     const list = await screen.findByRole('list');
@@ -95,5 +151,27 @@ describe('WatchRoom chat en vivo', () => {
     const card = list.closest('div');
     expect(card?.className).toContain('h-[560px]');
     expect(container.querySelector('aside')?.className).toContain('min-h-0');
+  });
+
+  it('muestra el nick propio en el header', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken({ sub: 'u1', nick: 'Ana' }));
+    renderWatch();
+    expect(await screen.findByText('Hola grupo')).toBeInTheDocument();
+    const chip = screen.getByTitle(/conectado como ana/i);
+    expect(chip.textContent).toMatch(/ana/i);
+  });
+
+  it('alinea a la derecha los mensajes propios y a la izquierda los ajenos', async () => {
+    localStorage.setItem('tint_guest_token', testGuestToken({ sub: 'u1', nick: 'Ana' }));
+    renderWatch();
+    expect(await screen.findByText('Hola grupo')).toBeInTheDocument();
+    const own = screen.getByText('Hola grupo').closest('li');
+    expect(own?.className).toContain('ml-auto');
+    expect(own?.className).toContain('w-fit');
+    expect(screen.queryByText('Ana:')).not.toBeInTheDocument();
+    const other = screen.getByText('Buenas noches').closest('li');
+    expect(other?.className).not.toContain('ml-auto');
+    expect(other?.className).toContain('w-fit');
+    expect(screen.getByText('Luis:')).toBeInTheDocument();
   });
 });

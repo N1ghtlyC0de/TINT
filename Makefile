@@ -2,7 +2,9 @@ GO_SERVICES := services/sync-core services/social-core
 PY_SERVICES := services/media-worker services/analytics
 COVERAGE_MIN := 85
 
-.PHONY: up down test-all test-go test-python test-identity test-web
+NODE_SERVICES := services/identity-api
+
+.PHONY: up down test-all test-go test-python test-web test-node
 
 up:
 	docker compose up -d
@@ -10,7 +12,7 @@ up:
 down:
 	docker compose down
 
-test-all: test-go test-python test-identity test-web
+test-all: test-go test-python test-web test-node
 
 test-go:
 	@for svc in $(GO_SERVICES); do \
@@ -22,7 +24,9 @@ test-go:
 test-python:
 	@for svc in $(PY_SERVICES); do \
 		echo "==> $$svc"; \
-		(cd $$svc && python3 -m pytest --cov=src --cov-fail-under=$(COVERAGE_MIN)) || exit 1; \
+		(cd $$svc && \
+		 if [ -f .venv/bin/activate ]; then . .venv/bin/activate; fi && \
+		 python3 -m pytest --cov=src --cov-fail-under=$(COVERAGE_MIN)) || exit 1; \
 	done
 
 test-identity:
@@ -30,3 +34,10 @@ test-identity:
 
 test-web:
 	cd apps/web && npm ci && npx vitest run --coverage
+
+test-node:
+	@for svc in $(NODE_SERVICES); do \
+		echo "==> $$svc"; \
+		(cd $$svc && npm ci && npm run typecheck && npx vitest run --coverage) || exit 1; \
+	done
+

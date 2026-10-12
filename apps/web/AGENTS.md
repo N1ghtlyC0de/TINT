@@ -8,6 +8,8 @@ Eres el agente especializado en la capa de presentación de **TINT**. Tu foco es
 - Tailwind CSS 3 (paleta `tint.*` en `tailwind.config.js`)
 - Vitest + Testing Library (`jsdom`) + cobertura `v8`
 - ESLint 9 (`typescript-eslint`, `react-hooks`)
+- `@msgpack/msgpack` — codificación MessagePack opcional del Canal Sync (implementación oficial, sin dependencias, mismo modelo de datos que el JSON del protocolo).
+- `framer-motion` 11.11.17 — animaciones declarativas (`AnimatePresence`, `MotionConfig reducedMotion="user"`) del cuestionario `/test-me`; respeta `prefers-reduced-motion` y evita escribir keyframes CSS a mano.
 
 ## Responsabilidades
 - Reproductor, sala, chat, reacciones, trivias y visualización Ambilight/Heatmap.
@@ -22,14 +24,80 @@ Eres el agente especializado en la capa de presentación de **TINT**. Tu foco es
 ## Modelo de Datos Involucrado
 | Entidad | Origen | Campos clave |
 | :--- | :--- | :--- |
-| `SyncEvent` | sync-core | `event_id`, `type` (`PLAY`/`PAUSE`/`SEEK`/`HEARTBEAT`), `position_ms`, `occurred_at`, `received_at` |
+| `SyncEvent` | sync-core (`/ws/sync`) | `event_id`, `type` (`PLAY`/`PAUSE`/`SEEK`/`RATE`/`LOAD`/`VOLUME`/`QUALITY`/`STATE`/`HEARTBEAT`/`SYNC_CHECK`/`SYNC_CORRECTION`/`HOST_STATUS`/`CONTROL`/`ACK`/`ERROR`), `room_id`, `position_ms`, `version`, `occurred_at`, `received_at` + ancla (`status`, `rate`, `updated_at_ms`, `server_time_ms`) + v2: `media_id`, `can_control`, `rtt_ms`/`drift_ms` (HEARTBEAT), `volume` (0..1, ausente → 1) y `quality` (`auto`/`source`/`720p`/`360p`, ausente → `auto`) en cada snapshot. Contrato completo en [`services/sync-core/AGENTS.md`](../../services/sync-core/AGENTS.md) |
+| `SyncTicket` | identity-api (`POST /rooms/:id/sync-ticket`) | `token` (HS256, `role: host`), `expiresAt` |
+| `RoomPlayback` | identity-api (`GET /rooms/:id/playback`, host o guest token) | `mediaId`, `url` (GET prefirmado de MinIO), `expiresAt`, `status` (`pending`/`processing`/`ready`/`failed`/null), `ambilightUrl` (solo `ready`), `qualities` (`[{id: source\|720p\|360p, label, url}]`; ausente → solo el original) |
+| `UploadTicket` | identity-api (`POST /rooms/:id/media/uploads`, host) | `videoId`, `uploadUrl` (PUT prefirmado), `storageKey`, `expiresAt`, `headers`; se confirma con `POST …/uploads/:videoId/complete` → `mediaId` |
+| `RoomGuest` | identity-api (`GET /rooms/:id/guests`, `POST /rooms/:id/guests/:jti/revoke`) | `jti`, `nick`, `joinedAt`, `expiresAt`, `revoked` |
+| `AnalyticsTicket` | identity-api (`POST /rooms/:id/analytics-ticket`, host dueño, también con la sala cerrada) | `token` (HS256, `role: host`, `room_id`), `expiresAt` |
+| `RoomKpis` / `ReactionHeatmap` / `RoomTimeline` | analytics (`GET /rooms/:id/kpis`, `/reactions/heatmap`, `/timeline`, puerto 8084) | KPIs (`live`, `closed_at`, pico/promedio de espectadores, drift, conteos, buffering, % trivia); `buckets {bucket_start_ms, emoji, count}` + `by_emoji`; `points {t, connected_users, messages, reactions}` |
 | `Reaction` | social-core | `user_id`, `emoji`, `position_ms` (bucket de 5 s) |
 | `AmbilightFrame` | media-worker (`ambilight.json`) | `t_ms`, `top`, `bottom`, `left`, `right` (hex) |
 | `TriviaQuestion` / `Leaderboard` | social-core | `trivia_id`, `options`, `score` |
 
+## Canal Sync (implementado, contrato v2)
+| Pieza | Rol |
+| :--- | :--- |
+| `src/lib/syncProtocol.ts` | Tipos del protocolo v2, `toServerMessage`/`parseServerMessage` defensivos, `buildCommand` (con `rate`/`media_id`/`volume`/`quality`), `normalizeVolume`/`normalizeQuality`, `buildSyncCheck`, `expectedPosition`, `estimateServerNow`, `backoffDelay` (500 ms → 10 s), `CLOSE_REVOKED` (4001), `CLOSE_EXPIRED` (4003), `RATE_OPTIONS`/`stepRate`. |
+| `src/lib/syncCodec.ts` | Codificación JSON (default) o MessagePack (`tint.sync.msgpack`, `@msgpack/msgpack`); los frames se decodifican según su tipo real. |
+| `src/lib/drift.ts` | `computeDrift`, `correctionAction`, `applyCorrection` (seek o `playbackRate` 1.05/0.95) y `shouldRestoreRate` (< 100 ms o 5 s). |
+| `src/lib/syncQuality.ts` | Semáforo: verde RTT < 150 y \|drift\| < 200; amarillo RTT < 400 y \|drift\| ≤ 500; rojo el resto. |
+| `src/hooks/useSyncSocket.ts` | Conexión y reconexión (`reconnect: { attempt, nextRetryAt }`); el host pide un sync-ticket en cada intento y el invitado usa `tint_guest_token`. Responde `HEARTBEAT` con `SYNC_CHECK`, descarta mensajes con `version` vieja, expone `canControl` (`STATE.can_control`/`CONTROL`; host → true antes del 1.er STATE), `rttMs`/`driftMs`, `lastBroadcast` (con `own` por `event_id`) y `revoked` (cierre 4001: no reconecta y borra `tint_guest_token`) y `expired` (cierre 4003, token caducado: el invitado no reconecta y borra `tint_guest_token`; el host pide un sync-ticket nuevo una vez —se rearma al recibir `STATE`— y si se repite se rinde). Si el sync-ticket del host responde 403/404/410 deja de reintentar y expone `fatalError` (`NOT_HOST`/`ROOM_GONE`). `sendCommand` admite PLAY/PAUSE/SEEK/RATE/LOAD/VOLUME/QUALITY (pre-valida `volume` ∈ [0, 1] y `quality`). Expone `volume`/`quality` maestros (STATE, broadcasts —filtrados por `version` como RATE— y `SYNC_CORRECTION`, que solo los pisa si los trae). |
+| `src/hooks/useRoomPlayback.ts` | `GET /rooms/:id/playback` al montar, cuando cambia el `media_id` del estado sync y ~1 min antes de `expiresAt`. Expone `status`/`ambilightUrl` y, mientras el vídeo está `pending`/`processing`, re-consulta cada 5 s (máx. 120) sin cambiar el `src` (adopta las `qualities` nuevas conservando la URL del original). Expone `qualities`. Si el invitado recibe 401/403 borra `tint_guest_token` y expone `revoked` (pantalla "Tu invitación ya no es válida"). |
+| `src/lib/quality.ts` | `normalizeQualities` (servidor sin `qualities` → original), `resolveQuality` (`auto` → 360p con `effectiveType` 2g/3g o `saveData`, 720p con ancho < 640 px, si no el original; la pedida que no exista cae al original) y `QUALITY_LABELS`. |
+| `src/lib/upload.ts` | Subida directa al Blob Storage: `requestUpload` → `uploadToBlob` (XHR `PUT` con progreso, cabeceras exactas, sin `Authorization`, `AbortSignal`) → `completeUpload`; `uploadErrorMessage` (413/409/403/404/410). |
+| `src/hooks/useSyncToasts.ts` · `src/components/sync/*` | Avisos de comandos ajenos (3 s, máx. 3, `aria-live`), semáforo de sincronía y "Reconectando… intento N · S s". |
+| `src/hooks/usePlayerShortcuts.ts` | Atajos para quien controla: Espacio/K, ←/→ y J/L (±10 s), `[`/`]` (velocidad), `?` (ayuda); ignorados en campos de texto. |
+| `src/components/player/SeekBar.tsx` | Barra de cine `role="slider"` (teclado y puntero), búfer, tiempo bajo el cursor y marcadores de saltos del host. |
+| `src/components/SyncedPlayer.tsx` | `<video>` gobernado por el estado maestro; controles habilitados por `canControl`; barra del host (`HostControlBar`); aviso "Host desconectado" y de control temporal delegado; botón de autoplay; fundido al corregir con seek (sin él con `prefers-reduced-motion`); re-aplica el estado al cambiar el `src`; aplica el `volume` maestro a todos (el participante tiene un silencio local, `aria-pressed`) y cambia el `src` a la calidad maestra resuelta. |
+| `src/components/host/*` | Paneles del host: "Cambiar vídeo" (subida desde el navegador con progreso y cancelar → `LOAD{media_id}`; secundaria: clave del bucket con `PUT /rooms/:id/media`) y "Participantes" (listar —se refresca cada 10 s y con "Actualizar"— y retirar invitados con confirmación). `HostControlBar` (solo con `canControl`, dentro de `SyncedPlayer`): volumen + silencio de la sala (`VOLUME`, deslizador con debounce de 150 ms), calidad (`Auto` + `playback.qualities` → `QUALITY`), velocidad (`RATE`, atajos `[`/`]`), puntero láser y "Crear encuesta". |
+
+## Canal Social: interacción del host
+JSON sobre `useSocialSocket` (`src/lib/socialSocket.ts`); social-core es autoritativo (permisos, conteos, cierres).
+
+- **Credencial:** social-core solo acepta láser y crear/cerrar encuestas con tokens HS256 de identity-api con `role` host/cohost de la sala (el ID token de Firebase recibe `FORBIDDEN`). Por eso `WatchRoom` abre el canal con `role: 'host'` → `useSocialSocket` pide un sync-ticket (`POST /rooms/:id/sync-ticket`) en cada (re)conexión (403/404/410 → deja de reintentar, `status: 'closed'`); con `role: 'guest'` usa `tint_guest_token`.
+- **Límites de social-core:** láser 30/s (incluido `end: true`); votos + `recap_request` comparten 10/s.
+
+| Pieza | Rol |
+| :--- | :--- |
+| Puntero láser | Envía `laser_point{type, event_id, room_id, x, y, end?}` (x, y normalizados 0..1, 4 decimales) y recibe `laser{event_id, user_id, nick, x, y, end}`. `useSocialSocket` expone `laser` (últimos 64 puntos) y `sendLaser(x, y, end?)`, que pinta el punto propio al instante y descarta su eco por `event_id`. |
+| `src/components/LaserOverlay.tsx` | Lienzo sobre el área del vídeo (`SyncedPlayer.overlay`); el host con el modo láser dibuja con eventos de puntero (ventana deslizante de 30 puntos/s contando el final: los movimientos usan como máximo 29 y dejan el hueco del `end`) y todos ven un trazo rojo brillante que se desvanece en 1.5 s (`requestAnimationFrame`, con guardas para jsdom). La edad de cada punto usa el reloj local de llegada, nunca el del emisor. |
+| Encuestas | Envía `poll_create{question, options[2–4], duration_s}` (30/60/120/300 s), `poll_vote{poll_id, option}` (índice) y `poll_close{poll_id}`; recibe `poll_state{poll_id, question, options, counts, closes_at_ms, closed, my_vote?}`. `my_vote` solo llega en el `poll_state` dirigido a este cliente (al entrar o al votar): `useSocialSocket` recuerda el último visto por `poll_id` (y el propio, optimista). Expone `poll`, `lastError` (`error{code, event_id_ref}`: FORBIDDEN, POLL_ACTIVE, POLL_CLOSED, POLL_NOT_FOUND, UNAVAILABLE, RATE_LIMITED; se limpia al enviar), `createPoll` (pre-valida con `validatePollDraft`), `votePoll` y `closePoll`. |
+| `src/components/PollPanel.tsx` | Creador del host (pregunta, 2–4 opciones, duración; el botón "Crear encuesta" de la barra lo abre con el foco en la pregunta), tarjeta con botones de voto (`aria-pressed`), barras con porcentaje, cuenta atrás (solo informativa: el cierre lo decide `closed`, no el reloj local), "Cerrar encuesta" para el host y resultados finales. |
+| Recap | Envía `recap_request{event_id, room_id}` y recibe `recap{room_id, event_id_ref?, top_emoji_user, most_paused, peak_reactions, totals}` (los tres primeros pueden ser null). `useSocialSocket` expone `recap` y `requestRecap`. |
+| `src/components/RecapScreen.tsx` | Diálogo modal "Watch Party Recap" (`aria-modal`, foco en "Cerrar", Escape): 🏆 quien mandó más emojis, ⏸️ escena con más pausas/retrocesos y 😂 momento con más reacciones/risas (`mm:ss` con `formatMmSs`), más totales; mensajes amables para los nulos. `WatchRoom` lo abre al `ended` del vídeo (pidiendo el recap, con estado de carga) o cuando llega un recap nuevo. |
+
+## Sesión y credenciales
+- **Host:** `tint_token` guarda el ID token de Firebase (caduca a la hora). `src/lib/authSession.ts` (`startHostSession`, llamado en `main.tsx`) lo mantiene fresco con `onIdTokenChanged` y registra en `apiFetch` un proveedor que pide `auth.currentUser.getIdToken()`. Ante un 401 con credencial de host, `apiFetch` fuerza un refresco y reintenta una vez; si sigue en 401 borra `tint_token` y lleva a `/login?next=<ruta actual>`.
+- **Invitado:** `tint_guest_token` (+ `tint_room_title`/`tint_invite_link` guardados al canjear) solo da acceso a `/watch/:roomId` si su payload (`guestTokenGrantsRoom`, sin verificar firma) tiene `room_id` igual a la sala y `exp` futuro; si no, se muestra la puerta.
+- **Host en una invitación:** `InviteLanding` no borra `tint_token` en silencio: avisa de la sesión de host, ofrece "Entrar como host" (busca la sala en `GET /rooms` por el código) y solo canjea —y cierra la sesión de host— tras pulsar "Entrar como invitado". Tras crear una sala, `CreateRoom` ofrece "Entrar a la sala" (`/watch/:id`).
+
+El cálculo del drift es **autoritativo en sync-core**: el cliente solo aplica las `SYNC_CORRECTION` que recibe. Flujos y diagramas en [`docs/dominio-reproduccion.md`](../../docs/dominio-reproduccion.md).
+
+## Analítica
+| Pieza | Rol |
+| :--- | :--- |
+| `src/lib/stallTracker.ts` · `SyncedPlayer` | Mide cada stall del `<video>` (`waiting` → siguiente `playing`). Descarta los < 100 ms, los > 120 s (sync-core los rechazaría) y los causados por un seek (`waiting` entre `seeking` y `seeked`, o `seeking` durante la espera: saltos del usuario, `SEEK` de la sala y correcciones por seek); `emptied` lo reinicia. |
+| `useSyncSocket().sendBuffering` · `buildBuffering` | Envía `BUFFERING {event_id, room_id, position_ms, duration_ms, occurred_at}` con la codificación negociada (JSON/msgpack), solo con el socket abierto. Cualquier rol; sin ACK ni broadcast. |
+| `src/lib/analytics.ts` | `getAnalyticsTicket` (`POST /rooms/:id/analytics-ticket` en identity-api) y `createAnalyticsClient(roomId)` → `kpis()`, `heatmap(bucketMs = 5000)`, `timeline(stepS = 60)` contra `VITE_ANALYTICS_API_URL` con el ticket como Bearer. Ante un 401 de analytics pide **un** ticket nuevo (compartido entre peticiones paralelas) y reintenta; los errores son `AnalyticsError {status}` (0 = red). |
+| `src/pages/RoomAnalytics.tsx` | Ruta `/rooms/:id/analytics` (host, `ProtectedRoute`, `React.lazy`), enlazada desde "Análisis" en cada tarjeta del Dashboard. Insignia "En vivo"/"Sesión cerrada" (`kpis.live`/`closed_at`), 8 KPIs, botón "Actualizar" y estado vacío sin actividad. 401 de identity-api → `/login?next=`; 403 → sin acceso; 401 de analytics tras reintentar → acceso caducado o revocado; 503/red → servicio no disponible. |
+| `src/components/analytics/*` · `src/lib/chartScale.ts` | Gráficos SVG propios (sin librería): espectadores en el tiempo (área + línea, crosshair por puntero y teclado como `role="slider"`), reacciones por emoji (barras, > 8 se agrupan en "Otros") y heatmap de reacciones por posición del vídeo (rampa ordinal de 4 pasos; > 60 columnas se agrupan). Cada uno tiene `aria-label` con resumen, tabla alternativa en `<details>` y estado vacío. Colores en `CHART_COLORS` (`ChartCard.tsx`), validados con la skill `dataviz` sobre `tint.card`. |
+
+## Cuestionario oculto `/test-me`
+Ruta sin `ProtectedRoute` ni enlaces desde la UI (solo por URL) para aprender cómo funciona el monorepo. Se carga con `React.lazy` para que `framer-motion` no entre al bundle principal.
+
+| Pieza | Rol |
+| :--- | :--- |
+| `src/data/quizQuestions.ts` | Banco de 60 preguntas en 7 categorías; cada una cita sus archivos fuente. Su prueba verifica que las rutas existan en el repo, el conteo por categoría y que la respuesta correcta no se concentre en una posición. |
+| `src/lib/quiz.ts` | Lógica pura: baraja (rng inyectable), 100 pts por acierto con multiplicador de racha (x2 desde 3, x3 desde 5), rangos y reducer. |
+| `src/lib/quizSounds.ts` | Efectos sintetizados con Web Audio (sin archivos); silencio persistido en `localStorage.tint_quiz_muted`. |
+| `src/hooks/useQuiz.ts` · `src/components/quiz/*` · `src/pages/TestMe.tsx` | Estado + sonidos, tarjeta, panel inferior con respuesta y fuentes, marcador y resumen con confeti. |
+
+Si cambia un dato documentado (puertos, contratos, límites), actualiza la pregunta correspondiente. Al agregar preguntas, ajusta `expected` de la categoría y cita solo datos en los que la documentación no se contradiga.
+
 ## Reglas de Dominio
-1. **Canales Aislados:** Mantén el uso de dos hooks separados: `useSyncSocket` (vídeo/comandos) y `useSocialSocket` (chat, reacciones, ambilight). Nunca mezcles los sockets.
-2. **Auto-Alineación:** Implementa la verificación de desfase (`src/lib/drift.ts`). Si `drift > 500ms`, ajusta el vídeo e informa a telemetría.
+1. **Canales Aislados:** Mantén el uso de dos hooks separados: `useSyncSocket` (vídeo/comandos) y `useSocialSocket` (chat, reacciones, láser, encuestas, recap, ambilight). Nunca mezcles los sockets.
+2. **Auto-Alineación:** sync-core detecta el desfase (> 500 ms) y lo reporta a telemetría; el cliente aplica la corrección recibida con `src/lib/drift.ts` y nunca envía telemetría de sync por su cuenta. La única excepción es `BUFFERING` (ver "Analítica"), que viaja por el Canal Sync y lo publica sync-core.
 3. **Throttling UI:** Garantiza que los botones de reacción no permitan más de 5 clics/segundo por usuario (`src/hooks/useThrottle.ts`).
 4. **Accesibilidad:** Controles con `aria-label`, foco visible y contraste AA sobre fondo oscuro.
 5. **TDD & Cobertura:** Todo componente, hook o utilidad debe contar con pruebas unitarias en Vitest escritas **antes** de la implementación (Red → Green → Refactor). Cobertura mínima **85%** (statements, branches, functions, lines) — configurada en `vitest.config.ts`.
@@ -42,3 +110,13 @@ npm run lint            # ESLint
 npm run typecheck       # tsc
 npm run test:coverage   # Vitest + umbral 85%
 ```
+
+## Variables de Entorno
+| Variable | Por defecto | Descripción |
+| :--- | :--- | :--- |
+| `VITE_IDENTITY_API_URL` | `http://localhost:8081/api/v1` | identity-api (salas, invitaciones, sync-tickets). |
+| `VITE_SYNC_WS_URL` | `ws://localhost:8083/ws/sync` | Canal Sync de sync-core. |
+| `VITE_SOCIAL_WS_URL` | `ws://localhost:8082/ws/social` | Canal social de social-core (chat, reacciones, láser, encuestas y recap). |
+| `VITE_SYNC_ENCODING` | `json` | Codificación del Canal Sync: `json` o `msgpack` (pide el subprotocolo `tint.sync.msgpack`; si sync-core no lo acepta, sigue en JSON). |
+| `VITE_DEMO_VIDEO_URL` | vacío | Vídeo de respaldo, solo si la sala no tiene vídeo asignado en identity-api (`mediaId: null`). |
+| `VITE_ANALYTICS_API_URL` | `http://localhost:8084/api/v1` | API de lectura de analytics (página `/rooms/:id/analytics`). |

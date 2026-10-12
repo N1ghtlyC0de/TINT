@@ -10,9 +10,12 @@
     "lint": "echo 'skip lint for now'",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "test:integration": "INTEGRATION=1 vitest run tests/integration"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1138.0",
+    "@aws-sdk/s3-request-presigner": "3.1138.0",
     "asap": "^2.0.6",
     "cors": "2.8.5",
     "dotenv": "^18.0.6",
@@ -42,14 +45,14 @@
     "@types/send": "^1.2.1",
     "@types/serve-static": "^2.2.0",
     "@types/supertest": "6.0.2",
-    "@vitest/coverage-v8": "^2.1.9",
+    "@vitest/coverage-v8": "2.1.9",
     "drizzle-kit": "^0.31.11",
     "supertest": "7.0.0",
     "ts-node-dev": "2.0.0",
     "tsup": "^8.5.1",
     "tsx": "^4.23.15",
     "typescript": "5.6.3",
-    "vitest": "^2.1.9"
+    "vitest": "2.1.9"
   },
   "allowScripts": {
     "esbuild": true,
@@ -58,3 +61,4 @@
     "protobufjs": true
   }
 }
+

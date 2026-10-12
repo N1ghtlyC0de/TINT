@@ -32,3 +32,16 @@ if (jsdomGlobal.jsdom?.window) {
     });
   }
 }
+
+// jsdom no implementa PointerEvent: sin esto fireEvent.pointer* pierde clientX/pointerId.
+if (typeof window !== 'undefined' && !('PointerEvent' in window)) {
+  class PointerEventPolyfill extends MouseEvent {
+    readonly pointerId: number;
+
+    constructor(type: string, init: PointerEventInit = {}) {
+      super(type, init);
+      this.pointerId = init.pointerId ?? 1;
+    }
+  }
+  (window as unknown as { PointerEvent: unknown }).PointerEvent = PointerEventPolyfill;
+}

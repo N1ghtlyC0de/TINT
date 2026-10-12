@@ -1,5 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Routes, Route } from 'react-router-dom';
+import { MemoryRouter, Routes, Route, useLocation } from 'react-router-dom';
 import { vi, beforeEach } from 'vitest';
 import Dashboard from './Dashboard';
 import Login from './Login';
@@ -53,6 +53,23 @@ describe('Dashboard', () => {
     expect(localStorage.getItem('tint_token')).toBeNull();
   });
 
+  it('al expirar la sesión vuelve al login con ?next=/dashboard', async () => {
+    localStorage.setItem('tint_token', 'viejo');
+    mockedApi.mockRejectedValueOnce(new ApiError(401, 'Unauthorized'));
+    function LoginProbe() {
+      return <p>{`login${useLocation().search}`}</p>;
+    }
+    render(
+      <MemoryRouter initialEntries={['/dashboard']}>
+        <Routes>
+          <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/login" element={<LoginProbe />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('login?next=%2Fdashboard')).toBeInTheDocument();
+  });
+
   it('muestra el error sin redirigir si falla por otra causa', async () => {
     mockedApi.mockRejectedValueOnce(new Error('DB caída'));
     renderDashboard();
@@ -67,6 +84,14 @@ describe('Dashboard', () => {
     await waitFor(() => expect(screen.getByText('Sala 1')).toBeInTheDocument());
     const manage = screen.getByRole('link', { name: /gestionar sala 1/i });
     expect(manage).toHaveAttribute('href', '/rooms/1');
+  });
+
+  it('cada sala enlaza a su análisis', async () => {
+    mockedApi.mockResolvedValueOnce({ rooms: [{ id: '1', title: 'Sala 1' }] });
+    renderDashboard();
+    const link = await screen.findByRole('link', { name: 'Análisis de Sala 1' });
+    expect(link).toHaveAttribute('href', '/rooms/1/analytics');
+    expect(link).toHaveTextContent('Análisis');
   });
 
   it('elimina la sala con confirmación y la quita de la lista', async () => {

@@ -1,11 +1,26 @@
-"""Cálculo de las franjas de borde usadas para la paleta Ambilight."""
+"""Extracción de la paleta Ambilight: franjas de borde y colores a 1 FPS con FFmpeg."""
 
 from __future__ import annotations
 
+import functools
+import subprocess
+import threading
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from operator import itemgetter
+from typing import IO
 
 EDGE_RATIO = 0.10
 SAMPLE_FPS = 1
+MAX_FPS = 1000
+
+FRAME_WIDTH = 160
+FRAME_HEIGHT = 90
+DEFAULT_EXTRACT_TIMEOUT_S = 3600
+
+
+class AmbilightError(Exception):
+    """No se pudieron extraer los fotogramas del vídeo."""
 
 
 @dataclass(frozen=True)
@@ -38,14 +53,171 @@ def average_color(pixels: list[tuple[int, int, int]]) -> str:
     """Promedia una lista de píxeles RGB y devuelve un color hex `#rrggbb`."""
     if not pixels:
         raise ValueError("se requiere al menos un píxel")
-    n = len(pixels)
-    r, g, b = (round(sum(p[i] for p in pixels) / n) for i in range(3))
+    return _hex(*(sum(p[i] for p in pixels) for i in range(3)), len(pixels))
+
+
+def _hex(r_sum: int, g_sum: int, b_sum: int, n: int) -> str:
+    r, g, b = (round(total / n) for total in (r_sum, g_sum, b_sum))
     return f"#{r:02x}{g:02x}{b:02x}"
 
 
 def sample_timestamps_ms(duration_ms: int, fps: int = SAMPLE_FPS) -> list[int]:
     """Instantes (ms) a muestrear para generar ambilight.json."""
-    if duration_ms < 0 or fps <= 0:
-        raise ValueError("duración y fps deben ser válidos")
+    if duration_ms < 0:
+        raise ValueError("la duración no puede ser negativa")
+    if not 0 < fps <= MAX_FPS:
+        raise ValueError(f"fps debe estar en (0, {MAX_FPS}], recibido {fps}")
     step = 1000 // fps
     return list(range(0, duration_ms, step))
+
+
+def ffmpeg_frames_cmd(path: str, width: int = FRAME_WIDTH, height: int = FRAME_HEIGHT) -> list[str]:
+    """Comando FFmpeg que emite por stdout un fotograma `rgb24` reducido por segundo."""
+    return [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-nostdin",
+        "-i",
+        path,
+        "-vf",
+        f"fps={SAMPLE_FPS},scale={width}:{height}",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "pipe:1",
+    ]
+
+
+def _region_slices(width: int, region: Region) -> list[slice]:
+    """Tramos de bytes de `region` en un fotograma `rgb24`; si ocupa filas enteras, uno solo."""
+    row_bytes = width * 3
+    if region.x == 0 and region.width == width:
+        return [slice(region.y * row_bytes, (region.y + region.height) * row_bytes)]
+    start, stop = region.x * 3, (region.x + region.width) * 3
+    return [
+        slice(y * row_bytes + start, y * row_bytes + stop)
+        for y in range(region.y, region.y + region.height)
+    ]
+
+
+def _region_reader(width: int, region: Region) -> Callable[[bytes], str]:
+    """Función que calcula el color de `region` sin bucles por fila ni por píxel en Python.
+
+    `itemgetter` recorta todas las filas en C y se concatenan en un solo `bytes`; cada canal se
+    suma con un corte de paso 3. Da exactamente las mismas sumas enteras que recorrer los píxeles.
+    """
+    slices = _region_slices(width, region)
+    pixels = region.width * region.height
+    if len(slices) == 1:
+        (only,) = slices
+
+        def strip(frame: bytes) -> bytes:
+            return frame[only]
+    else:
+        get_rows = itemgetter(*slices)
+
+        def strip(frame: bytes) -> bytes:
+            return b"".join(get_rows(frame))
+
+    def color(frame: bytes) -> str:
+        data = strip(frame)
+        return _hex(sum(data[0::3]), sum(data[1::3]), sum(data[2::3]), pixels)
+
+    return color
+
+
+@functools.lru_cache(maxsize=8)
+def _edge_readers(width: int, height: int) -> tuple[tuple[str, Callable[[bytes], str]], ...]:
+    """Lectores de las cuatro franjas, calculados una vez por tamaño de fotograma."""
+    return tuple(
+        (edge, _region_reader(width, region))
+        for edge, region in edge_regions(width, height).items()
+    )
+
+
+def region_color(frame: bytes, width: int, region: Region) -> str:
+    """Color promedio hex de `region` dentro de un fotograma `rgb24` de ancho `width`."""
+    return _region_reader(width, region)(frame)
+
+
+def frame_colors(frame: bytes, width: int, height: int) -> dict[str, str]:
+    """Colores hex de las cuatro franjas de borde de un fotograma `rgb24`."""
+    if len(frame) != width * height * 3:
+        raise AmbilightError("tamaño de fotograma inesperado")
+    return {edge: color(frame) for edge, color in _edge_readers(width, height)}
+
+
+def read_frames(stream: IO[bytes], frame_size: int) -> Iterator[bytes]:
+    """Lee fotogramas completos de `frame_size` bytes hasta EOF (admite lecturas cortas)."""
+    while frame := stream.read(frame_size):
+        while len(frame) < frame_size:
+            chunk = stream.read(frame_size - len(frame))
+            if not chunk:
+                raise AmbilightError("fotograma truncado en la salida de ffmpeg")
+            frame += chunk
+        yield frame
+
+
+def extract_ambilight(
+    path: str,
+    duration_ms: int,
+    popen=subprocess.Popen,
+    timeout: float = DEFAULT_EXTRACT_TIMEOUT_S,
+    width: int = FRAME_WIDTH,
+    height: int = FRAME_HEIGHT,
+) -> list[dict[str, int | str]]:
+    """Genera las entradas de `ambilight.json` leyendo los fotogramas de FFmpeg en streaming.
+
+    Se procesa fotograma a fotograma, así que la memoria no crece con la duración del vídeo.
+    """
+    timestamps = sample_timestamps_ms(duration_ms)
+    try:
+        proc = popen(
+            ffmpeg_frames_cmd(path, width, height),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except OSError as exc:
+        raise AmbilightError(f"no se pudo ejecutar ffmpeg: {exc}") from exc
+
+    timed_out = threading.Event()
+
+    def kill_on_timeout() -> None:
+        timed_out.set()
+        proc.kill()
+
+    # stderr se drena en paralelo para que ffmpeg no se bloquee si escribe mucho.
+    stderr_chunks: list[bytes] = []
+    stderr_reader = threading.Thread(target=lambda: stderr_chunks.append(proc.stderr.read()))
+    timer = threading.Timer(timeout, kill_on_timeout)
+    stderr_reader.start()
+    timer.start()
+    try:
+        entries: list[dict[str, int | str]] = []
+        frames = read_frames(proc.stdout, width * height * 3)
+        # strict=False: ffmpeg puede emitir un fotograma más que la duración; se ignora.
+        for t_ms, frame in zip(timestamps, frames, strict=False):
+            entries.append({"t_ms": t_ms, **frame_colors(frame, width, height)})
+        proc.stdout.read()  # descarta fotogramas sobrantes para que ffmpeg pueda terminar
+        returncode = proc.wait()
+    except BaseException:
+        proc.kill()
+        proc.wait()
+        raise
+    finally:
+        timer.cancel()
+        stderr_reader.join()
+        proc.stdout.close()
+        proc.stderr.close()
+
+    if timed_out.is_set():
+        raise AmbilightError(f"ffmpeg excedió el tiempo límite ({timeout} s)")
+    if returncode != 0:
+        stderr = b"".join(stderr_chunks).decode(errors="replace").strip()
+        raise AmbilightError(stderr or "ffmpeg falló")
+    if not entries:
+        raise AmbilightError("ffmpeg no produjo fotogramas")
+    return entries

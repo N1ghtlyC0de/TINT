@@ -28,8 +28,8 @@ func (b *fakeBus) publish(_ context.Context, _ string, msg socialevent.ChatMessa
 	return nil
 }
 
-func (b *fakeBus) subscribe(ctx context.Context, _ string) (<-chan socialevent.ChatMessage, func()) {
-	out := make(chan socialevent.ChatMessage, 64)
+func (b *fakeBus) subscribe(ctx context.Context, _ string) (<-chan chat.Inbound, func()) {
+	out := make(chan chat.Inbound, 64)
 	stop := make(chan struct{})
 	go func() {
 		defer close(out)
@@ -45,7 +45,7 @@ func (b *fakeBus) subscribe(ctx context.Context, _ string) (<-chan socialevent.C
 					continue
 				}
 				select {
-				case out <- m:
+				case out <- chat.Inbound{EventID: m.EventID, Payload: raw}:
 				default:
 				}
 			}

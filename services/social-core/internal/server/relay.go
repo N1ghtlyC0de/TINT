@@ -87,15 +87,22 @@ func (d *Deps) acquireRelay(roomID string) (release func()) {
 	d.mu.Unlock()
 
 	go func() {
-		for m := range ch {
-			if seen.seen(m.EventID) {
-				continue // eco propio o redelivery
-			}
-			raw, err := json.Marshal(m)
-			if err != nil {
+		for in := range ch {
+			if in.RevokedJTI != "" {
+				d.revokeLocal(roomID, in.RevokedJTI) // nunca llega a los clientes
 				continue
 			}
-			hub.Broadcast(roomID, raw)
+			if in.Sync != nil {
+				d.recordSync(roomID, *in.Sync) // solo métricas del recap
+				continue
+			}
+			if in.EventID == "" || seen.seen(in.EventID) {
+				continue // eco propio o redelivery
+			}
+			if in.Type == socialevent.TypePollState {
+				d.observeRemotePoll(roomID, in.Payload)
+			}
+			hub.Broadcast(roomID, in.Payload)
 		}
 	}()
 	return func() { d.releaseRelay(roomID) }
@@ -144,10 +151,16 @@ func (d *Deps) relayRefs(roomID string) int {
 // broadcastOnce emite al hub salvo que el event_id ya se haya visto
 // (el relay remoto ganó la carrera con el eco).
 func (d *Deps) broadcastOnce(roomID string, msg socialevent.ChatMessage) {
-	if d.markSeen(msg.EventID) {
+	d.broadcastRawOnce(roomID, msg.EventID, msg)
+}
+
+// broadcastRawOnce emite cualquier evento serializable al hub, tragando
+// duplicados por event_id igual que broadcastOnce.
+func (d *Deps) broadcastRawOnce(roomID, eventID string, v any) {
+	if d.markSeen(eventID) {
 		return
 	}
-	raw, err := json.Marshal(msg)
+	raw, err := json.Marshal(v)
 	if err != nil {
 		return
 	}
