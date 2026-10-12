@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiFetch, ApiError } from '../../lib/api';
@@ -21,9 +21,25 @@ const ticket = {
   headers: { 'Content-Type': 'video/mp4' },
 };
 
-/** Simula identity-api: pedir subida y confirmarla; el resto falla. */
-function routeUploads(overrides: { request?: () => Promise<unknown>; complete?: () => Promise<unknown> } = {}) {
-  mockedApiFetch.mockImplementation(((path: string) => {
+const library = [
+  { id: 'v-old', title: 'Noche de terror', durationMs: 5_400_000, status: 'ready', createdAt: '2026-10-01T10:00:00Z', previewUrl: 'https://cdn/v-old-360p.mp4?sig=1' },
+  { id: 'v-new', title: null, durationMs: 65_000, status: 'processing', createdAt: '2026-10-10T10:00:00Z', previewUrl: null },
+];
+
+/** Simula identity-api: biblioteca, pedir subida, confirmarla y asignar; el resto falla. */
+function routeUploads(
+  overrides: {
+    request?: () => Promise<unknown>;
+    complete?: () => Promise<unknown>;
+    videos?: () => Promise<unknown>;
+    assign?: (init?: RequestInit) => Promise<unknown>;
+  } = {},
+) {
+  mockedApiFetch.mockImplementation(((path: string, init?: RequestInit) => {
+    if (path === '/videos') return overrides.videos?.() ?? Promise.resolve({ videos: library });
+    if (path.endsWith('/media') && init?.method === 'PUT') {
+      return overrides.assign?.(init) ?? Promise.resolve({ mediaId: 'v-old', mediaKey: 'v-old/source.mp4' });
+    }
     if (path.endsWith('/media/uploads')) return overrides.request?.() ?? Promise.resolve(ticket);
     if (path.endsWith('/complete')) {
       return overrides.complete?.() ?? Promise.resolve({ mediaId: 'v-1', mediaKey: 'v-1/source.mp4', status: 'pending' });
@@ -34,6 +50,7 @@ function routeUploads(overrides: { request?: () => Promise<unknown>; complete?: 
 
 beforeEach(() => {
   mockedApiFetch.mockReset();
+  routeUploads();
   MockXhr.reset();
   vi.stubGlobal('XMLHttpRequest', MockXhr);
 });
@@ -44,6 +61,7 @@ afterEach(() => {
 
 async function openPanel() {
   await userEvent.click(screen.getByRole('button', { name: 'Cambiar vídeo' }));
+  await userEvent.click(screen.getByRole('tab', { name: 'Subir nuevo' }));
   return screen.getByLabelText('Archivo de vídeo');
 }
 
@@ -55,20 +73,16 @@ async function startUpload(file: File = video) {
   return MockXhr.last();
 }
 
-async function openKeyForm() {
-  await userEvent.click(screen.getByRole('button', { name: 'Cambiar vídeo' }));
-  await userEvent.click(screen.getByText('Usar un archivo ya subido (clave del bucket)'));
-  return screen.getByLabelText('Clave del objeto en MinIO');
-}
-
 describe('ChangeVideoPanel — subida', () => {
-  it('se despliega con aria-expanded, enfoca el selector y se cierra con Escape', async () => {
+  it('se despliega con aria-expanded, enfoca la pestaña activa y se cierra con Escape', async () => {
     render(<ChangeVideoPanel roomId="r1" onMediaAssigned={() => true} />);
     const toggle = screen.getByRole('button', { name: 'Cambiar vídeo' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    const input = await openPanel();
+    await userEvent.click(toggle);
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    expect(input).toHaveFocus();
+    expect(screen.getByRole('tab', { name: 'Mis vídeos' })).toHaveFocus();
+    await userEvent.click(screen.getByRole('tab', { name: 'Subir nuevo' }));
+    const input = screen.getByLabelText('Archivo de vídeo');
     expect(input).toHaveAttribute('type', 'file');
     expect(input).toHaveAttribute('accept', 'video/*');
     fireEvent.keyDown(input, { key: 'Escape' });
@@ -158,7 +172,7 @@ describe('ChangeVideoPanel — subida', () => {
     fireEvent.change(input, { target: { files: [new File(['x'], 'notas.txt', { type: 'text/plain' })] } });
     expect(screen.getByRole('alert')).toHaveTextContent(/no es un vídeo/i);
     expect(screen.getByRole('button', { name: 'Subir' })).toBeDisabled();
-    expect(mockedApiFetch).not.toHaveBeenCalled();
+    expect(mockedApiFetch).not.toHaveBeenCalledWith(expect.stringContaining('/media/uploads'), expect.anything(), 'host');
   });
 
   it('413 → el archivo supera el tamaño máximo', async () => {
@@ -176,7 +190,7 @@ describe('ChangeVideoPanel — subida', () => {
     render(<ChangeVideoPanel roomId="r1" onMediaAssigned={onMediaAssigned} />);
     const xhr = await startUpload();
     act(() => xhr.respond(200));
-    expect(await screen.findByRole('alert')).toHaveTextContent('La subida no llegó al almacenamiento; reintenta');
+    expect(await screen.findByRole('alert')).toHaveTextContent('El vídeo no terminó de llegar; inténtalo de nuevo');
     expect(onMediaAssigned).not.toHaveBeenCalled();
 
     routeUploads();
@@ -187,12 +201,13 @@ describe('ChangeVideoPanel — subida', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('error de MinIO en el PUT se muestra legible', async () => {
+  it('un rechazo del PUT se explica sin jerga técnica', async () => {
     routeUploads();
     render(<ChangeVideoPanel roomId="r1" onMediaAssigned={() => true} />);
     const xhr = await startUpload();
     act(() => xhr.respond(403));
-    expect(await screen.findByRole('alert')).toHaveTextContent(/almacenamiento rechazó/);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/permiso de subida pudo caducar/);
+    expect(screen.getByRole('alert').textContent).not.toMatch(/HTTP|MinIO|403/);
   });
 
   it('si no se pudo enviar LOAD, avisa y permite reintentar el aviso', async () => {
@@ -201,7 +216,7 @@ describe('ChangeVideoPanel — subida', () => {
     render(<ChangeVideoPanel roomId="r1" onMediaAssigned={onMediaAssigned} />);
     const xhr = await startUpload();
     act(() => xhr.respond(200));
-    expect(await screen.findByRole('alert')).toHaveTextContent(/no se pudo avisar a la sala/i);
+    expect(await screen.findByRole('alert')).toHaveTextContent(/no pudimos avisar a la sala/i);
     const retry = screen.getByRole('button', { name: 'Avisar a la sala' });
     await userEvent.click(retry);
     expect(onMediaAssigned).toHaveBeenCalledTimes(2);
@@ -215,47 +230,121 @@ describe('ChangeVideoPanel — subida', () => {
   });
 });
 
-describe('ChangeVideoPanel — clave del bucket (secundaria)', () => {
-  it('asigna el vídeo con PUT y avisa a la sala con el mediaId devuelto', async () => {
-    mockedApiFetch.mockResolvedValue({ mediaId: 'm-7', mediaKey: 'pelis/a.mp4' });
+describe('ChangeVideoPanel — Mis vídeos', () => {
+  async function openLibrary(props: Partial<Parameters<typeof ChangeVideoPanel>[0]> = {}) {
+    render(<ChangeVideoPanel roomId="r 1" onMediaAssigned={() => true} {...props} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Cambiar vídeo' }));
+    return screen.findByRole('list', { name: 'Mis vídeos' });
+  }
+
+  it('muestra la cuadrícula con miniatura, título, duración y estado en palabras simples', async () => {
+    const grid = await openLibrary();
+    expect(mockedApiFetch).toHaveBeenCalledWith('/videos', { method: 'GET' }, 'host');
+    const cards = within(grid).getAllByRole('listitem');
+    expect(cards).toHaveLength(2);
+    expect(within(cards[0]).getByText('Noche de terror')).toBeInTheDocument();
+    expect(within(cards[0]).getByText('1 h 30 min')).toBeInTheDocument();
+    expect(within(cards[0]).getByText('Listo')).toBeInTheDocument();
+    const thumb = cards[0].querySelector('video');
+    expect(thumb).toHaveAttribute('src', 'https://cdn/v-old-360p.mp4?sig=1');
+    expect(thumb).toHaveAttribute('preload', 'metadata');
+    expect(thumb?.muted).toBe(true);
+    expect(within(cards[1]).getByText('Vídeo sin nombre')).toBeInTheDocument();
+    expect(within(cards[1]).getByText('Preparando…')).toBeInTheDocument();
+    expect(cards[1].querySelector('video')).toBeNull();
+    expect(screen.getByRole('tab', { name: 'Mis vídeos' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('busca por nombre y avisa si nada coincide', async () => {
+    const grid = await openLibrary();
+    await userEvent.type(screen.getByLabelText('Buscar por nombre'), 'terror');
+    expect(within(grid).getAllByRole('listitem')).toHaveLength(1);
+    await userEvent.clear(screen.getByLabelText('Buscar por nombre'));
+    await userEvent.type(screen.getByLabelText('Buscar por nombre'), 'comedia');
+    expect(screen.getByText('Ningún vídeo coincide con «comedia».')).toBeInTheDocument();
+  });
+
+  it('"Ver en la sala" asigna con PUT {videoId} y avisa a la sala', async () => {
     const onMediaAssigned = vi.fn(() => true);
-    render(<ChangeVideoPanel roomId="r 1" onMediaAssigned={onMediaAssigned} />);
-    const input = await openKeyForm();
-    const submit = screen.getByRole('button', { name: 'Asignar y cargar' });
-    expect(submit).toBeDisabled();
-    await userEvent.type(input, '  pelis/a.mp4 ');
-    await userEvent.click(submit);
+    await openLibrary({ onMediaAssigned });
+    await userEvent.click(screen.getByRole('button', { name: 'Ver «Noche de terror» en la sala' }));
     expect(mockedApiFetch).toHaveBeenCalledWith(
       '/rooms/r%201/media',
-      { method: 'PUT', body: JSON.stringify({ mediaKey: 'pelis/a.mp4' }) },
+      { method: 'PUT', body: JSON.stringify({ videoId: 'v-old' }) },
       'host',
     );
-    await waitFor(() => expect(onMediaAssigned).toHaveBeenCalledWith('m-7'));
+    await waitFor(() => expect(onMediaAssigned).toHaveBeenCalledWith('v-old'));
     expect(screen.getByRole('status')).toHaveTextContent('Vídeo cargado para todos');
-    expect(input).toHaveValue('');
   });
 
-  it('avisa si el vídeo se asignó pero no se pudo enviar LOAD', async () => {
-    mockedApiFetch.mockResolvedValue({ mediaId: 'm-7' });
-    render(<ChangeVideoPanel roomId="r1" onMediaAssigned={() => false} />);
-    await userEvent.type(await openKeyForm(), 'k');
-    await userEvent.click(screen.getByRole('button', { name: 'Asignar y cargar' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent(/no se pudo avisar/i);
+  it('si el vídeo ya no está disponible lo dice con palabras simples', async () => {
+    routeUploads({ assign: () => Promise.reject(new ApiError(404, 'Video not found')) });
+    await openLibrary();
+    await userEvent.click(screen.getByRole('button', { name: 'Ver «Noche de terror» en la sala' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Ese vídeo ya no está disponible.');
   });
 
-  it('muestra el error de identity-api', async () => {
-    mockedApiFetch.mockRejectedValueOnce(new ApiError(404, 'objeto no encontrado'));
+  it('si no se pudo avisar a la sala ofrece reintentar', async () => {
+    await openLibrary({ onMediaAssigned: () => false });
+    await userEvent.click(screen.getByRole('button', { name: 'Ver «Noche de terror» en la sala' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/no pudimos avisar a la sala/i);
+    expect(screen.getByRole('alert').textContent).not.toMatch(/Canal Sync|social-core|MinIO/);
+    expect(screen.getByRole('button', { name: 'Avisar a la sala' })).toBeInTheDocument();
+  });
+
+  it('estado vacío amable que lleva a "Subir nuevo"', async () => {
+    routeUploads({ videos: () => Promise.resolve({ videos: [] }) });
     render(<ChangeVideoPanel roomId="r1" onMediaAssigned={() => true} />);
-    await userEvent.type(await openKeyForm(), 'nope');
-    await userEvent.click(screen.getByRole('button', { name: 'Asignar y cargar' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('objeto no encontrado');
+    await userEvent.click(screen.getByRole('button', { name: 'Cambiar vídeo' }));
+    expect(await screen.findByText(/Todavía no tienes vídeos/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Subir mi primer vídeo' }));
+    expect(screen.getByRole('tab', { name: 'Subir nuevo' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByLabelText('Archivo de vídeo')).toBeInTheDocument();
   });
 
-  it('error genérico si no es ApiError', async () => {
-    mockedApiFetch.mockRejectedValueOnce(new TypeError('red'));
+  it('error al cargar la biblioteca con reintento', async () => {
+    let fail = true;
+    routeUploads({
+      videos: () => {
+        const r = fail ? Promise.reject(new Error('x')) : Promise.resolve({ videos: library });
+        fail = false;
+        return r;
+      },
+    });
     render(<ChangeVideoPanel roomId="r1" onMediaAssigned={() => true} />);
-    await userEvent.type(await openKeyForm(), 'x');
-    await userEvent.click(screen.getByRole('button', { name: 'Asignar y cargar' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent(/no se pudo asignar/i);
+    await userEvent.click(screen.getByRole('button', { name: 'Cambiar vídeo' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('No pudimos cargar tus vídeos.');
+    await userEvent.click(screen.getByRole('button', { name: 'Reintentar' }));
+    expect(await screen.findByRole('list', { name: 'Mis vídeos' })).toBeInTheDocument();
+  });
+
+  it('las pestañas se recorren con las flechas', async () => {
+    await openLibrary();
+    const mine = screen.getByRole('tab', { name: 'Mis vídeos' });
+    fireEvent.keyDown(mine, { key: 'ArrowRight' });
+    expect(screen.getByRole('tab', { name: 'Subir nuevo' })).toHaveFocus();
+    expect(screen.getByRole('tab', { name: 'Subir nuevo' })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.keyDown(screen.getByRole('tab', { name: 'Subir nuevo' }), { key: 'ArrowLeft' });
+    expect(mine).toHaveFocus();
+  });
+
+  it('tras subir un vídeo, la biblioteca se actualiza', async () => {
+    render(<ChangeVideoPanel roomId="r1" onMediaAssigned={() => true} />);
+    const xhr = await startUpload();
+    act(() => xhr.respond(200));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Vídeo cargado para todos'));
+    expect(mockedApiFetch.mock.calls.filter(([p]) => p === '/videos').length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('openRequest abre el panel en "Mis vídeos"', async () => {
+    const { rerender } = render(<ChangeVideoPanel roomId="r1" onMediaAssigned={() => true} />);
+    rerender(<ChangeVideoPanel roomId="r1" onMediaAssigned={() => true} openRequest={1} />);
+    expect(await screen.findByRole('list', { name: 'Mis vídeos' })).toBeInTheDocument();
+  });
+
+  it('no queda texto técnico visible', async () => {
+    await openLibrary();
+    await userEvent.click(screen.getByRole('tab', { name: 'Subir nuevo' }));
+    expect(document.body.textContent).not.toMatch(/MinIO|bucket|Canal Sync|social-core|ticket de sincron|HTTP/i);
   });
 });

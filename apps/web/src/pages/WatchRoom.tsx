@@ -443,7 +443,7 @@ export default function WatchRoom() {
               <Card className="p-5">
                 <h2 className="text-[15px] font-semibold text-white">Vídeo de la sala</h2>
                 <p className="mb-4 mt-1 text-[13px] leading-relaxed">
-                  Sube un vídeo desde tu equipo; todos lo cargarán en pausa al inicio.
+                  Elige uno de tus vídeos o sube uno nuevo; todos lo verán desde el inicio, en pausa.
                 </p>
                 <ChangeVideoPanel roomId={roomId ?? ''} onMediaAssigned={loadMedia} openRequest={libraryRequest} />
               </Card>

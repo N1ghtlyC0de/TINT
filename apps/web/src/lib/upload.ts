@@ -100,20 +100,19 @@ export async function completeUpload(roomId: string, videoId: string): Promise<U
   )) as UploadComplete;
 }
 
-/** Mensaje legible para cualquier fallo del flujo de subida. */
+/** Mensaje simple (sin jerga técnica) para cualquier fallo del flujo de subida. */
 export function uploadErrorMessage(err: unknown): string {
   if (err instanceof UploadError) {
     if (err.kind === 'abort') return 'Subida cancelada.';
-    if (err.kind === 'network') return 'Se perdió la conexión con el almacenamiento durante la subida; reintenta.';
-    return `El almacenamiento rechazó la subida (HTTP ${err.status}); es posible que el enlace haya caducado. Reintenta.`;
+    if (err.kind === 'network') return 'Se perdió la conexión durante la subida. Inténtalo de nuevo.';
+    return 'No se pudo subir el vídeo: el permiso de subida pudo caducar. Inténtalo de nuevo.';
   }
   if (err instanceof ApiError) {
     if (err.status === 413 || /too large/i.test(err.message)) return 'El archivo supera el tamaño máximo permitido.';
-    if (err.status === 409) return 'La subida no llegó al almacenamiento; reintenta.';
+    if (err.status === 409) return 'El vídeo no terminó de llegar; inténtalo de nuevo.';
     if (err.status === 403) return 'No tienes permiso para cambiar el vídeo de esta sala.';
     if (err.status === 404) return 'La sala o la subida no existe.';
     if (err.status === 410) return 'La sala está cerrada; ya no admite vídeos.';
-    return err.message;
   }
-  return 'No se pudo subir el vídeo.';
+  return 'No se pudo subir el vídeo. Inténtalo de nuevo.';
 }
