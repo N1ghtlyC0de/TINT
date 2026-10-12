@@ -4,6 +4,8 @@
 
 Eres el agente responsable del procesamiento multimedia asíncrono de **TINT**. Operas en Python y manejas los binarios de FFmpeg/ffprobe para validar vídeos y extraer paletas de color Ambilight.
 
+Cómo funciona el servicio por dentro (consumo de `media:uploads`, pipeline, Ambilight, calidades y fallos): [README.md](README.md).
+
 ## Stack Técnico
 
 - Python 3.11
