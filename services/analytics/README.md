@@ -351,4 +351,4 @@ Las pruebas unitarias usan dobles (`tests/fakes.py`) para Redis y PostgreSQL. La
 - [AGENTS.md](AGENTS.md): reglas del dominio, formas exactas de la API y variables.
 - [Contrato de eventos de analítica](../../docs/contrato-eventos-analitica.md): qué publica cada servicio y qué devuelve analytics.
 - [Usuarios, identidad y permisos §4](../../docs/usuarios-e-identidad.md#4-esquemas-de-tokens): claims del analytics-ticket.
-- [Arquitectura](../../docs/arquitectura.md): vista de componentes y conectores (§2), almacenes (§4) y contratos (§5).
+- [Arquitectura](../../docs/arquitectura.md): [vista de componentes y conectores (§4)](../../docs/arquitectura.md#vista-de-componentes-y-conectores), almacenes (§6) y contratos (§5).
