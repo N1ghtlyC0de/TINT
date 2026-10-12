@@ -10,6 +10,7 @@ import (
 
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/auth"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/reactions"
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/recap"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/socialevent"
 )
 
@@ -28,17 +29,16 @@ func (d *Deps) recordReaction(ctx context.Context, r socialevent.Reaction) {
 }
 
 // recordSync cuenta pausas y rebobinados del bus de sync (dedup en Redis
-// entre réplicas). Se procesa en orden dentro del relay de la sala.
-func (d *Deps) recordSync(roomID string, ev socialevent.SyncEvent) {
+// entre réplicas) y mueve el ancla de reproducción. Se procesa en orden
+// dentro del relay de la sala; ok = false sin Recap o si Redis falló.
+func (d *Deps) recordSync(roomID string, ev socialevent.SyncEvent) (recap.Kind, bool) {
 	if d.Recap == nil {
-		return
+		return recap.KindNone, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), recapOpTimeout)
 	defer cancel()
 	kind, err := d.Recap.RecordSyncAt(ctx, roomID, ev, d.now())
-	if err == nil && d.syncHook != nil {
-		d.syncHook(kind)
-	}
+	return kind, err == nil
 }
 
 // handleRecapRequest responde el recap solo a quien lo pidió.

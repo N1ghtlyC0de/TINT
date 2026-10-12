@@ -17,6 +17,7 @@ import (
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/reactions"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/recap"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/socialevent"
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/trivia"
 )
 
 const defaultAddr = ":8082"
@@ -88,6 +89,7 @@ func DefaultDeps(getenv func(string) string) *Deps {
 		d.PublishRaw = st.PublishRaw
 		d.Polls = polls.NewStore(st.Client(), chat.HistoryTTL)
 		d.Moderation = moderation.NewStore(st.Client(), chat.HistoryTTL)
+		d.Trivia = trivia.NewStore(st.Client(), chat.HistoryTTL)
 		rc := recap.NewStore(st.Client(), chat.HistoryTTL)
 		d.Recap = rc
 		d.OnPollCreated = func(ctx context.Context, roomID string) {
@@ -98,13 +100,15 @@ func DefaultDeps(getenv func(string) string) *Deps {
 	return d
 }
 
-// useAnalytics cablea el emisor: chat_message, presence y reaction. Sin
+// useAnalytics cablea el emisor: chat_message, presence, reaction y
+// trivia_answer. Sin
 // emisor (modo memoria) los Track* quedan en nil y no se publica nada.
 func (d *Deps) useAnalytics(em *analytics.Emitter) {
 	d.analytics = em
 	d.TrackChat = func(m analytics.ChatMessage) { em.EmitChat(m) }
 	d.TrackPresence = func(p analytics.Presence) { em.EmitPresence(p) }
 	d.TrackReaction = func(r analytics.Reaction) { em.EmitReaction(r) }
+	d.TrackTrivia = func(a analytics.TriviaAnswer) { em.EmitTrivia(a) }
 }
 
 func or(v, def string) string {

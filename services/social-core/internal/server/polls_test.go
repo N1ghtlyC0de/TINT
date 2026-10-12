@@ -292,6 +292,7 @@ func TestPollAutoClosesByTimeAcrossReplicasOnce(t *testing.T) {
 	defer h.Close(websocket.StatusNormalClosure, "")
 	g, colG := joinCol(t, urlB, guestTokenAs(t, secret, "guest:beto", "Beto", "r1", exp0()))
 	defer g.Close(websocket.StatusNormalClosure, "")
+	nextOfType(t, colG, "notice") // instantánea de entrada completa
 	waitSubs(t, mr, chat.ChannelKey("r1"), 2)
 
 	createPoll(t, h, 10)

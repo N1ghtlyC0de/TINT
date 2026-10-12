@@ -200,6 +200,10 @@ func decodeInbound(fromSync bool, raw []byte) (Inbound, bool) {
 		v = &socialevent.PollState{}
 	case socialevent.TypeChatSettings:
 		v = &socialevent.ChatSettings{}
+	case socialevent.TypeTriviaQuestion:
+		v = &socialevent.TriviaQuestion{}
+	case socialevent.TypeTriviaResult:
+		v = &socialevent.TriviaResult{}
 	default:
 		return Inbound{}, false
 	}

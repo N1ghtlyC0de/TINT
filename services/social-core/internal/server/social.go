@@ -22,6 +22,7 @@ import (
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/reactions"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/recap"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/socialevent"
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/trivia"
 )
 
 // Deps son las dependencias del endpoint social (inyectables en tests).
@@ -87,6 +88,15 @@ type Deps struct {
 	// memoria) = chat sin moderación y chat_slow_mode/chat_mute responden
 	// UNAVAILABLE.
 	Moderation *moderation.Store
+	// Trivia guarda las trivias programadas en Redis. Nil (modo memoria) =
+	// los mensajes de trivia responden UNAVAILABLE.
+	Trivia *trivia.Store
+	// TrackTrivia publica trivia_answer en analytics:events (nil = no).
+	TrackTrivia func(analytics.TriviaAnswer)
+	// triviaArms es el timer de disparo por sala; triviaClosers, el de
+	// cierre por pregunta (ver trivia.go).
+	triviaArms    map[string]*triviaArm
+	triviaClosers map[string]func() bool
 	// syncHook observa cada evento de sync procesado (solo tests).
 	syncHook func(recap.Kind)
 	// pollTimers es el timer de cierre de la encuesta vigente por sala.
@@ -361,11 +371,11 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 	c.SetReadLimit(8 * 1024)
 
 	connID := d.newID()
-	untrack := d.trackConn(roomID, connID, claims.JTI, func() {
-		go func() { _ = c.Close(StatusRevoked, "token revocado") }()
-	})
-	defer untrack()
 	send := make(chan []byte, 64)
+	untrack := d.trackConn(roomID, connID, liveConn{jti: claims.JTI, sub: claims.Subject, send: send, close: func() {
+		go func() { _ = c.Close(StatusRevoked, "token revocado") }()
+	}})
+	defer untrack()
 	d.Hub.Join(roomID, connID, send)
 	defer d.Hub.Leave(roomID, connID)
 
@@ -390,6 +400,8 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 	d.sendChatSettingsOnJoin(ctx, c, roomID)
 	// Encuesta vigente (con el voto de este usuario), si la hay.
 	d.sendPollOnJoin(ctx, c, roomID, claims.Subject)
+	// Trivias: la lista (solo moderadores) y la pregunta abierta, si la hay.
+	d.sendTriviaOnJoin(ctx, c, roomID, claims)
 
 	// Aviso de entrada (solo en vivo, tras el historial). Se perdona el
 	// reingreso dentro de la gracia (StrictMode, refresh, flap).
@@ -467,6 +479,18 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 			continue
 		case socialevent.TypeChatMute:
 			d.handleMute(ctx, c, roomID, claims, raw)
+			continue
+		case socialevent.TypeTriviaSchedule:
+			d.handleTriviaSchedule(ctx, c, roomID, claims, raw)
+			continue
+		case socialevent.TypeTriviaDelete:
+			d.handleTriviaDelete(ctx, c, roomID, claims, raw)
+			continue
+		case socialevent.TypeTriviaList:
+			d.handleTriviaList(ctx, c, roomID, claims, raw)
+			continue
+		case socialevent.TypeTriviaAnswer:
+			d.handleTriviaAnswer(ctx, c, roomID, claims, raw, actionLimiter)
 			continue
 		}
 		var in socialevent.ChatSend
