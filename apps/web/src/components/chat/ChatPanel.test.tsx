@@ -152,6 +152,11 @@ describe('ChatPanel — modo lento', () => {
     expect(screen.getByRole('alert')).toHaveTextContent(/modo lento/i);
   });
 
+  it('UNAVAILABLE se explica con un mensaje simple', () => {
+    renderPanel({ lastError: { code: 'UNAVAILABLE' } });
+    expect(screen.getByRole('alert')).toHaveTextContent(/no está disponible/i);
+  });
+
   it('los errores ajenos al chat (trivia, encuestas) no se muestran aquí', () => {
     renderPanel({ lastError: { code: 'POLL_CLOSED' } });
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();

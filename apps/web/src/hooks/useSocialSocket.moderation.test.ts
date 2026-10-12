@@ -194,7 +194,7 @@ describe('useSocialSocket — trivia', () => {
     expect(result.current.triviaSchedule).toEqual([]);
   });
 
-  it('el host pide la agenda al conectarse', async () => {
+  it('el host no pide la agenda al conectarse: llega en la instantánea', async () => {
     localStorage.setItem('tint_token', 'firebase');
     mockedApiFetch.mockResolvedValue({ token: 'ticket', expiresAt: 'x' });
     renderHook(() => useSocialSocket('r1', { createSocket: create, role: 'host' }));
@@ -203,7 +203,7 @@ describe('useSocialSocket — trivia', () => {
       await Promise.resolve();
     });
     act(() => last().open());
-    expect(last().sentJson()).toEqual([expect.objectContaining({ type: 'trivia_list' })]);
+    expect(last().sentJson()).toEqual([]);
   });
 
   it('sin socket abierto las acciones devuelven false', () => {

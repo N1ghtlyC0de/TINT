@@ -74,8 +74,13 @@ export interface TriviaResult {
   type: 'trivia_result';
   trivia_id: string;
   correct: number;
+  /** Top de la pregunta (≤ 10). */
   top: TriviaRankEntry[];
+  /** Acumulado de la sala (≤ 10). */
+  leaderboard?: TriviaRankEntry[];
   my_score?: number;
+  /** Total acumulado propio en la sala. */
+  my_total?: number;
 }
 
 /** Pregunta programada por el host (solo el host la recibe, con `correct`). */
@@ -86,6 +91,7 @@ export interface ScheduledTrivia {
   options: string[];
   correct: number;
   answer_window_s: number;
+  status?: 'pending' | 'open' | 'closed';
 }
 
 export interface TriviaScheduleState {
@@ -108,6 +114,8 @@ export const TRIVIA_MAX_OPTIONS = 4;
 export const TRIVIA_WINDOW_MIN_S = 10;
 export const TRIVIA_WINDOW_MAX_S = 60;
 export const TRIVIA_WINDOW_DEFAULT_S = 20;
+/** social-core admite `at_ms` entre 0 y 24 h. */
+export const TRIVIA_MAX_AT_MS = 24 * 3_600_000;
 
 const SOCIAL_ERROR_MESSAGES: Record<string, string> = {
   SLOW_MODE: 'El chat está en modo lento: espera un momento para volver a escribir.',
@@ -117,6 +125,7 @@ const SOCIAL_ERROR_MESSAGES: Record<string, string> = {
   ALREADY_ANSWERED: 'Ya respondiste esta pregunta.',
   FORBIDDEN: 'No tienes permiso para hacer eso.',
   RATE_LIMITED: 'Vas muy rápido: ve más despacio.',
+  UNAVAILABLE: 'El chat no está disponible ahora. Inténtalo en un momento.',
 };
 
 /** Mensaje simple para un `error{code}` del canal social. */
@@ -344,7 +353,7 @@ export function validateTriviaDraft(draft: TriviaDraft): string | null {
   if (!Number.isInteger(draft.correct) || draft.correct < 0 || draft.correct >= opts.length) {
     return 'Marca la respuesta correcta.';
   }
-  if (!Number.isFinite(draft.atMs) || draft.atMs < 0) return 'Indica un momento válido del vídeo (mm:ss).';
+  if (!Number.isFinite(draft.atMs) || draft.atMs < 0 || draft.atMs > TRIVIA_MAX_AT_MS) return 'Indica un momento válido del vídeo (mm:ss).';
   if (draft.answerWindowS < TRIVIA_WINDOW_MIN_S || draft.answerWindowS > TRIVIA_WINDOW_MAX_S) {
     return `El tiempo para responder debe estar entre ${TRIVIA_WINDOW_MIN_S} y ${TRIVIA_WINDOW_MAX_S} s.`;
   }

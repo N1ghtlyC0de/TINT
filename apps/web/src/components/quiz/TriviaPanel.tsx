@@ -20,6 +20,23 @@ import { Button } from '../ui/Button';
 const TRIVIA_ERRORS = new Set(['TRIVIA_NOT_FOUND', 'TRIVIA_CLOSED', 'ALREADY_ANSWERED']);
 const WINDOW_OPTIONS_S = [10, 20, 30, 45, 60];
 const TOP_LIMIT = 10;
+const STATUS_LABELS = { pending: 'Pendiente', open: 'En curso', closed: 'Terminada' } as const;
+
+function Ranking({ label, entries }: { label: string; entries: { user_id: string; nick: string; score: number }[] }) {
+  return (
+    <ol aria-label={label} className="mt-1 space-y-1">
+      {entries.slice(0, TOP_LIMIT).map((entry, i) => (
+        <li key={entry.user_id} className="flex justify-between gap-3 rounded-lg bg-white/5 px-3 py-1 text-[13px]">
+          <span className="truncate text-white">
+            <span className="mr-2 tabular-nums text-tint-muted">{i + 1}.</span>
+            {entry.nick}
+          </span>
+          <span className="tabular-nums text-tint-accent">{entry.score}</span>
+        </li>
+      ))}
+    </ol>
+  );
+}
 
 const inputClass =
   'w-full rounded-xl border border-white/10 bg-tint-bg px-3 py-2 text-sm text-white placeholder:text-tint-muted/60 focus:border-tint-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-tint-accent/60';
@@ -255,7 +272,8 @@ export function TriviaPanel({ isHost, schedule, getCurrentMs, onSchedule, onDele
                   {q.question}
                 </p>
                 <p className="mt-0.5 truncate text-[12px] text-tint-muted">
-                  Correcta: {q.options[q.correct] ?? '—'} · {q.options.length} respuestas
+                  {STATUS_LABELS[q.status ?? 'pending']} · Correcta: {q.options[q.correct] ?? '—'} · {q.options.length}{' '}
+                  respuestas
                 </p>
               </div>
               <Button
@@ -324,20 +342,22 @@ export function TriviaPopup({ trivia, isHost, onAnswer, onDismiss, error }: Triv
                   : `Esta vez no. Tus puntos: ${result.my_score ?? ack?.score ?? 0}`}
             </p>
           )}
+          {!isHost && typeof result.my_total === 'number' && (
+            <p className="mt-0.5 text-[12px] text-tint-muted">Total en la sala: {result.my_total}</p>
+          )}
           {result.top.length === 0 ? (
             <p className="mt-3 text-[13px] text-tint-muted">Nadie sumó puntos en esta pregunta.</p>
           ) : (
-            <ol aria-label="Top 10" className="mt-3 space-y-1">
-              {result.top.slice(0, TOP_LIMIT).map((entry, i) => (
-                <li key={entry.user_id} className="flex justify-between gap-3 rounded-lg bg-white/5 px-3 py-1 text-[13px]">
-                  <span className="truncate text-white">
-                    <span className="mr-2 tabular-nums text-tint-muted">{i + 1}.</span>
-                    {entry.nick}
-                  </span>
-                  <span className="tabular-nums text-tint-accent">{entry.score}</span>
-                </li>
-              ))}
-            </ol>
+            <div className="mt-3">
+              <p className="text-[12px] font-semibold text-white">Top de esta pregunta</p>
+              <Ranking label="Top 10" entries={result.top} />
+            </div>
+          )}
+          {result.leaderboard && result.leaderboard.length > 0 && (
+            <div className="mt-3">
+              <p className="text-[12px] font-semibold text-white">Ranking de la sala</p>
+              <Ranking label="Ranking de la sala" entries={result.leaderboard} />
+            </div>
           )}
         </div>
       ) : (

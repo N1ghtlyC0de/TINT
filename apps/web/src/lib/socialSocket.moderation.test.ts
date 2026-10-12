@@ -60,6 +60,7 @@ describe('chat: modo lento, silencio y spoilers', () => {
     expect(socialErrorMessage('TRIVIA_NOT_FOUND')).toMatch(/ya no existe/i);
     expect(socialErrorMessage('FORBIDDEN')).toMatch(/permiso/i);
     expect(socialErrorMessage('RATE_LIMITED')).toMatch(/despacio/i);
+    expect(socialErrorMessage('UNAVAILABLE')).toMatch(/no está disponible/i);
     expect(socialErrorMessage('OTRO')).toMatch(/no se pudo/i);
   });
 });
@@ -109,6 +110,7 @@ describe('trivia', () => {
     [{ question: 'q', options: ['a', 'b'], correct: 2 }, /correcta/],
     [{ question: 'q', options: ['a', 'b'], correct: 0, atMs: -1 }, /momento/],
     [{ question: 'q', options: ['a', 'b'], correct: 0, answerWindowS: 5 }, /10 y 60/],
+    [{ question: 'q', options: ['a', 'b'], correct: 0, atMs: 24 * 3_600_000 + 1 }, /momento/],
   ])('valida el borrador %#', (draft, expected) => {
     expect(validateTriviaDraft({ atMs: 0, answerWindowS: 20, ...draft })).toMatch(expected);
   });

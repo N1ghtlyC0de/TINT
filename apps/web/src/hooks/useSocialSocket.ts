@@ -237,8 +237,6 @@ export function useSocialSocket(roomId: string | undefined, opts: UseSocialSocke
       ws.onopen = () => {
         attemptRef.current = 0;
         setStatus('open');
-        // Solo el host recibe la agenda de trivia (con las respuestas correctas).
-        if (role === 'host') ws.send(buildTriviaList(roomId));
       };
       ws.onmessage = (event: MessageEvent) => {
         const parsed = parseSocialMessage(String(event.data));

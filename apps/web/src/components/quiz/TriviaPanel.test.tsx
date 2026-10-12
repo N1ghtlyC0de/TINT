@@ -5,8 +5,10 @@ import type { ScheduledTrivia } from '../../lib/socialSocket';
 import { TriviaPanel, TriviaPopup } from './TriviaPanel';
 
 const schedule: ScheduledTrivia[] = [
-  { trivia_id: 't1', at_ms: 65_000, question: '¿Quién llegó primero?', options: ['Ana', 'Beto'], correct: 0, answer_window_s: 20 },
-  { trivia_id: 't2', at_ms: 125_000, question: '¿De qué color era?', options: ['Rojo', 'Azul', 'Verde'], correct: 2, answer_window_s: 20 },
+  { trivia_id: 't1', at_ms: 65_000, question: '¿Quién llegó primero?', options: ['Ana', 'Beto'], correct: 0, answer_window_s: 20, status: 'closed' },
+  { trivia_id: 't2', at_ms: 125_000, question: '¿De qué color era?', options: ['Rojo', 'Azul', 'Verde'], correct: 2, answer_window_s: 20, status: 'pending' },
+  { trivia_id: 't3', at_ms: 200_000, question: '¿Cuántos eran?', options: ['1', '2'], correct: 1, answer_window_s: 20, status: 'open' },
+  { trivia_id: 't4', at_ms: 300_000, question: '¿Sin estado?', options: ['1', '2'], correct: 1, answer_window_s: 20 },
 ];
 
 const question = {
@@ -47,6 +49,10 @@ describe('TriviaPanel — host', () => {
     expect(items[0]).toHaveTextContent('01:05');
     expect(items[0]).toHaveTextContent('¿Quién llegó primero?');
     expect(items[1]).toHaveTextContent('02:05');
+    expect(items[0]).toHaveTextContent('Terminada');
+    expect(items[1]).toHaveTextContent('Pendiente');
+    expect(items[2]).toHaveTextContent('En curso');
+    expect(items[3]).toHaveTextContent('Pendiente');
     fireEvent.click(screen.getByRole('button', { name: 'Eliminar la pregunta de 02:05' }));
     expect(props.onDelete).toHaveBeenCalledWith('t2');
   });
@@ -156,8 +162,14 @@ describe('TriviaPopup', () => {
     expect(onAnswer).toHaveBeenCalledWith('t1', 1);
   });
 
-  it('tras responder marca la elección y bloquea las opciones', () => {
-    render(<TriviaPopup trivia={{ ...empty, question, receivedAt: 1_000_000, myOption: 2 }} {...base} />);
+  it('tras responder marca la elección y bloquea las opciones, sin revelar si acertó', () => {
+    render(
+      <TriviaPopup
+        trivia={{ ...empty, question, receivedAt: 1_000_000, myOption: 2, ack: { type: 'trivia_ack', trivia_id: 't1', option: 2, score: 0 } }}
+        {...base}
+      />,
+    );
+    expect(screen.queryByText(/Tus puntos|acert|incorrect|Esta vez no/i)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Carla' })).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('button', { name: 'Ana' })).toBeDisabled();
     expect(screen.getByText('Respuesta enviada. Espera el resultado…')).toBeInTheDocument();
@@ -185,7 +197,18 @@ describe('TriviaPopup', () => {
           question,
           receivedAt: 1_000_000,
           myOption: 1,
-          result: { type: 'trivia_result', trivia_id: 't1', correct: 1, top, my_score: 1700 },
+          result: {
+            type: 'trivia_result',
+            trivia_id: 't1',
+            correct: 1,
+            top,
+            my_score: 1700,
+            my_total: 4200,
+            leaderboard: [
+              { user_id: 'u0', nick: 'Jugador 1', score: 5000 },
+              { user_id: 'me', nick: 'Yo', score: 4200 },
+            ],
+          },
         }}
         {...base}
         onDismiss={onDismiss}
@@ -197,6 +220,10 @@ describe('TriviaPopup', () => {
     const ranking = screen.getByRole('list', { name: 'Top 10' });
     expect(within(ranking).getAllByRole('listitem')).toHaveLength(10);
     expect(within(ranking).getAllByRole('listitem')[0]).toHaveTextContent('Jugador 1');
+    expect(screen.getByText('Total en la sala: 4200')).toBeInTheDocument();
+    const room = screen.getByRole('list', { name: 'Ranking de la sala' });
+    expect(within(room).getAllByRole('listitem')).toHaveLength(2);
+    expect(within(room).getAllByRole('listitem')[1]).toHaveTextContent('Yo');
     fireEvent.click(screen.getByRole('button', { name: 'Cerrar trivia' }));
     expect(onDismiss).toHaveBeenCalled();
   });
@@ -208,6 +235,8 @@ describe('TriviaPopup', () => {
     );
     expect(screen.getByText('Esta vez no. Tus puntos: 0')).toBeInTheDocument();
     expect(screen.getByText('Nadie sumó puntos en esta pregunta.')).toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: 'Ranking de la sala' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Total en la sala/)).not.toBeInTheDocument();
     rerender(<TriviaPopup trivia={{ ...empty, question, receivedAt: 1, result }} {...base} />);
     expect(screen.getByText('No respondiste esta vez.')).toBeInTheDocument();
     rerender(<TriviaPopup trivia={{ ...empty, question, receivedAt: 1, result }} {...base} isHost />);

@@ -29,7 +29,7 @@ export interface ChatPanelProps {
 }
 
 /** Errores del canal que conciernen al chat (el resto los muestra su panel). */
-const CHAT_ERRORS = new Set(['SLOW_MODE', 'MUTED', 'RATE_LIMITED']);
+const CHAT_ERRORS = new Set(['SLOW_MODE', 'MUTED', 'RATE_LIMITED', 'UNAVAILABLE']);
 
 function slowModeLabel(seconds: number): string {
   return SLOW_MODE_OPTIONS.find((o) => o.seconds === seconds)?.label ?? `${seconds} s`;
