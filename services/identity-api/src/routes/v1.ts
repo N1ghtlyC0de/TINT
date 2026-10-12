@@ -49,7 +49,6 @@ const requireHost = [
   ...(typeof requireRole === 'function' ? [requireRole(['public_host', 'private_host'])] : []),
 ];
 
-
 function getRoomId(req: { params: unknown }) {
   const rawId = (req.params as Record<string, unknown>).id;
   return Array.isArray(rawId) ? rawId[0] : (rawId as string);
