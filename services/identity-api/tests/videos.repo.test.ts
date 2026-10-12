@@ -60,7 +60,7 @@ describe('videos.repo', () => {
     await expect(transitionStatus(video.id, 'pending', 'processing')).resolves.toBeNull();
   });
 
-  it('listByUploader devuelve los vídeos del host (sin failed), recientes primero y con renditions normalizado', async () => {
+  it('listByUploader devuelve los vídeos confirmados del host (processing/ready), recientes primero y con renditions normalizado', async () => {
     orderByMock.mockResolvedValueOnce([{ ...video, renditions: [360, 1080] }]);
     await expect(listByUploader('h1')).resolves.toEqual([{ ...video, renditions: [360] }]);
     expect(whereMock).toHaveBeenCalledTimes(1);

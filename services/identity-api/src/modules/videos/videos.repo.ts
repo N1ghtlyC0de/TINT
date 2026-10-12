@@ -1,4 +1,4 @@
-import { and, desc, eq, ne } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../../db/client.js';
 import { videos } from '../../db/schema.js';
 
@@ -47,12 +47,15 @@ export async function transitionStatus(id: string, from: VideoStatus, to: VideoS
   return result[0] || null;
 }
 
-/** Biblioteca del host: sus vídeos sin los `failed`, de más reciente a más antiguo. */
+/** Estados reutilizables desde la biblioteca: subida confirmada y no fallida. */
+export const LIBRARY_STATUSES: VideoStatus[] = ['processing', 'ready'];
+
+/** Biblioteca del host: sus vídeos confirmados (processing/ready), de más reciente a más antiguo. */
 export async function listByUploader(userId: string) {
   const rows = await db
     .select()
     .from(videos)
-    .where(and(eq(videos.uploadedBy, userId), ne(videos.status, 'failed')))
+    .where(and(eq(videos.uploadedBy, userId), inArray(videos.status, LIBRARY_STATUSES)))
     .orderBy(desc(videos.createdAt));
   return rows.map((row) => ({ ...row, renditions: normalizeRenditions(row.renditions) }));
 }

@@ -164,12 +164,15 @@ describe('PUT /rooms/:id/media con videoId', () => {
     expect(setMedia).toHaveBeenCalledWith('room-1', { mediaId: VID, mediaKey: ready.storageKey });
   });
 
-  it('404 si el vídeo es de otro host, no existe o falló', async () => {
+  it('404 si el vídeo es de otro host, no existe, falló o nunca se confirmó', async () => {
     vi.mocked(findVideo).mockResolvedValueOnce({ ...ready, uploadedBy: 'otro' } as any);
     expect((await put({ videoId: VID })).status).toBe(404);
     vi.mocked(findVideo).mockResolvedValueOnce(null as any);
     expect((await put({ videoId: VID })).status).toBe(404);
     vi.mocked(findVideo).mockResolvedValueOnce({ ...ready, status: 'failed' } as any);
+    expect((await put({ videoId: VID })).status).toBe(404);
+    // pending = subida reservada pero nunca confirmada: el objeto puede no existir.
+    vi.mocked(findVideo).mockResolvedValueOnce({ ...ready, status: 'pending' } as any);
     expect((await put({ videoId: VID })).status).toBe(404);
     expect(setMedia).not.toHaveBeenCalled();
   });

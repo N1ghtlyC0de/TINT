@@ -616,7 +616,7 @@ sequenceDiagram
 
 - **`title`:** el `filename` sin extensión, guardado al reservar la subida (`videos.title`, migración `0007`). Se renombra con `PATCH /videos/:id { title }` (1–255, solo quien lo subió; responde `{ video }` con la misma forma de la tarjeta). Los vídeos anteriores a `0007` tienen `title: null`.
 - **`previewUrl`:** GET firmada (`PLAYBACK_URL_TTL_SECONDS`) para mostrar un fotograma en la tarjeta: `{id}/360p.mp4` si el vídeo está `ready` y `360` está en `renditions`; si no, `storage_key` (el original de `incoming/` mientras se procesa).
-- **Reuso:** como `media_id = videos.id` (no un uuid nuevo como con `mediaKey`), `GET /rooms/:id/playback` sigue resolviendo `status`, `qualities` y `ambilightUrl` del vídeo. Un vídeo `failed`, inexistente o de otro host responde 404. La biblioteca incluye los vídeos en `pending` (reservados pero sin confirmar).
+- **Reuso:** como `media_id = videos.id` (no un uuid nuevo como con `mediaKey`), `GET /rooms/:id/playback` sigue resolviendo `status`, `qualities` y `ambilightUrl` del vídeo. Solo se reusan vídeos confirmados (`processing`/`ready`): uno `pending` (reservado sin confirmar, el objeto puede no existir), `failed`, inexistente o de otro host responde 404. La biblioteca lista los mismos estados.
 
 **Staging `incoming/`.** El original del navegador nunca va a la clave publicada: el media-worker solo publica vídeos que validó (regla de su dominio). `minio-init` importa una regla de ciclo de vida que borra `incoming/` a los 2 días, así quien ya reproducía el original no se corta al publicarse la versión procesada.
 
@@ -830,8 +830,8 @@ flowchart LR
 | `POST /rooms/:id/sync-ticket` | Host dueño (Firebase) | `{ token, expiresAt }` (HS256, `role: host`, 10 min) |
 | `POST /rooms/:id/media/uploads` | Host dueño | `{ videoId, uploadUrl, storageKey, expiresAt, headers }`: reserva el vídeo y firma el PUT a MinIO |
 | `POST /rooms/:id/media/uploads/:videoId/complete` | Host dueño | `{ mediaId, mediaKey, status }`: HEAD del objeto (tamaño real), `pending → processing`, `XADD media:uploads` y asignación a la sala. Idempotente |
-| `PUT /rooms/:id/media` | Host dueño | `{ mediaId, mediaKey }`. Con `{ mediaKey }` asigna un objeto que ya está en el bucket (nuevo `mediaId` en cada llamada); con `{ videoId }` reusa un vídeo de su biblioteca (`mediaId = videoId`, `mediaKey = storage_key`; 404 si no es suyo o está `failed`) |
-| `GET /videos` | Host (Firebase) | `{ videos: [{ id, title, durationMs, status, createdAt, previewUrl }] }`: sus vídeos sin `failed`, recientes primero |
+| `PUT /rooms/:id/media` | Host dueño | `{ mediaId, mediaKey }`. Con `{ mediaKey }` asigna un objeto que ya está en el bucket (nuevo `mediaId` en cada llamada); con `{ videoId }` reusa un vídeo de su biblioteca (`mediaId = videoId`, `mediaKey = storage_key`; 404 si no es suyo o no está `processing`/`ready`) |
+| `GET /videos` | Host (Firebase) | `{ videos: [{ id, title, durationMs, status, createdAt, previewUrl }] }`: sus vídeos confirmados (`processing`/`ready`), recientes primero |
 | `PATCH /videos/:id` | Host que lo subió | `{ title }` (1–255) → `{ video }` (misma forma); 404 si no es suyo |
 | `GET /rooms/:id/playback` | Host dueño **o** guest token de la sala no revocado | `{ mediaId, url, expiresAt, status, ambilightUrl, qualities }` (`null`s y `qualities: []` si no hay vídeo) |
 | `GET /rooms/:id/guests` | Host dueño | `{ guests: [{ jti, nick, joinedAt, expiresAt, revoked }] }` (sin `sub`) |

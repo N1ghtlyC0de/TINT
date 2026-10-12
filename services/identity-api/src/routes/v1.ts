@@ -276,9 +276,9 @@ router.put('/rooms/:id/media', requireAuthHost, requireRoomOwner, validate(setMe
   let mediaKey: string;
   if ('videoId' in body) {
     // Reuso desde la biblioteca: media_id = videos.id para que playback siga
-    // resolviendo estado, calidades y Ambilight. Solo vídeos propios y no fallidos.
+    // resolviendo estado, calidades y Ambilight. Solo vídeos propios y confirmados (processing/ready).
     const video = await findVideo(body.videoId);
-    if (!video || video.uploadedBy !== req.user!.id || video.status === 'failed') {
+    if (!video || video.uploadedBy !== req.user!.id || (video.status !== 'processing' && video.status !== 'ready')) {
       return res.status(404).json({ error: 'Not found' });
     }
     mediaId = video.id;
