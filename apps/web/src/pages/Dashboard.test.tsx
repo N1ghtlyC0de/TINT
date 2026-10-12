@@ -86,6 +86,14 @@ describe('Dashboard', () => {
     expect(manage).toHaveAttribute('href', '/rooms/1');
   });
 
+  it('cada sala enlaza a su análisis', async () => {
+    mockedApi.mockResolvedValueOnce({ rooms: [{ id: '1', title: 'Sala 1' }] });
+    renderDashboard();
+    const link = await screen.findByRole('link', { name: 'Análisis de Sala 1' });
+    expect(link).toHaveAttribute('href', '/rooms/1/analytics');
+    expect(link).toHaveTextContent('Análisis');
+  });
+
   it('elimina la sala con confirmación y la quita de la lista', async () => {
     const user = (await import('@testing-library/user-event')).default;
     vi.spyOn(window, 'confirm').mockReturnValueOnce(true);

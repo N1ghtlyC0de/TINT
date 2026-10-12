@@ -9,7 +9,8 @@ import { requireRoomHostOrGuest } from '../middlewares/guestAuth.js';
 import { requireActiveRoom } from '../middlewares/activeRoom.js';
 import { create as createRoom, listByHost, findById, softRemoveById, updateTitle, setMedia } from '../modules/rooms/rooms.repo.js';
 import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../modules/invitations/invitations.repo.js';
-import { issueGuestToken, generateSyncTicket } from '../modules/auth/auth.service.js';
+import { issueGuestToken, generateHostTicket } from '../modules/auth/auth.service.js';
+import { publishAnalyticsEvent } from '../modules/analytics/analytics.events.js';
 import { getMediaSigner } from '../modules/media/media.signer.js';
 import { getMediaStore } from '../modules/media/media.store.js';
 import { enqueueMediaUpload } from '../modules/media/media.queue.js';
@@ -43,6 +44,8 @@ router.get('/healthz', (req, res) => {
 const verifySchema = z.object({});
 router.post('/auth/verify', requireAuthHost, validate(verifySchema), async (req, res) => {
   res.json({ user: req.user, isRegistered: true });
+  // Analítica: user_id es el sub de Firebase (users.provider_sub), nunca users.id ni el email.
+  void publishAnalyticsEvent('user_login', { method: 'google', user_id: req.user!.providerSub });
 });
 
 const createRoomSchema = z.object({
@@ -67,6 +70,7 @@ router.post('/rooms', requireAuthHost, validate(createRoomSchema), async (req, r
       link: `/invite/${invitation.code}`,
     },
   });
+  void publishAnalyticsEvent('room_created', { room_id: room.id, user_id: req.user!.providerSub });
 });
 
 router.get('/rooms', requireAuthHost, async (req, res) => {
@@ -167,6 +171,8 @@ router.delete('/rooms/:id', requireAuthHost, requireRoomOwner, async (req, res) 
     return res.status(503).json(REVOKE_RETRY_ERROR);
   }
   res.json({ success: true, room: removed });
+  // Solo el primer borrado: el reintento (status === 'deleted') no vuelve a cerrar la sala.
+  void publishAnalyticsEvent('room_closed', { room_id: roomId, user_id: req.user!.providerSub, reason: 'deleted' });
 });
 
 const createInvitationSchema = z.object({
@@ -213,9 +219,22 @@ router.post('/rooms/:id/sync-ticket', requireAuthHost, requireRoomOwner, require
   const rawId = req.params.id;
   const roomId = Array.isArray(rawId) ? rawId[0] : rawId;
   const user = req.user!;
-  const { token, expiresAt } = generateSyncTicket({
+  const { token, expiresAt } = generateHostTicket({
     userId: user.id,
     roomId,
+    nick: hostNick(user),
+  });
+  res.json({ token, expiresAt: expiresAt.toISOString() });
+});
+
+// Ticket de host para la API de lectura de analytics. Sin requireActiveRoom: los
+// KPIs de una sala cerrada (borrado lógico) se siguen consultando. requireRoomOwner
+// no filtra por estado, así que solo el dueño lo obtiene, esté la sala activa o no.
+router.post('/rooms/:id/analytics-ticket', requireAuthHost, requireRoomOwner, async (req, res) => {
+  const user = req.user!;
+  const { token, expiresAt } = generateHostTicket({
+    userId: user.id,
+    roomId: paramId(req.params.id),
     nick: hostNick(user),
   });
   res.json({ token, expiresAt: expiresAt.toISOString() });
@@ -351,10 +370,14 @@ router.post('/rooms/:id/media/uploads/:videoId/complete', requireAuthHost, requi
   current(queued);
 });
 
+/** Alturas que se ofrecen como calidad, de mayor a menor (contrato con media-worker). */
+const PLAYBACK_RENDITION_HEIGHTS = [720, 360] as const;
+type PlaybackQuality = { id: 'source' | `${(typeof PLAYBACK_RENDITION_HEIGHTS)[number]}p`; label: string; url: string };
+
 router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, async (req, res) => {
   const room = req.room!;
   if (!room.mediaId || !room.mediaKey) {
-    return res.json({ mediaId: null, url: null, expiresAt: null, status: null, ambilightUrl: null });
+    return res.json({ mediaId: null, url: null, expiresAt: null, status: null, ambilightUrl: null, qualities: [] });
   }
   // Vídeos subidos por la API tienen fila en `videos` (estado del media-worker);
   // los asignados por clave manual no (status null). Mientras se procesa se
@@ -362,19 +385,29 @@ router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, asy
   // (storage_key la actualiza el worker). Un vídeo failed no se sirve.
   const video = await findVideo(room.mediaId);
   if (video?.status === 'failed') {
-    return res.json({ mediaId: room.mediaId, url: null, expiresAt: null, status: 'failed', ambilightUrl: null });
+    return res.json({ mediaId: room.mediaId, url: null, expiresAt: null, status: 'failed', ambilightUrl: null, qualities: [] });
   }
   const ttl = env.PLAYBACK_URL_TTL_SECONDS;
   const expiresAt = new Date(Date.now() + ttl * 1000);
   const signer = getMediaSigner();
   const url = await signer.presignGet(video?.storageKey ?? room.mediaKey, ttl);
   const ambilightUrl = video?.status === 'ready' ? await signer.presignGet(`${video.id}/ambilight.json`, ttl) : null;
+  // Calidades: el Original siempre (= url); las versiones `{id}/{h}p.mp4` que
+  // media-worker publicó (renditions) solo cuando el vídeo está ready.
+  const qualities: PlaybackQuality[] = [{ id: 'source', label: 'Original', url }];
+  if (video?.status === 'ready') {
+    const published = Array.isArray(video.renditions) ? video.renditions : [];
+    for (const h of PLAYBACK_RENDITION_HEIGHTS.filter((height) => published.includes(height))) {
+      qualities.push({ id: `${h}p`, label: `${h}p`, url: await signer.presignGet(`${video.id}/${h}p.mp4`, ttl) });
+    }
+  }
   res.json({
     mediaId: room.mediaId,
     url,
     expiresAt: expiresAt.toISOString(),
     status: video?.status ?? null,
     ambilightUrl,
+    qualities,
   });
 });
 
@@ -449,6 +482,7 @@ router.post('/invitations/claim', validate(claimSchema), async (req, res) => {
     expiresAt: new Date(payload.exp * 1000),
   });
   res.json({ token, roomId: invitation.roomId, nick, roomTitle: room?.title ?? null });
+  void publishAnalyticsEvent('invitation_claimed', { room_id: payload.room_id, user_id: payload.sub });
 });
 
 export default router;

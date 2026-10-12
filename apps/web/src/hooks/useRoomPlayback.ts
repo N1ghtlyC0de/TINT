@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { apiFetch } from '../lib/api';
 import { errorStatus } from '../lib/errorStatus';
+import { normalizeQualities, type PlaybackQuality } from '../lib/quality';
 
 /** Refresca la URL firmada este tiempo antes de `expiresAt`. */
 export const PLAYBACK_REFRESH_LEAD_MS = 60_000;
@@ -38,6 +39,8 @@ export interface RoomPlayback {
   status: MediaStatus | null;
   /** URL firmada de ambilight.json; solo cuando status = ready. */
   ambilightUrl: string | null;
+  /** Versiones disponibles (original + transcodificaciones); [] sin vídeo. */
+  qualities: PlaybackQuality[];
   loading: boolean;
   error: string | null;
   /** El invitado recibió 401/403: su invitación ya no vale (se borra `tint_guest_token`). */
@@ -50,6 +53,7 @@ interface PlaybackResponse {
   expiresAt?: string | null;
   status?: string | null;
   ambilightUrl?: string | null;
+  qualities?: unknown;
 }
 
 interface PlaybackData {
@@ -58,9 +62,10 @@ interface PlaybackData {
   expiresAt: string | null;
   status: MediaStatus | null;
   ambilightUrl: string | null;
+  qualities: PlaybackQuality[];
 }
 
-const EMPTY: PlaybackData = { url: null, mediaId: null, expiresAt: null, status: null, ambilightUrl: null };
+const EMPTY: PlaybackData = { url: null, mediaId: null, expiresAt: null, status: null, ambilightUrl: null, qualities: [] };
 
 function toPlaybackData(res: PlaybackResponse | undefined): PlaybackData {
   return {
@@ -69,7 +74,18 @@ function toPlaybackData(res: PlaybackResponse | undefined): PlaybackData {
     expiresAt: res?.expiresAt ?? null,
     status: toMediaStatus(res?.status),
     ambilightUrl: res?.ambilightUrl ?? null,
+    // identity-api sin `qualities` (versión previa) → solo el original.
+    qualities: normalizeQualities(res?.qualities, res?.url ?? null),
   };
+}
+
+/**
+ * Calidades de una re-consulta conservando la URL del original ya cargada: si cambiara,
+ * el reproductor recargaría el `src` sin necesidad.
+ */
+function keepSourceUrl(qualities: PlaybackQuality[], url: string | null): PlaybackQuality[] {
+  if (!url) return qualities;
+  return qualities.map((q) => (q.id === 'source' ? { ...q, url } : q));
 }
 
 /**
@@ -146,8 +162,13 @@ export function useRoomPlayback(
           // el worker rechazó el vídeo: identity-api ya no lo sirve (url null).
           setData((prev) =>
             next.status === 'failed'
-              ? { ...prev, status: next.status, ambilightUrl: null, url: null, expiresAt: null }
-              : { ...prev, status: next.status, ambilightUrl: next.ambilightUrl },
+              ? { ...prev, status: next.status, ambilightUrl: null, url: null, expiresAt: null, qualities: [] }
+              : {
+                  ...prev,
+                  status: next.status,
+                  ambilightUrl: next.ambilightUrl,
+                  qualities: keepSourceUrl(next.qualities, prev.url),
+                },
           );
         } else {
           // La sala cambió de vídeo entretanto: se adopta la respuesta completa.

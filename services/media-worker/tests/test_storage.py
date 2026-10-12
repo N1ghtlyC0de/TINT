@@ -4,7 +4,18 @@ from unittest.mock import Mock
 import pytest
 from botocore.exceptions import ClientError
 
-from media_worker.storage import BlobNotFoundError, S3BlobStore, ambilight_key, source_key
+from media_worker.storage import (
+    BlobNotFoundError,
+    S3BlobStore,
+    ambilight_key,
+    rendition_key,
+    source_key,
+)
+
+
+def test_rendition_key_is_height_suffixed_mp4():
+    assert rendition_key("abc", 720) == "abc/720p.mp4"
+    assert rendition_key("abc", 360) == "abc/360p.mp4"
 
 
 def client_error(code):
@@ -15,9 +26,8 @@ def test_ambilight_key_is_deterministic_per_video():
     assert ambilight_key("abc") == "abc/ambilight.json"
 
 
-def test_source_key_is_deterministic_per_video_and_extension():
-    assert source_key("abc", ".mp4") == "abc/source.mp4"
-    assert source_key("abc", ".MKV") == "abc/source.mkv"
+def test_source_key_is_always_mp4():
+    assert source_key("abc") == "abc/source.mp4"
 
 
 def test_upload_file_puts_local_file_under_key(tmp_path):

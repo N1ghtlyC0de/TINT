@@ -22,6 +22,15 @@ vi.mock('../hooks/useSocialSocket', () => ({
     reactions: [],
     send: vi.fn(() => true),
     sendReaction: vi.fn(() => true),
+    laser: [],
+    sendLaser: vi.fn(() => true),
+    poll: null,
+    lastError: null,
+    createPoll: vi.fn(() => true),
+    votePoll: vi.fn(() => true),
+    closePoll: vi.fn(() => true),
+    recap: null,
+    requestRecap: vi.fn(() => true),
   }),
 }));
 

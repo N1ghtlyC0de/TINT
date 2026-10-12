@@ -2,6 +2,8 @@ import signal
 import threading
 from unittest.mock import Mock
 
+from fakes import FakeRedis
+
 from media_worker import __main__ as entry
 from media_worker.consumer import StreamConsumer
 
@@ -51,6 +53,20 @@ def test_build_consumer_handler_runs_handle_upload(monkeypatch):
     video_id, repo, blobs = handled.call_args.args
     assert video_id == "v1"
     assert repo.conn is not None and blobs.bucket == "tint-media"
+
+
+def test_build_consumer_publishes_analytics_on_the_same_redis(monkeypatch):
+    redis = FakeRedis()
+    handled = Mock(return_value=None)
+    monkeypatch.setattr(entry, "handle_upload", handled)
+    consumer = entry.build_consumer(
+        ENV, redis_factory=lambda *a, **k: redis, s3_factory=Mock(), connect=Mock()
+    )
+    consumer.handler("v1")
+    publish = handled.call_args.kwargs["publish"]
+    publish({"type": "media_processed"})
+    assert redis.entries("analytics:events") == [{"type": "media_processed"}]
+    assert redis.xadd_calls == [("analytics:events", 100_000, True)]
 
 
 def test_main_runs_until_a_signal_stops_it(monkeypatch):

@@ -251,7 +251,7 @@ describe('GET /rooms/:id/playback con estado del procesamiento', () => {
     vi.mocked(findVideo).mockResolvedValueOnce({ ...pending, status: 'failed' } as any);
     const res = await play();
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ mediaId: VID, url: null, expiresAt: null, status: 'failed', ambilightUrl: null });
+    expect(res.body).toMatchObject({ mediaId: VID, url: null, expiresAt: null, status: 'failed', ambilightUrl: null, qualities: [] });
   });
 
   it('status null si el vídeo se asignó por clave manual (sin fila en videos)', async () => {
@@ -259,5 +259,52 @@ describe('GET /rooms/:id/playback con estado del procesamiento', () => {
     vi.mocked(findVideo).mockResolvedValueOnce(null as any);
     const res = await play();
     expect(res.body).toMatchObject({ mediaId: VID, status: null, ambilightUrl: null });
+  });
+});
+
+describe('GET /rooms/:id/playback con calidades', () => {
+  const play = () => request(app).get('/api/v1/rooms/room-1/playback').set('Authorization', 'Bearer firebase');
+  const ttl = () => env.PLAYBACK_URL_TTL_SECONDS;
+  const signed = (key: string) => `http://minio.test/tint-media/${key}?ttl=${ttl()}`;
+
+  beforeEach(() => {
+    vi.mocked(findRoom).mockResolvedValue({ ...activeRoom, mediaId: VID, mediaKey: pending.storageKey } as any);
+  });
+
+  it('ready: Original primero (misma URL que url) y luego las calidades de mayor a menor', async () => {
+    vi.mocked(findVideo).mockResolvedValueOnce({ ...pending, status: 'ready', storageKey: `${VID}/source.mp4`, renditions: [720, 360] } as any);
+    const res = await play();
+    expect(res.status).toBe(200);
+    expect(res.body.url).toBe(signed(`${VID}/source.mp4`));
+    expect(res.body.qualities).toEqual([
+      { id: 'source', label: 'Original', url: res.body.url },
+      { id: '720p', label: '720p', url: signed(`${VID}/720p.mp4`) },
+      { id: '360p', label: '360p', url: signed(`${VID}/360p.mp4`) },
+    ]);
+  });
+
+  it('ready con una sola calidad publicada', async () => {
+    vi.mocked(findVideo).mockResolvedValueOnce({ ...pending, status: 'ready', storageKey: `${VID}/source.mp4`, renditions: [360] } as any);
+    const res = await play();
+    expect(res.body.qualities.map((q: any) => q.id)).toEqual(['source', '360p']);
+  });
+
+  it('ready sin renditions: solo Original', async () => {
+    vi.mocked(findVideo).mockResolvedValueOnce({ ...pending, status: 'ready', storageKey: `${VID}/source.mp4`, renditions: [] } as any);
+    const res = await play();
+    expect(res.body.qualities).toEqual([{ id: 'source', label: 'Original', url: signed(`${VID}/source.mp4`) }]);
+  });
+
+  it('mientras se procesa solo se ofrece el Original aunque haya renditions', async () => {
+    vi.mocked(findVideo).mockResolvedValueOnce({ ...pending, status: 'processing', renditions: [720, 360] } as any);
+    const res = await play();
+    expect(res.body.qualities).toEqual([{ id: 'source', label: 'Original', url: signed(pending.storageKey) }]);
+  });
+
+  it('vídeo asignado por clave manual (sin fila en videos): solo Original', async () => {
+    vi.mocked(findRoom).mockResolvedValue({ ...activeRoom, mediaId: VID, mediaKey: 'manual/a.mp4' } as any);
+    vi.mocked(findVideo).mockResolvedValueOnce(null as any);
+    const res = await play();
+    expect(res.body.qualities).toEqual([{ id: 'source', label: 'Original', url: signed('manual/a.mp4') }]);
   });
 });

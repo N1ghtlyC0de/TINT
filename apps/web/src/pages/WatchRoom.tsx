@@ -4,6 +4,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { ReactionBar } from '../components/ReactionBar';
 import { ReactionOverlay } from '../components/ReactionOverlay';
+import { LaserOverlay } from '../components/LaserOverlay';
+import { PollPanel } from '../components/PollPanel';
+import { RecapScreen } from '../components/RecapScreen';
 import { CopyButton } from '../components/CopyButton';
 import { SyncedPlayer } from '../components/SyncedPlayer';
 import { ChangeVideoPanel } from '../components/host/ChangeVideoPanel';
@@ -16,7 +19,7 @@ import { Button } from '../components/ui/Button';
 import { Card, Field } from '../components/ui/Primitives';
 import { apiFetch } from '../lib/api';
 import { toAbsoluteInviteLink, pickLatestActiveInvitation, parseInviteCode } from '../lib/invite';
-import { formatChatTime, noticeText } from '../lib/socialSocket';
+import { formatChatTime, noticeText, type RecapMessage } from '../lib/socialSocket';
 import { getLocalIdentity, guestTokenGrantsRoom } from '../lib/identity';
 import { useRoomPlayback, type MediaStatus } from '../hooks/useRoomPlayback';
 
@@ -78,7 +81,22 @@ export default function WatchRoom() {
   // Sin ningún token válido no hay cómo autenticar el socket: se muestra la puerta.
   const hasAccess = !!hostToken || !!guestToken;
   // Canal Social (/ws/social): el estado maestro del chat vive en social-core.
-  const { messages, reactions, send, sendReaction, status } = useSocialSocket(hasAccess ? roomId : undefined);
+  const {
+    messages,
+    reactions,
+    laser,
+    poll,
+    recap,
+    lastError: socialError,
+    send,
+    sendReaction,
+    sendLaser,
+    createPoll,
+    votePoll,
+    closePoll,
+    requestRecap,
+    status,
+  } = useSocialSocket(hasAccess ? roomId : undefined, { role: hostToken ? 'host' : 'guest' });
   // Si hay sesión de host, manda el host aunque queden restos de invitado
   // (p. ej. guest token de una visita anterior al login). Coherente con
   // apiFetch, que prefiere el header de host.
@@ -119,6 +137,22 @@ export default function WatchRoom() {
     (mediaId: string) => sendCommand('LOAD', 0, { media_id: mediaId }) !== null,
     [sendCommand],
   );
+  // Puntero láser: solo el host (social-core rechaza el resto con FORBIDDEN).
+  const [laserOn, setLaserOn] = useState(false);
+  const laserDrawing = laserOn && !isGuest && canControl;
+  const [pollCreatorOpen, setPollCreatorOpen] = useState(false);
+  // Recap: se abre al terminar el vídeo (y se pide) o cuando llega uno nuevo de social-core.
+  const [awaitingRecap, setAwaitingRecap] = useState(false);
+  const [dismissedRecap, setDismissedRecap] = useState<RecapMessage | null>(null);
+  const showRecap = awaitingRecap || (recap !== null && recap !== dismissedRecap);
+  const onVideoEnded = () => {
+    requestRecap();
+    setAwaitingRecap(true);
+  };
+  const dismissRecap = () => {
+    setAwaitingRecap(false);
+    setDismissedRecap(recap);
+  };
   const [chat, setChat] = useState('');
   const [invite, setInvite] = useState('');
   const [inviteHint, setInviteHint] = useState('');
@@ -345,11 +379,17 @@ export default function WatchRoom() {
             <div className="relative">
               <SyncedPlayer
                 src={videoSrc}
+                qualities={playback.qualities}
                 canControl={canControl}
                 delegated={delegated}
                 sync={sync}
                 videoRef={videoRef}
                 emptyMessage={emptyMessage}
+                laserOn={laserOn}
+                onToggleLaser={isGuest ? undefined : () => setLaserOn((on) => !on)}
+                onOpenPoll={isGuest ? undefined : () => setPollCreatorOpen(true)}
+                onEnded={onVideoEnded}
+                overlay={<LaserOverlay points={laser} drawing={laserDrawing} onPoint={sendLaser} />}
               />
               <ReactionOverlay reactions={reactions} />
             </div>
@@ -384,6 +424,19 @@ export default function WatchRoom() {
               </Card>
             </div>
           )}
+
+          <Card className="mt-4 p-5">
+            <PollPanel
+              poll={poll}
+              isHost={!isGuest}
+              creatorOpen={pollCreatorOpen}
+              onCreatorOpenChange={setPollCreatorOpen}
+              onCreate={createPoll}
+              onVote={votePoll}
+              onClose={closePoll}
+              error={socialError?.code ?? null}
+            />
+          </Card>
 
           <div className="mt-4 grid gap-4 md:grid-cols-2">
             <Card className="p-5">
@@ -492,6 +545,7 @@ export default function WatchRoom() {
       </main>
 
       <ToastStack toasts={toasts} className="fixed right-4 top-20 z-40" />
+      {showRecap && <RecapScreen recap={recap} onDismiss={dismissRecap} />}
     </div>
   );
 }

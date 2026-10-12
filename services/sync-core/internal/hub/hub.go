@@ -58,6 +58,9 @@ const (
 	// HandoffAfter: tiempo sin host/cohost tras el cual un participante
 	// recibe el control (CONTROL_HANDOFF_AFTER).
 	HandoffAfter = 5 * time.Minute
+	// BufferingInterval: mínimo entre dos BUFFERING aceptados de una misma
+	// conexión; los que llegan antes se descartan en silencio.
+	BufferingInterval = time.Second
 
 	ioTimeout = 2 * time.Second
 )
@@ -83,9 +86,12 @@ type Bus interface {
 	Publish(ctx context.Context, roomID string, payload []byte) error
 }
 
-// Telemetry recibe las métricas de drift (ver package telemetry).
+// Telemetry recibe los eventos de analítica (ver package telemetry). Cada
+// método solo encola: nunca bloquea ni hace I/O en el camino del mensaje.
 type Telemetry interface {
 	EmitDrift(telemetry.DriftSample) bool
+	EmitPlayback(telemetry.PlaybackSample) bool
+	EmitBuffering(telemetry.BufferingSample) bool
 }
 
 // Hub gestiona las salas con clientes conectados a esta réplica.
@@ -516,7 +522,8 @@ func (h *Hub) Deliver(roomID string, payload []byte) {
 		}
 		r.update(master.State{
 			Status: master.Status(ev.Status), PositionMs: ev.PositionMs, UpdatedAtMs: ev.UpdatedAtMs,
-			Rate: ev.Rate, Version: ev.Version, MediaID: ev.MediaID,
+			Rate: ev.Rate, Version: ev.Version, MediaID: ev.MediaID, Volume: volumeOf(ev),
+			Quality: qualityOf(ev),
 		}, h.now().UnixMilli())
 	}
 	// El bus siempre viaja en JSON; para los clientes MessagePack se
@@ -563,7 +570,24 @@ func (h *Hub) Handle(ctx context.Context, c *Client, raw []byte) {
 		h.handleCommand(ctx, c, ev, now)
 		return
 	}
+	if ev.Type == syncevent.Buffering {
+		h.handleBuffering(c, ev, now)
+		return
+	}
 	h.handleSyncCheck(ctx, c, ev, now)
+}
+
+// handleBuffering publica el stall del reproductor en analytics:events. Lo
+// puede enviar cualquier rol; no responde, no difunde y no toca Redis en
+// este camino (la telemetría solo encola).
+func (h *Hub) handleBuffering(c *Client, ev syncevent.Event, now time.Time) {
+	if !c.allowBuffering(now.UnixMilli()) {
+		return
+	}
+	h.tel.EmitBuffering(telemetry.BufferingSample{
+		EventID: ev.EventID, RoomID: c.claims.RoomID, DurationMs: ev.DurationMs, PositionMs: ev.PositionMs,
+		Role: string(c.claims.Role), OccurredAt: ev.OccurredAt, ReceivedAt: now,
+	})
 }
 
 func (h *Hub) handleCommand(ctx context.Context, c *Client, ev syncevent.Event, now time.Time) {
@@ -579,13 +603,17 @@ func (h *Hub) handleCommand(ctx context.Context, c *Client, ev syncevent.Event, 
 		out.OccurredAt = ev.OccurredAt
 		return json.Marshal(out)
 	}
-	cmd := master.Command{Type: ev.Type, PositionMs: ev.PositionMs, Rate: ev.Rate, MediaID: ev.MediaID}
+	cmd := master.Command{Type: ev.Type, PositionMs: ev.PositionMs, Rate: ev.Rate, MediaID: ev.MediaID, Quality: ev.Quality}
+	if ev.Volume != nil {
+		cmd.Volume = *ev.Volume
+	}
 	started := time.Now()
 	st, dup, err := h.store.Apply(ctx, room, ev.EventID, cmd, now.UnixMilli(), c.RTT(), encode)
 	h.m.apply.Observe(time.Since(started).Seconds())
 	if err != nil {
 		code, result := syncevent.CodeInternal, "error"
-		if errors.Is(err, syncevent.ErrNegativePosition) || errors.Is(err, syncevent.ErrInvalidRate) || errors.Is(err, syncevent.ErrInvalidMedia) {
+		if errors.Is(err, syncevent.ErrNegativePosition) || errors.Is(err, syncevent.ErrInvalidRate) || errors.Is(err, syncevent.ErrInvalidMedia) ||
+			errors.Is(err, syncevent.ErrInvalidVolume) || errors.Is(err, syncevent.ErrInvalidQuality) {
 			code, result = syncevent.CodeInvalid, "invalid"
 		} else {
 			log.Printf("hub: comando %s en sala %s: %v", ev.Type, room, err)
@@ -598,6 +626,10 @@ func (h *Hub) handleCommand(ctx context.Context, c *Client, ev syncevent.Event, 
 		h.m.commands.With("duplicate").Inc()
 	} else {
 		h.m.commands.With("ok").Inc()
+		h.tel.EmitPlayback(telemetry.PlaybackSample{
+			EventID: ev.EventID, RoomID: room, Command: string(ev.Type), PositionMs: st.PositionMs,
+			Role: string(c.claims.Role), OccurredAt: ev.OccurredAt, ReceivedAt: now,
+		})
 	}
 	ack := baseEvent(syncevent.Ack, room, now)
 	ack.RefEventID = ev.EventID
@@ -646,10 +678,12 @@ func (h *Hub) handleSyncCheck(ctx context.Context, c *Client, ev syncevent.Event
 	out.Status = string(st.Status)
 	out.Rate = st.Rate
 	out.MediaID = st.MediaID
+	out.Volume = syncevent.Float64(st.Volume)
+	out.Quality = st.Quality
 	c.enqueueEvent(out)
 	h.tel.EmitDrift(telemetry.DriftSample{
 		RoomID: room, DriftMs: corr.DriftMs, RTTMs: rtt, Strategy: string(corr.Strategy),
-		Role: string(c.claims.Role), OccurredAt: ev.OccurredAt, ReceivedAt: now,
+		Role: string(c.claims.Role), PositionMs: corr.TargetMs, OccurredAt: ev.OccurredAt, ReceivedAt: now,
 	})
 }
 
@@ -813,7 +847,26 @@ func stateEvent(typ syncevent.Type, room string, st master.State, now time.Time)
 	ev.UpdatedAtMs = st.UpdatedAtMs
 	ev.ServerTimeMs = now.UnixMilli()
 	ev.MediaID = st.MediaID
+	ev.Volume = syncevent.Float64(st.Volume)
+	ev.Quality = st.Quality
 	return ev
+}
+
+// volumeOf lee el volumen de un broadcast; los de réplicas anteriores a
+// VOLUME no lo traen y equivalen al volumen por defecto.
+func volumeOf(ev syncevent.Event) float64 {
+	if ev.Volume == nil {
+		return master.DefaultVolume
+	}
+	return *ev.Volume
+}
+
+// qualityOf lee la calidad de un broadcast (auto si la réplica no la envía).
+func qualityOf(ev syncevent.Event) string {
+	if ev.Quality == "" {
+		return master.DefaultQuality
+	}
+	return ev.Quality
 }
 
 func errorEvent(room, ref, code string, now time.Time) syncevent.Event {

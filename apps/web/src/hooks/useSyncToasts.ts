@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { QUALITY_LABELS } from '../lib/quality';
 import { formatRate, formatTime } from '../lib/time';
 import type { SyncBroadcast } from './useSyncSocket';
 
@@ -22,6 +23,12 @@ export function describeBroadcast(b: SyncBroadcast): string {
       return `El host cambió la velocidad a ${formatRate(b.rate)}×`;
     case 'LOAD':
       return 'El host cargó un nuevo vídeo';
+    case 'VOLUME': {
+      const volume = b.volume ?? 1;
+      return volume === 0 ? 'El host silenció el vídeo' : `El host ajustó el volumen al ${Math.round(volume * 100)} %`;
+    }
+    case 'QUALITY':
+      return `El host cambió la calidad a ${QUALITY_LABELS[b.quality ?? 'auto']}`;
   }
 }
 

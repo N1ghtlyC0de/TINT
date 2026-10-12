@@ -38,8 +38,36 @@ func (f *fakeClock) now() time.Time          { return time.UnixMilli(f.ms.Load()
 func (f *fakeClock) advance(d time.Duration) { f.ms.Add(d.Milliseconds()) }
 
 type fakeTelemetry struct {
-	mu      sync.Mutex
-	samples []telemetry.DriftSample
+	mu         sync.Mutex
+	samples    []telemetry.DriftSample
+	playbacks  []telemetry.PlaybackSample
+	bufferings []telemetry.BufferingSample
+}
+
+func (f *fakeTelemetry) EmitPlayback(s telemetry.PlaybackSample) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.playbacks = append(f.playbacks, s)
+	return true
+}
+
+func (f *fakeTelemetry) EmitBuffering(s telemetry.BufferingSample) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.bufferings = append(f.bufferings, s)
+	return true
+}
+
+func (f *fakeTelemetry) playbackList() []telemetry.PlaybackSample {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]telemetry.PlaybackSample(nil), f.playbacks...)
+}
+
+func (f *fakeTelemetry) bufferingList() []telemetry.BufferingSample {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]telemetry.BufferingSample(nil), f.bufferings...)
 }
 
 func (f *fakeTelemetry) EmitDrift(s telemetry.DriftSample) bool {
@@ -358,7 +386,7 @@ func TestSyncCheckCorrectsDriftAndEmitsTelemetry(t *testing.T) {
 		t.Fatalf("telemetría emitida = %d, want 1", e.tel.count())
 	}
 	s := e.tel.samples[0]
-	if s.RoomID != room || s.DriftMs != -1050 || s.RTTMs != 100 || s.Role != "participant" || s.Strategy != "rate" {
+	if s.RoomID != room || s.DriftMs != -1050 || s.RTTMs != 100 || s.Role != "participant" || s.Strategy != "rate" || s.PositionMs != 10_150 {
 		t.Errorf("muestra = %+v", s)
 	}
 
@@ -632,5 +660,280 @@ func TestRateAndLoadBroadcastWithMedia(t *testing.T) {
 	send(t, h, hc, bad)
 	if ev := nextOf(t, hc, syncevent.Error); ev.Code != syncevent.CodeInvalid || ev.RefEventID != "e-bad" {
 		t.Errorf("RATE fuera de rango = %+v", ev)
+	}
+}
+
+func TestVolumeBroadcastAndState(t *testing.T) {
+	e := newEnv(t)
+	a := e.newHub(t)
+	b := e.newHub(t)
+	hc := connect(t, a, host)
+	if st := next(t, hc); st.Volume == nil || *st.Volume != 1 {
+		t.Errorf("STATE inicial debe llevar volume=1: %+v", st.Volume)
+	}
+	g := connect(t, b, guest) // otra réplica
+	next(t, g)
+	e.waitSubscribers(t, 2)
+
+	send(t, a, hc, cmd("e-play", syncevent.Play, 1000))
+	nextOf(t, g, syncevent.Play)
+
+	e.clock.advance(2 * time.Second)
+	vol := cmd("e-vol", syncevent.Volume, 50_000) // la posición del Host no mueve el ancla
+	vol["volume"] = 0.0
+	send(t, a, hc, vol)
+	ev := nextOf(t, g, syncevent.Volume)
+	if ev.Volume == nil || *ev.Volume != 0 || ev.Status != "playing" || ev.PositionMs != 3000 || ev.Version != 2 {
+		t.Errorf("broadcast VOLUME en réplica B = %+v (volume %v)", ev, ev.Volume)
+	}
+	if st, ok := b.cached(room); !ok || st.Volume != 0 || st.Version != 2 {
+		t.Errorf("la caché de B debe reflejar el volumen: %+v", st)
+	}
+	// Los demás broadcasts siguen llevando el volumen (aunque sea 0).
+	send(t, a, hc, cmd("e-seek", syncevent.Seek, 7000))
+	if ev := nextOf(t, g, syncevent.Seek); ev.Volume == nil || *ev.Volume != 0 {
+		t.Errorf("SEEK debe llevar volume=0: %v", ev.Volume)
+	}
+	// STATE de un participante nuevo.
+	g2 := connect(t, b, guestTwo)
+	if st := next(t, g2); st.Volume == nil || *st.Volume != 0 {
+		t.Errorf("STATE debe llevar volume=0: %v", st.Volume)
+	}
+	// SYNC_CORRECTION también lo lleva.
+	send(t, b, g2, cmd("c1", syncevent.SyncCheck, 60_000))
+	if corr := nextOf(t, g2, syncevent.SyncCorrection); corr.Volume == nil || *corr.Volume != 0 {
+		t.Errorf("SYNC_CORRECTION debe llevar volume: %v", corr.Volume)
+	}
+
+	for _, v := range []any{nil, 1.5, -0.1} {
+		bad := cmd("e-bad", syncevent.Volume, 0)
+		if v != nil {
+			bad["volume"] = v
+		}
+		send(t, a, hc, bad)
+		if ev := nextOf(t, hc, syncevent.Error); ev.Code != syncevent.CodeInvalid || ev.RefEventID != "e-bad" {
+			t.Errorf("VOLUME %v = %+v", v, ev)
+		}
+	}
+}
+
+func TestParticipantVolumeIsForbidden(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	hc := connect(t, h, host)
+	next(t, hc)
+	g := connect(t, h, guest)
+	next(t, g)
+
+	vol := cmd("e-evil", syncevent.Volume, 0)
+	vol["volume"] = 0.1
+	send(t, h, g, vol)
+	if ev := nextOf(t, g, syncevent.Error); ev.Code != syncevent.CodeForbidden || ev.RefEventID != "e-evil" {
+		t.Errorf("ERROR = %+v", ev)
+	}
+	expectSilence(t, hc)
+	if st, _ := h.store.Load(context.Background(), room); st.Version != 0 || st.Volume != 1 {
+		t.Errorf("el estado maestro debe quedar intacto: %+v", st)
+	}
+}
+
+// Un broadcast de una réplica sin volume (versión anterior) se cachea con volumen 1.
+func TestDeliverWithoutVolumeDefaultsToOne(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	g := connect(t, h, guest)
+	next(t, g)
+	ev := stateEvent(syncevent.Seek, room, master.State{Status: master.Paused, PositionMs: 1, Rate: 1, Version: 5}, e.clock.now())
+	ev.Volume = nil
+	h.Deliver(room, mustJSON(ev))
+	if st, ok := h.cached(room); !ok || st.Volume != 1 || st.Version != 5 {
+		t.Errorf("caché = %+v", st)
+	}
+}
+
+func TestQualityBroadcastAndState(t *testing.T) {
+	e := newEnv(t)
+	a := e.newHub(t)
+	b := e.newHub(t)
+	hc := connect(t, a, host)
+	if st := next(t, hc); st.Quality != "auto" {
+		t.Errorf("STATE inicial debe llevar quality=auto: %q", st.Quality)
+	}
+	g := connect(t, b, guest) // otra réplica
+	next(t, g)
+	e.waitSubscribers(t, 2)
+
+	q := cmd("e-q", syncevent.Quality, 0)
+	q["quality"] = "720p"
+	send(t, a, hc, q)
+	if ack := collect(t, hc, syncevent.Ack)[syncevent.Ack]; ack.RefEventID != "e-q" || ack.Version != 1 {
+		t.Errorf("ACK = %+v", ack)
+	}
+	ev := nextOf(t, g, syncevent.Quality)
+	if ev.Quality != "720p" || ev.Status != "paused" || ev.Version != 1 || ev.Volume == nil || *ev.Volume != 1 {
+		t.Errorf("broadcast QUALITY en réplica B = %+v", ev)
+	}
+	if st, ok := b.cached(room); !ok || st.Quality != "720p" {
+		t.Errorf("la caché de B debe reflejar la calidad: %+v", st)
+	}
+	send(t, a, hc, cmd("e-play", syncevent.Play, 0))
+	if ev := nextOf(t, g, syncevent.Play); ev.Quality != "720p" {
+		t.Errorf("PLAY debe llevar quality: %q", ev.Quality)
+	}
+	g2 := connect(t, b, guestTwo)
+	if st := next(t, g2); st.Quality != "720p" {
+		t.Errorf("STATE debe llevar quality: %q", st.Quality)
+	}
+	e.clock.advance(time.Second)
+	send(t, b, g2, cmd("c1", syncevent.SyncCheck, 60_000))
+	if corr := nextOf(t, g2, syncevent.SyncCorrection); corr.Quality != "720p" {
+		t.Errorf("SYNC_CORRECTION debe llevar quality: %q", corr.Quality)
+	}
+
+	bad := cmd("e-bad", syncevent.Quality, 0)
+	bad["quality"] = "1080p"
+	send(t, a, hc, bad)
+	if ev := nextOf(t, hc, syncevent.Error); ev.Code != syncevent.CodeInvalid || ev.RefEventID != "e-bad" {
+		t.Errorf("QUALITY inválida = %+v", ev)
+	}
+}
+
+func TestParticipantQualityIsForbidden(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	hc := connect(t, h, host)
+	next(t, hc)
+	g := connect(t, h, guest)
+	next(t, g)
+
+	q := cmd("e-evil", syncevent.Quality, 0)
+	q["quality"] = "360p"
+	send(t, h, g, q)
+	if ev := nextOf(t, g, syncevent.Error); ev.Code != syncevent.CodeForbidden || ev.RefEventID != "e-evil" {
+		t.Errorf("ERROR = %+v", ev)
+	}
+	expectSilence(t, hc)
+	if st, _ := h.store.Load(context.Background(), room); st.Version != 0 || st.Quality != "auto" {
+		t.Errorf("el estado maestro debe quedar intacto: %+v", st)
+	}
+}
+
+// Un broadcast de una réplica sin quality (versión anterior) se cachea como auto.
+func TestDeliverWithoutQualityDefaultsToAuto(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	g := connect(t, h, guest)
+	next(t, g)
+	ev := stateEvent(syncevent.Seek, room, master.State{Status: master.Paused, PositionMs: 1, Rate: 1, Version: 5}, e.clock.now())
+	ev.Quality = ""
+	h.Deliver(room, mustJSON(ev))
+	if st, ok := h.cached(room); !ok || st.Quality != "auto" || st.Version != 5 {
+		t.Errorf("caché = %+v", st)
+	}
+}
+
+// Cada comando aplicado (no duplicado) se publica como playback_command con
+// el event_id del cliente; los rechazados y los duplicados no.
+func TestCommandEmitsPlaybackTelemetry(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	hc := connect(t, h, host)
+	next(t, hc)
+	g := connect(t, h, guest)
+	next(t, g)
+
+	const id = "6f1c2a8e-8a4e-4d0a-9f5b-1c2d3e4f5a6b"
+	e.clock.advance(time.Second)
+	send(t, h, hc, cmd(id, syncevent.Seek, 5000))
+	collect(t, hc, syncevent.Ack, syncevent.Seek)
+	send(t, h, hc, cmd(id, syncevent.Seek, 5000)) // duplicado
+	nextOf(t, hc, syncevent.Ack)
+	send(t, h, g, cmd("e-evil", syncevent.Pause, 0)) // prohibido
+	nextOf(t, g, syncevent.Error)
+
+	got := e.tel.playbackList()
+	if len(got) != 1 {
+		t.Fatalf("playback_command emitidos = %d, want 1: %+v", len(got), got)
+	}
+	p := got[0]
+	if p.EventID != id || p.RoomID != room || p.Command != "SEEK" || p.PositionMs != 5000 || p.Role != "host" ||
+		!p.ReceivedAt.Equal(t0.Add(time.Second)) || !p.OccurredAt.Equal(t0.Add(-time.Hour)) {
+		t.Errorf("muestra = %+v", p)
+	}
+}
+
+func buffering(id string, durationMs, pos int64) map[string]any {
+	ev := cmd(id, syncevent.Buffering, pos)
+	ev["duration_ms"] = durationMs
+	return ev
+}
+
+// BUFFERING solo alimenta la telemetría: sin ACK ni broadcast, máximo uno
+// por segundo y por conexión (el exceso se descarta en silencio).
+func TestBufferingEmitsTelemetryOnly(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	hc := connect(t, h, host)
+	next(t, hc)
+	g := connect(t, h, guest)
+	next(t, g)
+	e.waitSubscribers(t, 1)
+
+	send(t, h, g, buffering("b1", 850, 12_345))
+	expectSilence(t, g)
+	expectSilence(t, hc)
+	got := e.tel.bufferingList()
+	if len(got) != 1 {
+		t.Fatalf("buffering emitidos = %d, want 1", len(got))
+	}
+	if b := got[0]; b.EventID != "b1" || b.RoomID != room || b.DurationMs != 850 || b.PositionMs != 12_345 ||
+		b.Role != "participant" || !b.ReceivedAt.Equal(t0) || !b.OccurredAt.Equal(t0.Add(-time.Hour)) {
+		t.Errorf("muestra = %+v", b)
+	}
+
+	// Dentro del mismo segundo: se descarta sin ERROR.
+	e.clock.advance(999 * time.Millisecond)
+	send(t, h, g, buffering("b2", 300, 13_000))
+	expectSilence(t, g)
+	// El límite es por conexión: el host no se ve afectado.
+	send(t, h, hc, buffering("b3", 200, 13_000))
+	expectSilence(t, hc)
+	if n := len(e.tel.bufferingList()); n != 2 {
+		t.Fatalf("buffering emitidos = %d, want 2", n)
+	}
+
+	e.clock.advance(time.Millisecond)
+	send(t, h, g, buffering("b4", 300, 14_000))
+	if n := len(e.tel.bufferingList()); n != 3 {
+		t.Errorf("pasado 1 s debe aceptarse otra vez: %d", n)
+	}
+	if st, _ := h.store.Load(context.Background(), room); st.Version != 0 {
+		t.Errorf("BUFFERING no debe tocar el Reloj Maestro: %+v", st)
+	}
+}
+
+func TestInvalidBufferingIsRejected(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	g := connect(t, h, guest)
+	next(t, g)
+
+	for name, ev := range map[string]map[string]any{
+		"duración negativa": buffering("b1", -1, 0),
+		"duración excesiva": buffering("b2", syncevent.MaxBufferingMs+1, 0),
+		"posición negativa": buffering("b3", 100, -5),
+	} {
+		send(t, h, g, ev)
+		if got := nextOf(t, g, syncevent.Error); got.Code != syncevent.CodeInvalid || got.RefEventID != ev["event_id"] {
+			t.Errorf("%s: ERROR = %+v", name, got)
+		}
+	}
+	if n := len(e.tel.bufferingList()); n != 0 {
+		t.Errorf("un BUFFERING inválido no se emite: %d", n)
+	}
+	// Los inválidos no consumen el cupo de 1/s.
+	send(t, h, g, buffering("b4", 100, 0))
+	if n := len(e.tel.bufferingList()); n != 1 {
+		t.Errorf("buffering válido tras inválidos = %d, want 1", n)
 	}
 }

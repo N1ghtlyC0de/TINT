@@ -1,5 +1,6 @@
 import {
   backoffDelay,
+  buildBuffering,
   buildCommand,
   buildSyncCheck,
   buildSyncUrl,
@@ -152,5 +153,23 @@ describe('protocolo v2', () => {
     [3, -1, 1.5],
   ])('stepRate(%f, %i) → %f', (rate, dir, out) => {
     expect(stepRate(rate, dir as 1 | -1)).toBe(out);
+  });
+});
+
+describe('buildBuffering', () => {
+  it('construye el mensaje BUFFERING del contrato con enteros', () => {
+    const msg = buildBuffering('r1', 12_345.6, 850.4, new Date('2026-10-11T04:29:49.368Z'));
+    expect(msg).toEqual({
+      event_id: expect.stringMatching(UUID_RE),
+      type: 'BUFFERING',
+      room_id: 'r1',
+      position_ms: 12_346,
+      duration_ms: 850,
+      occurred_at: '2026-10-11T04:29:49.368Z',
+    });
+  });
+
+  it('nunca envía posiciones negativas', () => {
+    expect(buildBuffering('r1', -5, 200).position_ms).toBe(0);
   });
 });

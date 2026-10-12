@@ -18,7 +18,8 @@ Documentación de referencia: [Usuarios, identidad y permisos](../../docs/usuari
 - Crear o recuperar el usuario en cada inicio de sesión: *upsert* atómico `INSERT … ON CONFLICT (provider, provider_sub) DO UPDATE` que refresca email, nombre y avatar.
 - Salas (`rooms`) e invitaciones (`invitations`, código `nanoid(12)`).
 - **Guest token** (`role: participant`, 4 h) al reclamar una invitación, registrado en `guest_sessions`.
-- **Sync-ticket** (`role: host`, 10 min) para el Canal Sync.
+- **Sync-ticket** (`role: host`, 10 min) para el Canal Sync y **analytics-ticket** (mismos claims y TTL) para la API de lectura de analytics.
+- Publicar eventos de analítica en `analytics:events` (best-effort, sin datos personales).
 - Subida de vídeo: reservar (`videos`), firmar el PUT directo a MinIO, confirmar y encolar en `media:uploads`.
 - Vídeo de la sala (`media_id`, `media_key`) y URL firmada de reproducción, con el estado del procesamiento.
 - Salas: renombrar y borrado lógico (`status`). Borrar una sala revoca todas sus sesiones de invitado activas.
@@ -38,9 +39,10 @@ Documentación de referencia: [Usuarios, identidad y permisos](../../docs/usuari
 | `rooms` | PostgreSQL | `id`, `host_id` → `users`, `title` (≤150), `status` (`active`/`deleted`, borrado lógico), `media_id`, `media_key`, timestamps |
 | `invitations` | PostgreSQL | `id`, `code` (único, 12), `room_id`, `created_by`, `expires_at`, `revoked` |
 | `guest_sessions` | PostgreSQL | `jti` (PK), `room_id`, `sub` (`guest:<uuid>`), `nick` (≤64), `joined_at`, `expires_at`, `revoked` |
-| `videos` | PostgreSQL | `id` (= `video_id`), `room_id`, `uploaded_by`, `storage_key` (`incoming/{id}/original.*` al reservar; el worker la cambia a `{id}/source.*` al publicar), `content_type`, `size_bytes`, `duration_ms`, `status` (`pending` → `processing` al confirmar, en identity-api → `ready`/`failed`, en media-worker) |
+| `videos` | PostgreSQL | `id` (= `video_id`), `room_id`, `uploaded_by`, `storage_key` (`incoming/{id}/original.*` al reservar; el worker la cambia a `{id}/source.*` al publicar), `content_type`, `size_bytes`, `duration_ms`, `status` (`pending` → `processing` al confirmar, en identity-api → `ready`/`failed`, en media-worker), `renditions` (jsonb, `[]` por defecto: alturas publicadas por media-worker en `{id}/{h}p.mp4`, migración `0006`) |
 | `token:revoked:{jti}` | Redis String | Marca de revocación con `EXAT` = `exp` del token (la lee sync-core) |
 | `media:uploads` | Redis Stream | `XADD * video_id <id>` al confirmar una subida (lo consume media-worker, grupo `media-workers`) |
+| `analytics:events` | Redis Stream | `XADD MAXLEN ~ 100000 *` de `user_login`, `room_created`, `room_closed` e `invitation_claimed` (lo consume analytics). Ver [Eventos de analítica](#eventos-de-analítica) |
 | `room:{id}:sync` | Redis Pub/Sub | Solo se publica `REVOKED{jti}` |
 
 ER completo y ciclos de vida en [usuarios-e-identidad.md](../../docs/usuarios-e-identidad.md#3-esquema-de-datos-postgresql).
@@ -60,14 +62,29 @@ Prefijo `/api/v1`. Los errores siempre tienen la forma `{ "error": "<texto>" }`;
 | `POST /invitations/:code/revoke` | Firebase + dueño | Cierra la invitación (no retira a quienes ya entraron). 404 si la invitación o su sala no existen, 403 si no es el dueño |
 | `POST /invitations/claim` | — | `{ code, nick }` → `{ token, roomId, nick, roomTitle }`. Errores: 404, 409 (revocada), 410 (vencida o sala borrada) |
 | `POST /rooms/:id/sync-ticket` | Firebase + dueño | Sync-ticket HS256 para `/ws/sync`. `nick` = `displayName`, si no la parte local del email, si no `Host` (nunca el email completo) |
+| `POST /rooms/:id/analytics-ticket` | Firebase + dueño | `{ token, expiresAt }`: ticket de host HS256 (mismos claims y TTL que el sync-ticket, `generateHostTicket`) para la API de lectura de analytics. **Sin** `requireActiveRoom`: también se entrega para una sala borrada, para ver sus KPIs |
 | `POST /rooms/:id/media/uploads` | Firebase + dueño | `{ filename, contentType: video/*, sizeBytes }` → `{ videoId, uploadUrl, storageKey, expiresAt, headers }` (PUT firmado a MinIO; 413 si supera `MAX_UPLOAD_BYTES`) |
 | `POST /rooms/:id/media/uploads/:videoId/complete` | Firebase + dueño | HEAD del objeto (409 `Upload missing`; 413 y se borra si el tamaño real supera `sizeBytes` o `MAX_UPLOAD_BYTES`), `pending → processing` condicional, `XADD media:uploads` (503 si Redis falla, vuelve a `pending`) y asigna el vídeo → `{ mediaId, mediaKey, status }`. Idempotente: si ya no está en `pending` devuelve el estado actual sin re-encolar |
 | `PUT /rooms/:id/media` | Firebase + dueño | `{ mediaKey }` → `{ mediaId, mediaKey }` (objeto que ya está en el bucket) |
-| `GET /rooms/:id/playback` | dueño **o** guest token de la sala | `{ mediaId, url, expiresAt, status, ambilightUrl }` (o `null`s) |
+| `GET /rooms/:id/playback` | dueño **o** guest token de la sala | `{ mediaId, url, expiresAt, status, ambilightUrl, qualities }` (o `null`s y `qualities: []`). `qualities: [{ id, label, url }]`: primero `{ id: 'source', label: 'Original' }` con la misma URL que `url`; si el vídeo está `ready`, después `720p` y `360p` (de mayor a menor, solo las de `videos.renditions`) firmadas sobre `{id}/{h}p.mp4` con el mismo TTL. Un vídeo `failed` → `qualities: []` |
 | `GET /rooms/:id/guests` | Firebase + dueño | Invitados de la sala (sin `sub`) |
 | `POST /rooms/:id/guests/:jti/revoke` | Firebase + dueño | Retira al invitado (idempotente) |
 
-Middlewares: `requireAuthHost`, `requireRoomOwner`, `requireRoomGuest`, `requireRoomHostOrGuest` (decide según el `alg` del JWT), `requireActiveRoom` (404/410 y `req.room`) y `validate(schema)`. Las rutas del Canal Sync y de medios responden **410** si la sala tiene borrado lógico.
+Middlewares: `requireAuthHost`, `requireRoomOwner` (no filtra por estado de la sala), `requireRoomGuest`, `requireRoomHostOrGuest` (decide según el `alg` del JWT), `requireActiveRoom` (404/410 y `req.room`) y `validate(schema)`. Las rutas del Canal Sync y de medios responden **410** si la sala tiene borrado lógico.
+
+### Eventos de analítica
+`src/modules/analytics/analytics.events.ts` → `publishAnalyticsEvent(type, fields)`. Contrato en [contrato-eventos-analitica.md](../../docs/contrato-eventos-analitica.md).
+
+| Ruta | `type` | Campos propios |
+| :--- | :--- | :--- |
+| `POST /auth/verify` | `user_login` | `method=google`, `user_id` (sin `room_id`) |
+| `POST /rooms` | `room_created` | `room_id`, `user_id` |
+| `DELETE /rooms/:id` | `room_closed` | `room_id`, `user_id`, `reason=deleted`. Solo el primer borrado exitoso: ni el reintento (sala ya borrada) ni el 503 emiten |
+| `POST /invitations/claim` | `invitation_claimed` | `room_id`, `user_id` = `guest:<uuid>` del token emitido |
+
+- Siempre se añaden `event_id` (UUID v4), `source=identity-api`, `occurred_at` y `received_at` (ISO UTC con ms); se omiten los campos `undefined`/`null`.
+- `user_id` del host es `users.provider_sub` (uid de Firebase), **no** `users.id`. Nunca `email`, `displayName` ni `nick`.
+- **Best-effort:** se llama con `void` después de responder; la promesa nunca rechaza (ni si `xadd` lanza) y el error solo se registra con el tipo del evento. Un fallo de Redis no cambia la respuesta.
 
 ## Reglas de Dominio
 1. **Contratos compartidos:** los claims de los tokens, la clave `token:revoked:{jti}` y el payload `REVOKED` son contratos con sync-core. Cualquier cambio se coordina y se documenta.
@@ -83,12 +100,12 @@ Middlewares: `requireAuthHost`, `requireRoomOwner`, `requireRoomGuest`, `require
 | :--- | :--- | :--- |
 | `IDENTITY_API_PORT` | `8081` | Puerto HTTP |
 | `DATABASE_URL` | `postgres://tint:tint@localhost:5432/tint` | PostgreSQL |
-| `REDIS_URL` | `redis://localhost:6379` | Revocación |
+| `REDIS_URL` | `redis://localhost:6379` | Revocación, `media:uploads` y `analytics:events` |
 | `FIREBASE_PROJECT_ID` | — (**obligatoria**) | `iss`/`aud` de los ID tokens |
 | `JWT_SECRET` / `JWT_ISSUER` / `JWT_AUDIENCE` | `dev-secret-change-in-prod` / `tint-identity` / `tint:room` | Iguales que en sync-core |
 | `GUEST_TOKEN_TTL_HOURS` | `4` | Vida del guest token |
 | `INVITATION_DEFAULT_TTL_HOURS` | `24` | Vida de una invitación |
-| `SYNC_TICKET_TTL_SECONDS` | `600` | Vida del sync-ticket |
+| `SYNC_TICKET_TTL_SECONDS` | `600` | Vida del sync-ticket y del analytics-ticket |
 | `MINIO_ENDPOINT` / `MINIO_PUBLIC_ENDPOINT` | `http://localhost:9000` / = endpoint | El público es el host que ve el navegador (va dentro de la firma SigV4) |
 | `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` / `MINIO_BUCKET` / `MINIO_REGION` | `tintadmin` / `tintadmin123` / `tint-media` / `us-east-1` | Firmado |
 | `PLAYBACK_URL_TTL_SECONDS` | `3600` | Vida de la URL firmada de reproducción |

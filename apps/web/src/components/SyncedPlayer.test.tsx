@@ -22,7 +22,10 @@ function makeSync(over: Partial<SyncSocketApi> = {}): SyncSocketApi {
     fatalError: null,
     reconnect: null,
     lastBroadcast: null,
+    volume: 1,
+    quality: 'auto',
     sendCommand: vi.fn(() => 'evt'),
+    sendBuffering: vi.fn(() => true),
     ...over,
   };
 }
@@ -302,5 +305,50 @@ describe('SyncedPlayer — correcciones', () => {
       />,
     );
     expect(video().playbackRate).toBe(1);
+  });
+});
+
+describe('SyncedPlayer — BUFFERING (stalls)', () => {
+  function renderWithClock() {
+    let t = 0;
+    const sync = makeSync();
+    renderPlayer({ sync, now: () => t });
+    return { sync, advance: (ms: number) => (t += ms) };
+  }
+
+  it('reporta el stall waiting → playing con la posición actual del vídeo', () => {
+    const { sync, advance } = renderWithClock();
+    fireEvent.waiting(video());
+    advance(850);
+    video().currentTime = 12.3456;
+    fireEvent.playing(video());
+    expect(sync.sendBuffering).toHaveBeenCalledWith(12_346, 850);
+  });
+
+  it('no reporta stalls triviales', () => {
+    const { sync, advance } = renderWithClock();
+    fireEvent.waiting(video());
+    advance(40);
+    fireEvent.playing(video());
+    expect(sync.sendBuffering).not.toHaveBeenCalled();
+  });
+
+  it('no reporta la espera causada por un seek', () => {
+    const { sync, advance } = renderWithClock();
+    fireEvent.seeking(video());
+    fireEvent.waiting(video());
+    advance(900);
+    fireEvent.seeked(video());
+    fireEvent.playing(video());
+    expect(sync.sendBuffering).not.toHaveBeenCalled();
+  });
+
+  it('olvida el stall en curso si el vídeo se vacía (cambio de fuente)', () => {
+    const { sync, advance } = renderWithClock();
+    fireEvent.waiting(video());
+    advance(900);
+    fireEvent.emptied(video());
+    fireEvent.playing(video());
+    expect(sync.sendBuffering).not.toHaveBeenCalled();
   });
 });

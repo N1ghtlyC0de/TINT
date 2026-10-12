@@ -33,7 +33,7 @@ Eres el agente encargado del corazón de reproducción en tiempo real de **TINT*
 ## Modelo de Datos Involucrado
 | Clave / Entidad | Tipo | Descripción |
 | :--- | :--- | :--- |
-| `room:{id}:sync_state` | Redis Hash | Ancla del Reloj Maestro: `status` (playing/paused), `position_ms`, `updated_at_ms` (reloj del servidor), `rate`, `version` (orden total de comandos), `host_id`, `media_id` (vídeo actual). TTL 12 h (`ROOM_TTL`), refrescado en cada comando, desconexión y barrido de presencia (mientras haya clientes conectados). |
+| `room:{id}:sync_state` | Redis Hash | Ancla del Reloj Maestro: `status` (playing/paused), `position_ms`, `updated_at_ms` (reloj del servidor), `rate`, `version` (orden total de comandos), `host_id`, `media_id` (vídeo actual), `volume` (0–1, por defecto `1`) y `quality` (por defecto `auto`); los hashes anteriores sin estos campos se leen con sus valores por defecto. TTL 12 h (`ROOM_TTL`), refrescado en cada comando, desconexión y barrido de presencia (mientras haya clientes conectados). |
 | `room:{id}:evt:{event_id}` | Redis String | Idempotencia: un `event_id` ya aplicado se ignora durante 1 min (ACK con `duplicate: true`). |
 | `room:{id}:sync` | Redis Pub/Sub | Difusión de `Event` (comandos y `HOST_STATUS`) entre réplicas. |
 | `room:{id}:hosts_online` | Redis ZSET | Presencia de conexiones host/cohost: miembro = id de conexión, score = último latido (unix ms). Un host sin latir en 5 s se considera fuera. |
@@ -42,7 +42,7 @@ Eres el agente encargado del corazón de reproducción en tiempo real de **TINT*
 | `room:{id}:hostless_since` | Redis String | Unix ms desde que la sala perdió a su host (solo si alguna vez lo tuvo). |
 | `room:{id}:delegate` | Redis String | `sub` del participante con control delegado. |
 | `token:revoked:{jti}` | Redis String | Lo escribe identity-api al retirar a un invitado (`EXAT` = expiración del token). |
-| `analytics:events` | Redis Stream | Eventos `type=sync_drift` (`room_id`, `drift_ms`, `rtt_ms`, `strategy`, `role`, timestamps) **sin PII** (ni `sub` ni `nick`). `MAXLEN ~100000`. |
+| `analytics:events` | Redis Stream | Eventos `playback_command` (`command`, `position_ms`), `drift_correction` (`drift_ms`, `position_ms`, `rtt_ms`, `strategy`) y `buffering` (`duration_ms`, `position_ms`), todos con `event_id`, `source=sync-core`, `room_id`, `role` y `occurred_at`/`received_at` RFC 3339 UTC con milisegundos; **sin PII** (ni `sub`, ni `nick`, ni `user_id`). `MAXLEN ~100000`. Contrato: [`docs/contrato-eventos-analitica.md`](../../docs/contrato-eventos-analitica.md#sync-core). |
 | `Event` | JSON | `event_id` (UUID), `type`, `room_id`, `position_ms`, `occurred_at`, `received_at`, `version` + campos opcionales por tipo (ver protocolo). |
 
 La posición nunca se guarda "en vivo": `posición(t) = position_ms + (t − updated_at_ms) × rate` si `status = playing`; si no, `position_ms`.
@@ -87,13 +87,16 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 | `PLAY` / `PAUSE` / `SEEK` | C → S (quien tenga control) | `event_id` (UUID, idempotencia), `room_id`, `position_ms` (posición del reproductor del Host), `occurred_at` |
 | `RATE` | C → S (quien tenga control) | lo anterior + `rate` ∈ [0.25, 4]. Re-ancla y cambia la velocidad; el status no cambia. |
 | `LOAD` | C → S (quien tenga control) | lo anterior + `media_id` (1–128 caracteres). Deja la sala en pausa en `position_ms`, `rate = 1` y el vídeo nuevo. |
-| `PLAY` / `PAUSE` / `SEEK` / `RATE` / `LOAD` | S → todos (broadcast vía Pub/Sub, incluido el emisor) | mismo `event_id` y `occurred_at` del emisor, `received_at`, `version`, ancla: `status`, `position_ms`, `rate`, `updated_at_ms`, `server_time_ms`, `media_id` |
+| `VOLUME` | C → S (quien tenga control) | lo anterior + `volume` ∈ [0, 1] (obligatorio; `0` = silencio). No mueve la reproducción: re-ancla en la posición maestra de `received_at` (ignora `position_ms` del emisor) y conserva status y velocidad. |
+| `QUALITY` | C → S (quien tenga control) | lo anterior + `quality` ∈ {`auto`, `source`, `720p`, `360p`}. Igual que `VOLUME`: re-ancla sin saltos y conserva status y velocidad. |
+| `PLAY` / `PAUSE` / `SEEK` / `RATE` / `LOAD` / `VOLUME` / `QUALITY` | S → todos (broadcast vía Pub/Sub, incluido el emisor) | mismo `event_id` y `occurred_at` del emisor, `received_at`, `version`, ancla: `status`, `position_ms`, `rate`, `updated_at_ms`, `server_time_ms`, `media_id`, `volume` (siempre presente, también si es `0`) y `quality` |
 | `ACK` | S → emisor | `ref_event_id`, `version` resultante, `duplicate` |
-| `STATE` | S → cliente al conectar | ancla completa + `media_id` + `online` (hay host vivo) + `can_control` |
+| `STATE` | S → cliente al conectar | ancla completa + `media_id` + `volume` + `quality` + `online` (hay host vivo) + `can_control` |
 | `HEARTBEAT` | S → C cada 1 s | `server_time_ms`, `rtt_ms` (RTT suavizado de ese cliente), `drift_ms` (último drift medido; se omite si es 0) |
 | `CONTROL` | S → participantes | `can_control` cuando cambia la delegación (ver abajo) |
+| `BUFFERING` | C → S (cualquier rol) | `event_id`, `room_id`, `position_ms` (≥ 0), `duration_ms` (0–120000, duración del stall), `occurred_at`. Sin `ACK` ni broadcast: solo se publica `buffering` en `analytics:events`. Máximo 1 por segundo y conexión (el exceso se descarta en silencio); inválido → `ERROR{INVALID}`. |
 | `SYNC_CHECK` | C → S (respuesta a cada `HEARTBEAT`) | `event_id`, `room_id`, `position_ms` (posición local actual), `echo_server_ts` (= `server_time_ms` del HEARTBEAT), `occurred_at` |
-| `SYNC_CORRECTION` | S → C (solo si \|drift\| > 500 ms) | `target_ms` (= `position_ms`), `strategy` (`rate`/`seek`), `drift_ms` (+ adelantado, − atrasado), `version` + opcionales `status`, `rate` (velocidad de la sala, no la de corrección) y `media_id` del estado en esa `version`, para que un cliente que perdió un broadcast se reconcilie (la web aún no los usa) |
+| `SYNC_CORRECTION` | S → C (solo si \|drift\| > 500 ms) | `target_ms` (= `position_ms`), `strategy` (`rate`/`seek`), `drift_ms` (+ adelantado, − atrasado), `version` + opcionales `status`, `rate` (velocidad de la sala, no la de corrección), `media_id`, `volume` y `quality` del estado en esa `version`, para que un cliente que perdió un broadcast se reconcilie (la web aún no los usa) |
 | `HOST_STATUS` | S → todos (vía Pub/Sub) | `online`; solo en transiciones, incluida la caída de la réplica del host (detectada por el barrido) |
 | `REVOKED` | identity-api → réplicas (solo bus) | `jti`: cada réplica cierra esas conexiones con `4001`; nunca llega a los clientes |
 | `ERROR` | S → C | `code` (`FORBIDDEN`, `INVALID`, `RATE_LIMITED`, `INTERNAL`), `ref_event_id` |
@@ -102,8 +105,8 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 1. El servidor envía `HEARTBEAT{server_time_ms}`; el cliente responde `SYNC_CHECK` con `echo_server_ts` y su posición.
 2. RTT = `ahora − echo_server_ts` medido **solo con el reloj del servidor** (el skew del cliente no afecta), suavizado con EWMA α = 0.2; muestras negativas se descartan.
 3. El cliente leyó su posición ~RTT/2 antes de la llegada: `drift = posición_cliente − posición_maestra(recepción − RTT/2)`.
-4. `|drift| ≤ 500 ms` → sin respuesta. `> 500 ms` → `SYNC_CORRECTION` con `target_ms = posición_maestra(ahora + RTT/2)`; estrategia `rate` si la sala reproduce y `|drift| ≤ 2000 ms`, `seek` si no. Cada corrección se emite como `sync_drift` a `analytics:events`.
-5. Los comandos fijan el ancla en `received_at − RTT/2` del Host.
+4. `|drift| ≤ 500 ms` → sin respuesta. `> 500 ms` → `SYNC_CORRECTION` con `target_ms = posición_maestra(ahora + RTT/2)`; estrategia `rate` si la sala reproduce y `|drift| ≤ 2000 ms`, `seek` si no. Cada corrección se emite como `drift_correction` a `analytics:events` (con `position_ms` = `target_ms`).
+5. Los comandos fijan el ancla en `received_at − RTT/2` del Host. Cada comando aplicado (no duplicado) se emite como `playback_command` con el `event_id` del cliente.
 6. El `SYNC_CHECK` no escribe en Redis: la presencia se renueva en lote en el barrido de cada réplica (1 s).
 
 ### Presencia y delegación de control
@@ -120,11 +123,13 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 | :--- | :--- | :--- |
 | Tamaño de mensaje entrante | 4 KB | cierre `1009` |
 | Mensajes entrantes | 20 msg/s por conexión (ventana fija) | `ERROR{RATE_LIMITED}` |
+| `BUFFERING` | 1 por segundo por conexión | se descarta en silencio |
 | Cola de salida | 64 mensajes por cliente | cliente lento → cierre `1008` |
 | Latidos sin `SYNC_CHECK` | 3 intervalos | cierre `1008` |
 | Token revocado (handshake o durante la conexión) | — | cierre `4001` (no reconectar) |
 | Token expirado en el handshake | — | cierre `4003` (pedir token nuevo) |
-| Comando de un `participant` | — | `ERROR{FORBIDDEN}` |
+| Comando de un `participant` (incluidos `VOLUME` y `QUALITY`) | — | `ERROR{FORBIDDEN}` |
+| `rate`, `media_id`, `volume` o `quality` fuera de contrato | — | `ERROR{INVALID}` (el estado no cambia) |
 
 ## Arquitectura interna
 | Paquete | Responsabilidad |
@@ -138,7 +143,7 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 | `internal/codec` | JSON y MessagePack (subprotocolo). |
 | `internal/metrics` | Exposición Prometheus sin dependencias. |
 | `internal/bus` | Pub/Sub entre réplicas (una conexión por réplica, suscripción solo a salas con clientes locales). |
-| `internal/telemetry` | Emisión no bloqueante de `sync_drift` (buffer; si se llena se descarta). |
+| `internal/telemetry` | Emisión no bloqueante de `playback_command`, `drift_correction` y `buffering` (un solo canal con buffer; si se llena se descarta). Reutiliza el `event_id` del cliente si es UUID. |
 | `internal/hub` | Salas locales, despacho de comandos, heartbeat/drift, presencia del host. Independiente del transporte. |
 | `internal/ws` | Handshake y transporte WebSocket. |
 | `internal/server` | Rutas HTTP (`/healthz`, `/ws/sync`, `/metrics`). |
@@ -146,12 +151,13 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 **Modelo de concurrencia:** cada conexión tiene una goroutine **lectora** (la del handler HTTP, llama a `hub.Handle`) y una **escritora** (única dueña de `conn.Write`, drena la cola). `hub.Run` mantiene por réplica un solo temporizador de `HEARTBEAT` (que también cierra a los clientes sin respuesta) y el barrido de presencia. Cada cliente tiene una cola con buffer (64); `enqueue` nunca bloquea, así un cliente lento no frena a los demás. La réplica emisora no difunde localmente: todo comando pasa por Redis Pub/Sub, lo que da un único camino y orden consistente entre réplicas. `hub.rooms` se protege con `sync.Mutex`; RTT y último latido son `atomic`.
 
 ## Reglas de Dominio
-1. **Aislamiento:** El canal WebSocket `/ws/sync` es exclusivo para comandos `PLAY`, `PAUSE`, `SEEK` y latidos. No proceses mensajes de chat aquí.
+1. **Aislamiento:** El canal WebSocket `/ws/sync` es exclusivo para comandos de reproducción (`PLAY`, `PAUSE`, `SEEK`, `RATE`, `LOAD`, `VOLUME`, `QUALITY`), latidos y el aviso de `BUFFERING` (solo telemetría). No proceses mensajes de chat aquí.
 2. **Reloj Maestro:** Mantén el estado maestro de la sala en Redis (`room:{id}:sync_state`) como ancla; nunca con timers en el servidor.
 3. **Formato de Payload:** Todo evento transmitido debe incluir `event_id` (UUID), `occurred_at` y `received_at`.
 4. **Concurrencia:** Todo estado compartido protegido (`sync.Mutex`/canales/`atomic`); las pruebas corren con `-race`.
 5. **TDD:** Implementa pruebas unitarias e integración en Go con `go test -cover`, escribiendo la prueba primero. La cobertura no puede bajar del **85%**. `main.go` debe ser mínimo; la lógica vive en `internal/`.
-6. **Privacidad:** La telemetría nunca incluye `sub`, `nick` ni tokens.
+6. **Privacidad:** La telemetría nunca incluye `sub`, `nick` ni tokens (por eso no envía `user_id`, sino `role`).
+7. **Telemetría fuera del camino caliente:** emitir a `analytics:events` solo encola; nunca un `XADD` síncrono en `Handle`.
 
 ## Variables de Entorno
 | Variable | Por defecto | Descripción |

@@ -43,6 +43,13 @@
       "when": 1791727586827,
       "tag": "0005_users_provider_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791770746746,
+      "tag": "0006_video_renditions",
+      "breakpoints": true
     }
   ]
 }

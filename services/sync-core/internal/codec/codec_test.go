@@ -18,7 +18,7 @@ func sample() syncevent.Event {
 		PositionMs: 61_000, OccurredAt: at, ReceivedAt: at.Add(40 * time.Millisecond), Version: 42,
 		Status: "playing", Rate: 1.25, UpdatedAtMs: 1_791_655_200_160, ServerTimeMs: 1_791_655_200_160,
 		TargetMs: syncevent.Int64(0), Online: syncevent.Bool(false), CanControl: syncevent.Bool(true),
-		MediaID: "m-1", RTTMs: 35, DriftMs: -620, Strategy: "rate",
+		MediaID: "m-1", RTTMs: 35, DriftMs: -620, Strategy: "rate", DurationMs: 850,
 	}
 }
 
@@ -108,6 +108,22 @@ func TestDecodeErrors(t *testing.T) {
 	}
 }
 
+// BUFFERING tal como lo envía la web por MessagePack (mismas claves que el
+// JSON del contrato): duration_ms debe llegar al evento.
+func TestMsgPackDecodesBuffering(t *testing.T) {
+	raw, _ := msgpack.Marshal(map[string]any{
+		"event_id": "6f1c2a8e-8a4e-4d0a-9f5b-1c2d3e4f5a6b", "type": "BUFFERING", "room_id": "room-1",
+		"position_ms": 12345, "duration_ms": 850, "occurred_at": "2026-10-10T18:00:00.123Z",
+	})
+	var ev syncevent.Event
+	if err := MsgPack.Decode(raw, &ev); err != nil {
+		t.Fatal(err)
+	}
+	if ev.Type != syncevent.Buffering || ev.DurationMs != 850 || ev.PositionMs != 12345 {
+		t.Errorf("BUFFERING msgpack = %+v", ev)
+	}
+}
+
 func TestForSubprotocol(t *testing.T) {
 	if ForSubprotocol(SubprotocolMsgPack) != MsgPack || ForSubprotocol(SubprotocolJSON) != JSON || ForSubprotocol("") != JSON {
 		t.Error("selección de códec")
@@ -147,5 +163,50 @@ func BenchmarkEncode(b *testing.B) {
 				_, _ = c.Encode(ev)
 			}
 		})
+	}
+}
+
+// volume=0 (silencio) debe sobrevivir la ida y vuelta en MessagePack.
+func TestMsgPackVolume(t *testing.T) {
+	for _, v := range []*float64{nil, syncevent.Float64(0), syncevent.Float64(0.5)} {
+		ev := sample()
+		ev.Volume = v
+		raw, err := MsgPack.Encode(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got syncevent.Event
+		if err := MsgPack.Decode(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, ev) {
+			t.Errorf("volume %v: ida y vuelta = %+v", v, got.Volume)
+		}
+		var m map[string]any
+		_ = msgpack.Unmarshal(raw, &m)
+		if _, ok := m["volume"]; ok != (v != nil) {
+			t.Errorf("volume %v: presencia de la clave = %v", v, ok)
+		}
+	}
+}
+
+func TestMsgPackQuality(t *testing.T) {
+	ev := sample()
+	ev.Quality = "source"
+	raw, err := MsgPack.Encode(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got syncevent.Event
+	if err := MsgPack.Decode(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, ev) {
+		t.Errorf("ida y vuelta = %+v", got)
+	}
+	var m map[string]any
+	_ = msgpack.Unmarshal(raw, &m)
+	if m["quality"] != "source" {
+		t.Errorf("quality en msgpack = %#v", m["quality"])
 	}
 }

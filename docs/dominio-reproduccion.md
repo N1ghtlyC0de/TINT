@@ -140,11 +140,11 @@ gitGraph
 | :--- | :--- | :--- |
 | **HU-SYNC-01** | Canal `/ws/sync?room_id=X` aislado, estado inmediato | `hub.Connect` encola `STATE` antes que cualquier otro mensaje. |
 | **REQ-27 / HU-SYNC-02** | Comandos del Host a todos en < 100 ms | CAS en Redis + Pub/Sub. Medido: 1–4 ms entre réplicas. |
-| **REQ-28 / HU-SYNC-03** | Drift > 500 ms, corrección suave y métrica | `internal/drift` (`rate` ±5 % o `seek`) y `sync_drift` a `analytics:events`. |
+| **REQ-28 / HU-SYNC-03** | Drift > 500 ms, corrección suave y métrica | `internal/drift` (`rate` ±5 % o `seek`) y `drift_correction` a `analytics:events`. |
 | **REQ-07** | La sala sobrevive 12 h sin Host | TTL de 12 h. Ahora también se avisa la caída de la réplica del Host. |
 | **REQ-08 / SYNC-BE-05** | Escalado entre réplicas | Pub/Sub, presencia compartida y barrido determinista. |
 | **SYNC-TEST-01** | 500 conexiones | `loadtest/sync.js`. Humo de 50 VUs en CI. Ver [§14](#14-verificación-y-resultados). |
-| **Ley 1581** | Analítica sin PII | `sync_drift` sin `sub`, `nick` ni token. `GET /guests` no expone `sub`. |
+| **Ley 1581** | Analítica sin PII | `drift_correction`, `playback_command` y `buffering` sin `sub`, `nick` ni token (solo `role`). `GET /guests` no expone `sub`. |
 
 | Mejora (v2) | Dónde |
 | :--- | :--- |
@@ -153,6 +153,7 @@ gitGraph
 | F5 Revocación de invitados | identity-api (`guest_sessions`, `revoke`) + sync-core (`4001` en el handshake y en vivo) + web (panel "Participantes", pantalla de retiro) |
 | F6 Comandos `RATE` y `LOAD` | sync-core (`master`) + web (selector de velocidad, cambio de vídeo) |
 | F7 Delegación de control | sync-core (`CONTROL`) + web (`canControl`, aviso de control temporal) |
+| F8 Volumen y calidad del Host | sync-core (`VOLUME`, `QUALITY`; ver [§6.9](#69-volumen-y-calidad-del-host-f8)). La web aún no los emite ni los aplica. |
 | UX 1–6 | web (`SyncStatus`, `SyncToasts`, `SeekBar`, `usePlayerShortcuts`, reconexión, fundido) + `rtt_ms`/`drift_ms` en `HEARTBEAT` |
 | O1 k6 en CI | `.github/workflows/ci-pipeline.yml` (`sync-load-smoke`) |
 | O2 Bytes compartidos en broadcasts | Ya existía. Con MessagePack, cada broadcast se transcodifica una sola vez por sala. |
@@ -292,6 +293,8 @@ flowchart TB
 | `version` | Contador monotónico: orden total de comandos |
 | `host_id` | `sub` del último Host conectado |
 | `media_id` | Vídeo actual de la sala (v2) |
+| `volume` | Volumen de la sala, entre 0 y 1 (F8; por defecto `1`) |
+| `quality` | Calidad: `auto`, `source`, `720p` o `360p` (F8; por defecto `auto`) |
 
 ```text
 PositionAt(t) = position_ms + (t − updated_at_ms) × rate   si playing
@@ -307,10 +310,14 @@ stateDiagram-v2
     Paused --> Paused: SEEK(pos) o RATE(pos, rate)
     Playing --> Paused: LOAD(media) rate=1
     Paused --> Paused: LOAD(media) rate=1
+    Playing --> Playing: VOLUME(v) o QUALITY(q)
+    Paused --> Paused: VOLUME(v) o QUALITY(q)
     note right of Playing
         Cada transición incrementa version
         y fija el ancla en received_at − RTT/2
         del emisor. media_id se conserva salvo en LOAD.
+        VOLUME y QUALITY re-anclan en PositionAt(received_at)
+        (sin saltos); volume y quality se conservan en el resto.
     end note
 ```
 
@@ -422,7 +429,7 @@ sequenceDiagram
         H->>H: RTT EWMA con el reloj del servidor<br/>drift = pos − PositionAt(recv − RTT/2)
         alt |drift| > 500 ms
             H-->>C: SYNC_CORRECTION { target_ms, strategy, version, status, rate, media_id }
-            H-)T: sync_drift (no bloqueante)
+            H-)T: drift_correction (no bloqueante)
         end
     end
 ```
@@ -490,7 +497,7 @@ stateDiagram-v2
     end note
 ```
 
-La elección es **determinista** (el `sub` menor entre los participantes vivos), así que todas las réplicas llegan al mismo delegado. `SET … GET` en Redis evita publicar dos veces el mismo cambio. El delegado puede usar `PLAY`/`PAUSE`/`SEEK`/`RATE`/`LOAD`. En la web, cambiar de vídeo requiere además el token Firebase del dueño.
+La elección es **determinista** (el `sub` menor entre los participantes vivos), así que todas las réplicas llegan al mismo delegado. `SET … GET` en Redis evita publicar dos veces el mismo cambio. El delegado puede usar `PLAY`/`PAUSE`/`SEEK`/`RATE`/`LOAD`/`VOLUME`/`QUALITY`. En la web, cambiar de vídeo requiere además el token Firebase del dueño.
 
 ### 6.6 Retirar a un invitado (F5)
 
@@ -566,8 +573,8 @@ sequenceDiagram
 | Reservar | `POST /rooms/:id/media/uploads` | 400 (no es `video/*`), 413 (> `MAX_UPLOAD_BYTES`, 2 GiB), 403, 410 |
 | Subir | `PUT uploadUrl` a MinIO (Content-Type firmado, 15 min) | CORS según `MINIO_CORS_ALLOW_ORIGIN` |
 | Confirmar | `POST /rooms/:id/media/uploads/:videoId/complete` | 409 `Upload missing`, 413 si el objeto real supera el `sizeBytes` declarado o `MAX_UPLOAD_BYTES` (se borra del bucket y el vídeo sigue en `pending`), 503 si Redis falla (el vídeo vuelve a `pending` y se puede reintentar), 404. **Idempotente:** solo la transición `pending → processing` encola y asigna; si el vídeo ya no está en `pending` responde 200 con el estado actual sin re-encolar. |
-| Procesar | `media:uploads` → media-worker (`python -m media_worker`, servicio de docker compose) | Si es válido publica `{videoId}/source.*` + `ambilight.json` y actualiza `storage_key`. Si ffprobe o el Ambilight fallan queda `failed` y **no se publica nada**. Un fallo de SQL/S3 no confirma el evento: se reintenta cada 5 s |
-| Reproducir | `GET /rooms/:id/playback` firma `videos.storage_key` (el original mientras se procesa, la versión publicada al quedar `ready`) | 401 si el token fue revocado, 410 si la sala se borró. Un vídeo `failed` responde `url: null` |
+| Procesar | `media:uploads` → media-worker (`python -m media_worker`, servicio de docker compose) | Si es válido publica `{videoId}/source.*` + `ambilight.json` y actualiza `storage_key`; después genera las calidades `{videoId}/720p.mp4` y `{videoId}/360p.mp4` menores que el original y escribe las publicadas en `videos.renditions` (una calidad que falle se omite sin marcar `failed`). Si ffprobe o el Ambilight fallan queda `failed` y **no se publica nada**. Un fallo de SQL/S3 no confirma el evento: se reintenta cada 5 s |
+| Reproducir | `GET /rooms/:id/playback` firma `videos.storage_key` (el original mientras se procesa, la versión publicada al quedar `ready`) y devuelve `qualities`: `Original` (= `url`) y, si está `ready`, `720p`/`360p` según `videos.renditions` (`{id}/{h}p.mp4`) | 401 si el token fue revocado, 410 si la sala se borró. Un vídeo `failed` responde `url: null` y `qualities: []` |
 
 Sigue existiendo `PUT /rooms/:id/media { mediaKey }`, para asignar un objeto que ya está en el bucket (sin fila en `videos`, `status: null`).
 
@@ -594,6 +601,76 @@ stateDiagram-v2
     Desconectada --> [*]: hub.Disconnect (presencia, barrido si era host o delegado, TTL)
 ```
 
+### 6.9 Volumen y calidad del Host (F8)
+
+El Host (o un cohost, o el participante con control delegado) fija el volumen y la calidad de reproducción de toda la sala. Siguen el mismo camino que `RATE`/`LOAD`: CAS en Redis, broadcast por Pub/Sub a todas las réplicas y `ACK` al emisor.
+
+| Comando | Campo | Valores válidos | Error |
+| :--- | :--- | :--- | :--- |
+| `VOLUME` | `volume` (número) | [0, 1], ambos incluidos; `0` = silencio | ausente, `NaN` o fuera de rango → `ERROR{INVALID}` |
+| `QUALITY` | `quality` (string) | `auto`, `source`, `720p`, `360p` | cualquier otro valor → `ERROR{INVALID}` |
+
+Un `participant` sin control recibe `ERROR{FORBIDDEN}` y el estado no cambia.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Host
+    participant A as sync-core (réplica A)
+    participant R as Redis
+    participant B as sync-core (réplica B)
+    actor Inv as Invitado
+
+    Host->>A: VOLUME { event_id, room_id, position_ms, occurred_at, volume: 0.3 }
+    A->>A: canControl (host/cohost/delegado) y validación
+    A->>R: CAS sync_state (volume=0.3, ancla = PositionAt(received_at), version+1) + PUBLISH
+    A-->>Host: ACK { ref_event_id, version }
+    R-->>A: VOLUME (broadcast)
+    R-->>B: VOLUME (broadcast)
+    A-->>Host: VOLUME { ancla, media_id, volume: 0.3, quality }
+    B-->>Inv: VOLUME { ancla, media_id, volume: 0.3, quality }
+```
+
+- **Sin saltos:** a diferencia de `SEEK`/`RATE`, `VOLUME` y `QUALITY` no usan la `position_ms` del emisor ni el desplazamiento por RTT: el ancla se fija en la posición maestra del instante de recepción y se conservan `status` y `rate`. Así un Host con drift no mueve la reproducción de los demás.
+- **Siempre presentes:** `volume` y `quality` viajan en todo broadcast de comando, en `STATE` y en `SYNC_CORRECTION`. `volume` se envía explícito aunque sea `0` (en Go es un puntero; en MessagePack se omite solo si falta).
+- **Compatibilidad:** los hashes `room:{id}:sync_state` anteriores sin `volume`/`quality` se leen como `1` y `auto` (`store.Init` los agrega con `HSETNX`), y un broadcast de una réplica anterior sin esos campos se cachea con los mismos valores por defecto.
+- **Web:** pendiente. El cliente debe aplicar `volume`/`quality` de `STATE`, broadcasts y `SYNC_CORRECTION`, y ofrecer los controles solo a quien tenga `can_control`.
+
+### 6.10 Telemetría de reproducción y `BUFFERING`
+
+sync-core publica tres tipos en `analytics:events` ([contrato](contrato-eventos-analitica.md#sync-core)), todos con `source=sync-core`, `role` y **sin** `sub` ni `nick`, por el mismo canal con buffer de `internal/telemetry` (si se llena se descartan y se cuentan en `sync_telemetry_dropped_total`):
+
+| `type` | Cuándo | Campos propios |
+| :--- | :--- | :--- |
+| `playback_command` | Comando aplicado (no duplicado ni rechazado), incluidos `VOLUME` y `QUALITY`, con el `event_id` del comando | `command`, `position_ms` (ancla resultante) |
+| `drift_correction` | Cada `SYNC_CORRECTION` (antes `sync_drift`) | `drift_ms`, `position_ms` (= `target_ms`), `rtt_ms`, `strategy` |
+| `buffering` | Mensaje `BUFFERING` aceptado, con su `event_id` | `duration_ms`, `position_ms` |
+
+`BUFFERING` es el único mensaje cliente → servidor que no es comando ni latido. La web lo envía al terminar un stall del `<video>` (`waiting` → `playing`) si duró al menos 100 ms:
+
+```json
+{ "event_id": "<uuid>", "type": "BUFFERING", "room_id": "<uuid>", "position_ms": 12345, "duration_ms": 850, "occurred_at": "<RFC3339>" }
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Cliente (cualquier rol)
+    participant H as hub.Handle
+    participant T as telemetry
+    C->>H: BUFFERING { duration_ms, position_ms }
+    H->>H: sella received_at y valida (0 ≤ duration_ms ≤ 120000, position_ms ≥ 0)
+    alt inválido
+        H-->>C: ERROR { code: INVALID }
+    else otro BUFFERING de esta conexión hace < 1 s
+        H->>H: se descarta en silencio
+    else
+        H-)T: buffering (no bloqueante)
+    end
+```
+
+No hay `ACK`, no hay broadcast y no se toca Redis en el camino del mensaje. Con MessagePack viajan las mismas claves (`duration_ms`).
+
 ---
 
 ## 7. Modelo de datos en Redis
@@ -607,7 +684,7 @@ erDiagram
     SALA ||--o{ MEMBER : "room:{id}:members (ZSET)"
     SALA ||--o| PRESENCIA : "host_online · hostless_since · delegate"
     TOKEN ||--o| REVOCADO : "token:revoked:{jti} (EXAT exp)"
-    SALA ||--o{ SYNC_DRIFT : "analytics:events (Stream)"
+    SALA ||--o{ ANALYTICS_EVENT : "analytics:events (Stream)"
 
     SYNC_STATE {
         string status
@@ -617,6 +694,8 @@ erDiagram
         int version
         string host_id
         string media_id
+        float volume
+        string quality
     }
     HOST_CONN {
         string member "id de conexión"
@@ -634,12 +713,17 @@ erDiagram
     CANAL {
         json Event "comandos, HOST_STATUS, CONTROL, REVOKED"
     }
-    SYNC_DRIFT {
+    ANALYTICS_EVENT {
+        string type "playback_command, drift_correction, buffering"
+        string source "sync-core"
         string room_id
-        int drift_ms
-        int rtt_ms
-        string strategy
         string role
+        int position_ms
+        int drift_ms "drift_correction"
+        int rtt_ms "drift_correction"
+        string strategy "drift_correction"
+        string command "playback_command"
+        int duration_ms "buffering"
     }
 ```
 
@@ -707,7 +791,7 @@ flowchart LR
 | `POST /rooms/:id/media/uploads` | Host dueño | `{ videoId, uploadUrl, storageKey, expiresAt, headers }`: reserva el vídeo y firma el PUT a MinIO |
 | `POST /rooms/:id/media/uploads/:videoId/complete` | Host dueño | `{ mediaId, mediaKey, status }`: HEAD del objeto (tamaño real), `pending → processing`, `XADD media:uploads` y asignación a la sala. Idempotente |
 | `PUT /rooms/:id/media` | Host dueño | `{ mediaId, mediaKey }`: asigna un objeto que ya está en el bucket (nuevo `mediaId` en cada llamada) |
-| `GET /rooms/:id/playback` | Host dueño **o** guest token de la sala no revocado | `{ mediaId, url, expiresAt }` o `null`s si no hay vídeo |
+| `GET /rooms/:id/playback` | Host dueño **o** guest token de la sala no revocado | `{ mediaId, url, expiresAt, status, ambilightUrl, qualities }` (`null`s y `qualities: []` si no hay vídeo) |
 | `GET /rooms/:id/guests` | Host dueño | `{ guests: [{ jti, nick, joinedAt, expiresAt, revoked }] }` (sin `sub`) |
 | `POST /rooms/:id/guests/:jti/revoke` | Host dueño | `{ success: true }`, idempotente; 404 si el `jti` no es de la sala |
 | `POST /invitations/claim` | — | Ahora registra la sesión en `guest_sessions`; `nick` ≤ 64 caracteres |
@@ -760,9 +844,9 @@ flowchart TD
 | Autorización | `host`/`cohost` siempre; un participante solo si es el delegado vigente. El resto recibe `FORBIDDEN`. |
 | Origen | `OriginPatterns` desde `ALLOWED_ORIGINS`. |
 | Tamaño y frecuencia | 4 KB por mensaje (`1009`) y 20 mensajes/s (`RATE_LIMITED`). |
-| Argumentos | `rate` ∈ [0.25, 4] y `media_id` de 1 a 128 caracteres; fuera de rango → `INVALID`. |
+| Argumentos | `rate` ∈ [0.25, 4], `media_id` de 1 a 128 caracteres y `duration_ms` de `BUFFERING` en [0, 120000]; fuera de rango → `INVALID`. `BUFFERING`: máximo 1 por segundo y conexión (el exceso se descarta). |
 | Vídeo | URL firmada con vida corta (`PLAYBACK_URL_TTL_SECONDS`); el bucket no es público. |
-| Privacidad | `sync_drift` sin PII; `/guests` no expone `sub`; `/metrics` sin identificadores de usuario y detrás del ingress. |
+| Privacidad | `drift_correction`, `playback_command` y `buffering` sin PII (solo `role`); `/guests` no expone `sub`; `/metrics` sin identificadores de usuario y detrás del ingress. |
 
 ---
 

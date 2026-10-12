@@ -1,7 +1,8 @@
 """Punto de entrada del worker (`python -m media_worker`): consume `media:uploads`.
 
 La configuración del núcleo sale de `config.Settings`; la del disparador (Redis y nombre del
-consumidor) vive aparte en `TriggerSettings`, porque el pipeline no depende de Redis.
+consumidor) vive aparte en `TriggerSettings`, porque el pipeline no depende de Redis. El mismo
+cliente Redis publica `media_processed` en `analytics:events` (ver `events.py`).
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ import redis
 
 from media_worker.config import ConfigError, Settings
 from media_worker.consumer import StreamConsumer
+from media_worker.events import redis_publisher
 from media_worker.jobs import handle_upload
 from media_worker.repository import VideoRepository
 from media_worker.storage import S3BlobStore
@@ -58,19 +60,19 @@ def build_consumer(
         aws_access_key_id=settings.s3_access_key,
         aws_secret_access_key=settings.s3_secret_key,
     )
+    client = redis_factory(trigger.redis_url, decode_responses=True)
     handler = functools.partial(
         _handle,
         repo=VideoRepository(connect(settings.database_url, autocommit=True)),
         blobs=S3BlobStore(s3, settings.bucket),
+        publish=redis_publisher(client),
     )
-    return StreamConsumer(
-        redis_factory(trigger.redis_url, decode_responses=True), handler, trigger.consumer
-    )
+    return StreamConsumer(client, handler, trigger.consumer)
 
 
-def _handle(video_id: str, repo, blobs):
+def _handle(video_id: str, repo, blobs, publish):
     # Se resuelve en cada llamada para poder sustituirlo en las pruebas.
-    return handle_upload(video_id, repo, blobs)
+    return handle_upload(video_id, repo, blobs, publish=publish)
 
 
 def main(env: Mapping[str, str] | None = None) -> int:

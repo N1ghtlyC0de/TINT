@@ -13,7 +13,7 @@ func TestDefaultDepsMemoryAndRedis(t *testing.T) {
 	if mem.Hub == nil || mem.History == nil {
 		t.Fatal("deps memoria incompletas")
 	}
-	if mem.Publish != nil || mem.Subscribe != nil || mem.Track != nil {
+	if mem.Publish != nil || mem.Subscribe != nil || mem.TrackChat != nil || mem.TrackPresence != nil || mem.TrackReaction != nil || mem.analytics != nil {
 		t.Fatal("sin REDIS_URL no debe haber publish/subscribe/track")
 	}
 	withRedis := DefaultDeps(func(k string) string {
@@ -22,7 +22,7 @@ func TestDefaultDepsMemoryAndRedis(t *testing.T) {
 		}
 		return ""
 	})
-	if withRedis.Publish == nil || withRedis.Subscribe == nil || withRedis.Track == nil {
+	if withRedis.Publish == nil || withRedis.Subscribe == nil || withRedis.TrackChat == nil || withRedis.TrackPresence == nil || withRedis.TrackReaction == nil || withRedis.analytics == nil {
 		t.Fatal("con REDIS_URL debe cablear publish/subscribe/track")
 	}
 	bad := DefaultDeps(func(k string) string {

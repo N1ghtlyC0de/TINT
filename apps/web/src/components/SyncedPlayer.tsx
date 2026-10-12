@@ -1,16 +1,21 @@
-import { useCallback, useEffect, useId, useRef, useState, type RefObject } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode, type RefObject } from 'react';
 import type { SyncSocketApi } from '../hooks/useSyncSocket';
 import { PLAYER_SHORTCUTS, SHORTCUT_SEEK_MS, usePlayerShortcuts } from '../hooks/usePlayerShortcuts';
 import { useTransientFlag } from '../hooks/useTransientFlag';
 import { applyCorrection, shouldRestoreRate } from '../lib/drift';
-import { estimateServerNow, expectedPosition, RATE_OPTIONS, stepRate, type SyncSnapshot } from '../lib/syncProtocol';
+import { readNetworkHints, resolveQuality, type PlaybackQuality } from '../lib/quality';
+import { estimateServerNow, expectedPosition, stepRate, type QualityPref, type SyncSnapshot } from '../lib/syncProtocol';
+import { createStallTracker } from '../lib/stallTracker';
 import { formatRate, formatTime } from '../lib/time';
+import { HostControlBar } from './host/HostControlBar';
 import { SeekBar } from './player/SeekBar';
 import { Button } from './ui/Button';
 
 export interface SyncedPlayerProps {
   /** URL del vídeo; sin ella se muestra `emptyMessage`. */
   src?: string;
+  /** Versiones del vídeo (`playback.qualities`); sin ellas se usa `src`. */
+  qualities?: PlaybackQuality[];
   /** Si este cliente puede emitir comandos (de `sync.canControl`). */
   canControl: boolean;
   /** Participante con control delegado por ausencia del host (F7). */
@@ -21,6 +26,15 @@ export interface SyncedPlayerProps {
   emptyMessage?: string;
   /** Reloj monotónico local (inyectable para pruebas). */
   now?: () => number;
+  /** Puntero láser del host (botón en la barra de controles). */
+  laserOn?: boolean;
+  onToggleLaser?: () => void;
+  /** Abre el creador de encuestas (botón en la barra de controles). */
+  onOpenPoll?: () => void;
+  /** Capas sobre el área del vídeo (p. ej. el puntero láser). */
+  overlay?: ReactNode;
+  /** El vídeo llegó al final (evento `ended`). */
+  onEnded?: () => void;
 }
 
 const RATE_CHECK_INTERVAL_MS = 200;
@@ -62,14 +76,20 @@ function bufferedOf(video: HTMLVideoElement): Array<[number, number]> {
  */
 export function SyncedPlayer({
   src,
+  qualities,
   canControl,
   delegated = false,
   sync,
   videoRef,
   emptyMessage = 'Sin video configurado',
   now = defaultNow,
+  laserOn,
+  onToggleLaser,
+  onOpenPoll,
+  overlay,
+  onEnded,
 }: SyncedPlayerProps) {
-  const { state, correction, connected, hostOnline, lastError, lastBroadcast, sendCommand } = sync;
+  const { state, correction, connected, hostOnline, lastError, lastBroadcast, sendCommand, volume, quality, sendBuffering } = sync;
   const [needsGesture, setNeedsGesture] = useState(false);
   const [currentMs, setCurrentMs] = useState(0);
   const [durationMs, setDurationMs] = useState(0);
@@ -77,18 +97,34 @@ export function SyncedPlayer({
   const [marks, setMarks] = useState<number[]>([]);
   const [showHelp, setShowHelp] = useState(false);
   const [fading, fade] = useTransientFlag(FADE_MS);
+  /** Silencio local del participante: no cambia el volumen maestro de la sala. */
+  const [localMuted, setLocalMuted] = useState(false);
+  // Pistas de red/pantalla al montar: no se cambia de calidad por redimensionar la ventana.
+  const [networkHints] = useState(readNetworkHints);
   const helpId = useId();
-  const rateId = useId();
 
   const nowRef = useRef(now);
   const stateRef = useRef(state);
   const lastPosRef = useRef(0);
   const cancelRateRef = useRef<(() => void) | null>(null);
 
+  const sendBufferingRef = useRef(sendBuffering);
+
   useEffect(() => {
     nowRef.current = now;
     stateRef.current = state;
+    sendBufferingRef.current = sendBuffering;
   });
+
+  // Stalls (waiting → playing) para la analítica; se ignoran los causados por seeks.
+  const [stalls] = useState(() =>
+    createStallTracker({
+      now: () => nowRef.current(),
+      onStall: ({ positionMs, durationMs }) => {
+        sendBufferingRef.current(positionMs, durationMs);
+      },
+    }),
+  );
 
   const cancelRateCorrection = useCallback(() => {
     cancelRateRef.current?.();
@@ -125,6 +161,19 @@ export function SyncedPlayer({
     },
     [cancelRateCorrection, fade, tryPlay],
   );
+
+  // `auto` → cada cliente elige; si la calidad pedida no existe, cae al original. Al cambiar
+  // el `src`, onLoadedMetadata re-aplica el estado maestro (posición y play/pausa).
+  const chosenQuality = src ? resolveQuality(quality, qualities ?? [], networkHints) : null;
+  const videoSrc = src ? (chosenQuality?.url ?? src) : undefined;
+
+  // Volumen maestro para todos; el participante puede silenciarse solo a sí mismo.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.volume = volume;
+    video.muted = !canControl && localMuted;
+  }, [volume, localMuted, canControl, videoSrc, videoRef]);
 
   // Aplica cada snapshot/broadcast aceptado por el hook.
   useEffect(() => {
@@ -209,6 +258,14 @@ export function SyncedPlayer({
     sendCommand('RATE', localPositionMs(), { rate });
   };
 
+  const changeVolume = (next: number) => {
+    sendCommand('VOLUME', localPositionMs(), { volume: next });
+  };
+
+  const changeQuality = (next: QualityPref) => {
+    sendCommand('QUALITY', localPositionMs(), { quality: next });
+  };
+
   const controlsDisabled = !canControl || !connected;
 
   usePlayerShortcuts(canControl && connected, {
@@ -226,18 +283,15 @@ export function SyncedPlayer({
     if (video && snap) applyMaster(video, snap);
   };
 
-  const rateOptions: number[] = RATE_OPTIONS.includes(currentRate as (typeof RATE_OPTIONS)[number])
-    ? [...RATE_OPTIONS]
-    : [...RATE_OPTIONS, currentRate].sort((a, b) => a - b);
   const errorMessage = lastError ? (ERROR_MESSAGES[lastError] ?? `Error de sincronía (${lastError}).`) : '';
 
   return (
     <div>
       <div className="relative aspect-video bg-black">
-        {src ? (
+        {videoSrc ? (
           <video
             ref={videoRef}
-            src={src}
+            src={videoSrc}
             aria-label="Vídeo de la sala"
             playsInline
             preload="auto"
@@ -246,12 +300,20 @@ export function SyncedPlayer({
             onProgress={(e) => syncProgress(e.currentTarget)}
             onLoadedMetadata={(e) => onLoadedMetadata(e.currentTarget)}
             onDurationChange={(e) => syncProgress(e.currentTarget)}
+            onEnded={onEnded}
+            onWaiting={() => stalls.waiting()}
+            onPlaying={(e) => stalls.playing(e.currentTarget.currentTime * 1000)}
+            onSeeking={() => stalls.seeking()}
+            onSeeked={() => stalls.seeked()}
+            onEmptied={() => stalls.reset()}
           />
         ) : (
           <div className="absolute inset-0 grid place-items-center">
             <p className="text-[13px] text-tint-muted">{emptyMessage}</p>
           </div>
         )}
+
+        {overlay}
 
         {/* Fundido breve al corregir con seek o en saltos grandes (no con reduced-motion). */}
         <div
@@ -351,23 +413,6 @@ export function SyncedPlayer({
           <div className="ml-auto flex items-center gap-2">
             {canControl ? (
               <>
-                <label htmlFor={rateId} className="sr-only">
-                  Velocidad
-                </label>
-                <select
-                  id={rateId}
-                  value={String(currentRate)}
-                  disabled={!connected}
-                  aria-keyshortcuts="[ ]"
-                  onChange={(e) => changeRate(Number(e.target.value))}
-                  className="rounded-full border border-white/15 bg-tint-bg px-3 py-1.5 text-[13px] text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-tint-accent disabled:opacity-50"
-                >
-                  {rateOptions.map((r) => (
-                    <option key={r} value={String(r)}>
-                      {formatRate(r)}×
-                    </option>
-                  ))}
-                </select>
                 <Button
                   variant="quiet"
                   className="px-3 py-1.5 text-[13px]"
@@ -380,17 +425,44 @@ export function SyncedPlayer({
                 </Button>
               </>
             ) : (
-              currentRate !== 1 && (
-                <span
-                  aria-label={`Velocidad ${formatRate(currentRate)}×`}
-                  className="rounded-full border border-white/15 px-2.5 py-0.5 text-[12px] tabular-nums text-white"
+              <>
+                {currentRate !== 1 && (
+                  <span
+                    aria-label={`Velocidad ${formatRate(currentRate)}×`}
+                    className="rounded-full border border-white/15 px-2.5 py-0.5 text-[12px] tabular-nums text-white"
+                  >
+                    {formatRate(currentRate)}×
+                  </span>
+                )}
+                <Button
+                  variant="quiet"
+                  className="px-3 py-1.5 text-[13px]"
+                  aria-label="Silenciar solo para mí"
+                  aria-pressed={localMuted}
+                  onClick={() => setLocalMuted((m) => !m)}
                 >
-                  {formatRate(currentRate)}×
-                </span>
-              )
+                  <span aria-hidden="true">{localMuted ? '🔇' : '🔊'}</span>
+                </Button>
+              </>
             )}
           </div>
         </div>
+
+        {canControl && (
+          <HostControlBar
+            connected={connected}
+            volume={volume}
+            onVolumeChange={changeVolume}
+            quality={quality}
+            qualities={qualities ?? []}
+            onQualityChange={changeQuality}
+            rate={currentRate}
+            onRateChange={changeRate}
+            laserOn={laserOn}
+            onToggleLaser={onToggleLaser}
+            onOpenPoll={onOpenPoll}
+          />
+        )}
 
         {canControl && showHelp && (
           <dl

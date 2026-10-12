@@ -77,30 +77,33 @@ func (msgpackCodec) Decode(raw []byte, ev *syncevent.Event) error {
 // wire refleja syncevent.Event con los timestamps como string, igual que
 // en JSON (las claves y omitempty coinciden con las etiquetas json).
 type wire struct {
-	EventID      string  `msgpack:"event_id"`
-	Type         string  `msgpack:"type"`
-	RoomID       string  `msgpack:"room_id"`
-	PositionMs   int64   `msgpack:"position_ms"`
-	OccurredAt   string  `msgpack:"occurred_at"`
-	ReceivedAt   string  `msgpack:"received_at"`
-	Version      int64   `msgpack:"version"`
-	Status       string  `msgpack:"status,omitempty"`
-	Rate         float64 `msgpack:"rate,omitempty"`
-	UpdatedAtMs  int64   `msgpack:"updated_at_ms,omitempty"`
-	ServerTimeMs int64   `msgpack:"server_time_ms,omitempty"`
-	EchoServerTs int64   `msgpack:"echo_server_ts,omitempty"`
-	TargetMs     *int64  `msgpack:"target_ms,omitempty"`
-	Strategy     string  `msgpack:"strategy,omitempty"`
-	DriftMs      int64   `msgpack:"drift_ms,omitempty"`
-	Online       *bool   `msgpack:"online,omitempty"`
-	RefEventID   string  `msgpack:"ref_event_id,omitempty"`
-	Code         string  `msgpack:"code,omitempty"`
-	Duplicate    bool    `msgpack:"duplicate,omitempty"`
-	MediaID      string  `msgpack:"media_id,omitempty"`
-	RTTMs        int64   `msgpack:"rtt_ms,omitempty"`
-	CanControl   *bool   `msgpack:"can_control,omitempty"`
-	Holder       string  `msgpack:"holder,omitempty"`
-	JTI          string  `msgpack:"jti,omitempty"`
+	EventID      string   `msgpack:"event_id"`
+	Type         string   `msgpack:"type"`
+	RoomID       string   `msgpack:"room_id"`
+	PositionMs   int64    `msgpack:"position_ms"`
+	OccurredAt   string   `msgpack:"occurred_at"`
+	ReceivedAt   string   `msgpack:"received_at"`
+	Version      int64    `msgpack:"version"`
+	Status       string   `msgpack:"status,omitempty"`
+	Rate         float64  `msgpack:"rate,omitempty"`
+	UpdatedAtMs  int64    `msgpack:"updated_at_ms,omitempty"`
+	ServerTimeMs int64    `msgpack:"server_time_ms,omitempty"`
+	EchoServerTs int64    `msgpack:"echo_server_ts,omitempty"`
+	TargetMs     *int64   `msgpack:"target_ms,omitempty"`
+	Strategy     string   `msgpack:"strategy,omitempty"`
+	DriftMs      int64    `msgpack:"drift_ms,omitempty"`
+	Online       *bool    `msgpack:"online,omitempty"`
+	RefEventID   string   `msgpack:"ref_event_id,omitempty"`
+	Code         string   `msgpack:"code,omitempty"`
+	Duplicate    bool     `msgpack:"duplicate,omitempty"`
+	MediaID      string   `msgpack:"media_id,omitempty"`
+	Volume       *float64 `msgpack:"volume,omitempty"`
+	Quality      string   `msgpack:"quality,omitempty"`
+	RTTMs        int64    `msgpack:"rtt_ms,omitempty"`
+	CanControl   *bool    `msgpack:"can_control,omitempty"`
+	Holder       string   `msgpack:"holder,omitempty"`
+	JTI          string   `msgpack:"jti,omitempty"`
+	DurationMs   int64    `msgpack:"duration_ms,omitempty"`
 }
 
 func toWire(e syncevent.Event) wire {
@@ -111,6 +114,7 @@ func toWire(e syncevent.Event) wire {
 		EchoServerTs: e.EchoServerTs, TargetMs: e.TargetMs, Strategy: e.Strategy, DriftMs: e.DriftMs,
 		Online: e.Online, RefEventID: e.RefEventID, Code: e.Code, Duplicate: e.Duplicate,
 		MediaID: e.MediaID, RTTMs: e.RTTMs, CanControl: e.CanControl, Holder: e.Holder, JTI: e.JTI,
+		Volume: e.Volume, Quality: e.Quality, DurationMs: e.DurationMs,
 	}
 }
 
@@ -130,6 +134,7 @@ func fromWire(w wire) (syncevent.Event, error) {
 		EchoServerTs: w.EchoServerTs, TargetMs: w.TargetMs, Strategy: w.Strategy, DriftMs: w.DriftMs,
 		Online: w.Online, RefEventID: w.RefEventID, Code: w.Code, Duplicate: w.Duplicate,
 		MediaID: w.MediaID, RTTMs: w.RTTMs, CanControl: w.CanControl, Holder: w.Holder, JTI: w.JTI,
+		Volume: w.Volume, Quality: w.Quality, DurationMs: w.DurationMs,
 	}, nil
 }
 

@@ -37,7 +37,7 @@ flowchart LR
 
 | Tipo | Cómo se identifica | Persistencia | Credenciales |
 | :--- | :--- | :--- | :--- |
-| **Host** | Cuenta de Google vía Firebase Auth. `users.id` (uuid interno) y `provider_sub` (uid de Firebase) | Fila en `users`; es dueño de `rooms` | ID token de Firebase (RS256, ~1 h) para la API; **sync-ticket** HS256 (10 min) para el Canal Sync |
+| **Host** | Cuenta de Google vía Firebase Auth. `users.id` (uuid interno) y `provider_sub` (uid de Firebase) | Fila en `users`; es dueño de `rooms` | ID token de Firebase (RS256, ~1 h) para la API; **sync-ticket** HS256 (10 min) para el Canal Sync; **analytics-ticket** HS256 (10 min) para la API de analytics |
 | **Cohost** | Igual que el Host | — | sync-core acepta `role: cohost`, pero **todavía ningún endpoint lo emite** |
 | **Invitado** (`participant`) | Anónimo: `sub = guest:<uuid>` y un `nick` elegido al entrar | Fila en `guest_sessions` (desde la v2) | **Guest token** HS256 (4 h), obtenido con un código de invitación |
 | **Participante con control delegado** | Un invitado elegido por sync-core | Clave `room:{id}:delegate` en Redis | Su mismo guest token; el permiso lo da el servidor, no el token |
@@ -60,6 +60,7 @@ El rol **no** se guarda en la tabla `users`: se deriva del contexto.
 | Crear o revocar invitaciones de **su** sala | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Reclamar invitación (`POST /invitations/claim`) | — | — | ✅ | — | ✅ (así se convierte en invitado) |
 | Obtener sync-ticket | ✅ (dueño) | ❌ | ❌ | ❌ | ❌ |
+| Obtener analytics-ticket (`POST /rooms/:id/analytics-ticket`), también con la sala borrada | ✅ (dueño) | ❌ | ❌ | ❌ | ❌ |
 | Asignar vídeo (`PUT /rooms/:id/media`) | ✅ (dueño) | ❌ | ❌ | ❌ | ❌ |
 | Ver URL de reproducción (`GET /rooms/:id/playback`) | ✅ (dueño) | ❌ | ✅ (su sala) | ✅ | ❌ |
 | Listar y retirar invitados | ✅ (dueño) | ❌ | ❌ | ❌ | ❌ |
@@ -129,6 +130,7 @@ erDiagram
         bigint size_bytes
         integer duration_ms "lo escribe media-worker"
         varchar status "pending | processing | ready | failed"
+        jsonb renditions "[] por defecto; alturas publicadas, p. ej. [720, 360]"
         timestamptz created_at
         timestamptz updated_at
     }
@@ -140,7 +142,7 @@ erDiagram
 | `rooms` | `0000`, `0001_add-room-status.sql` y `0002_room_media.sql` | `DELETE /rooms/:id` es un **borrado lógico** (`status = 'deleted'`): la sala desaparece de los listados y sus rutas responden 410. Además revoca todas las sesiones de invitado activas (ver §6.5). Si se borra el usuario, se borran sus salas. |
 | `invitations` | `0000` | El código `nanoid(12)` es la URL `/invite/:code`. Una invitación sirve para muchos invitados. |
 | `guest_sessions` | `0003_guest_sessions.sql` | Una fila por guest token emitido. Permite listar y revocar. |
-| `videos` | `0004_videos.sql` | Vídeos subidos a MinIO. identity-api crea la fila (`pending`) y, al confirmar la subida, la pasa a `processing` con un `UPDATE … WHERE status = 'pending'` (solo esa transición encola); media-worker la deja en `ready`/`failed`. |
+| `videos` | `0004_videos.sql` y `0006_video_renditions.sql` | Vídeos subidos a MinIO. identity-api crea la fila (`pending`) y, al confirmar la subida, la pasa a `processing` con un `UPDATE … WHERE status = 'pending'` (solo esa transición encola); media-worker la deja en `ready`/`failed`. `renditions` (`jsonb NOT NULL DEFAULT '[]'`, `0006`) lista las alturas de las calidades que el worker publicó en `{id}/{h}p.mp4` (`720`, `360`); identity-api ignora cualquier otro valor y las ofrece en `qualities` de `GET /rooms/:id/playback` solo si el vídeo está `ready`. |
 
 Las migraciones se generan con `drizzle-kit generate` y se aplican con `npx drizzle-kit migrate`, usando `DATABASE_URL`.
 
@@ -153,12 +155,15 @@ flowchart TB
     FB["ID token de Firebase<br/>RS256 · Google lo emite · ~1 h"]
     GT["Guest token<br/>HS256 · identity-api · 4 h"]
     ST["Sync-ticket<br/>HS256 · identity-api · 10 min"]
+    AT["Analytics-ticket<br/>HS256 · identity-api · 10 min"]
 
     FB -- "Authorization: Bearer" --> API["identity-api<br/>requireAuthHost (JWKS de Google)"]
     GT -- "Authorization: Bearer" --> API2["identity-api<br/>requireRoomGuest (JWT_SECRET)"]
     GT -- "?token=" --> SC["sync-core /ws/sync<br/>auth.Verifier (JWT_SECRET)"]
     ST -- "?token=" --> SC
     FB -- "POST /rooms/:id/sync-ticket" --> ST
+    FB -- "POST /rooms/:id/analytics-ticket" --> AT
+    AT -- "Authorization: Bearer" --> AN["analytics /api/v1/rooms/:id/…<br/>(JWT_SECRET + revocación)"]
     INV["código de invitación"] -- "POST /invitations/claim" --> GT
 ```
 
@@ -202,13 +207,21 @@ Se firma con HS256 y `JWT_SECRET`. La web lo guarda en `localStorage.tint_guest_
 ```
 No se guarda: la web pide uno nuevo en cada (re)conexión del WebSocket.
 
-| | Firebase | Guest token | Sync-ticket |
-| :--- | :--- | :--- | :--- |
-| Firma | RS256 (Google) | HS256 (`JWT_SECRET`) | HS256 (`JWT_SECRET`) |
-| Vida | ~1 h | 4 h | 10 min |
-| `role` | — | `participant` | `host` |
-| Revocable | En Firebase | ✅ (`guest_sessions` + `token:revoked:{jti}`) | No (vida corta) |
-| Dónde vive en la web | `localStorage.tint_token` | `localStorage.tint_guest_token` | Memoria |
+### Analytics-ticket (Host → API de analytics)
+`POST /rooms/:id/analytics-ticket` (ID token de Firebase + dueño de la sala) → `{ token, expiresAt }`, igual que el sync-ticket.
+
+- **Claims:** los mismos del sync-ticket (`sub` = `users.id`, `room_id`, `role: "host"`, `nick`, `jti`, `iss`, `aud`, `iat`, `exp`); lo firma la misma función (`generateHostTicket`).
+- **Vida:** `SYNC_TICKET_TTL_SECONDS` (600 s); no se guarda, la web pide otro al caducar.
+- **Salas cerradas:** la ruta no usa `requireActiveRoom`, así que el dueño también lo obtiene para una sala con borrado lógico y puede consultar sus KPIs. `requireRoomOwner` no filtra por estado.
+- **Quién lo acepta:** la API de lectura de analytics exige `role: "host"` y que `room_id` coincida con la sala de la ruta, y comprueba `token:revoked:{jti}` (falla cerrado).
+
+| | Firebase | Guest token | Sync-ticket | Analytics-ticket |
+| :--- | :--- | :--- | :--- | :--- |
+| Firma | RS256 (Google) | HS256 (`JWT_SECRET`) | HS256 (`JWT_SECRET`) | HS256 (`JWT_SECRET`) |
+| Vida | ~1 h | 4 h | 10 min | 10 min |
+| `role` | — | `participant` | `host` | `host` |
+| Revocable | En Firebase | ✅ (`guest_sessions` + `token:revoked:{jti}`) | No (vida corta) | No (vida corta) |
+| Dónde vive en la web | `localStorage.tint_token` | `localStorage.tint_guest_token` | Memoria | Memoria |
 
 > `JWT_SECRET`, `JWT_ISSUER` y `JWT_AUDIENCE` **deben ser idénticos** en identity-api y sync-core.
 
@@ -223,7 +236,7 @@ No se guarda: la web pide uno nuevo en cada (re)conexión del WebSocket.
 | Redis | `room:{id}:hosts_online` | Ids de conexión de host/cohost | 12 h; cuenta 5 s |
 | Redis | `room:{id}:delegate` | `sub` del invitado con control | 12 h |
 | Redis | `room:{id}:sync_state.host_id` | `sub` del último Host conectado | 12 h |
-| Redis Stream | `analytics:events` | Métricas `sync_drift` **sin** `sub`, `nick` ni token | `MAXLEN ~100000` |
+| Redis Stream | `analytics:events` | Eventos de analítica ([contrato](contrato-eventos-analitica.md)). Los de identity-api (`user_login`, `room_created`, `room_closed`, `invitation_claimed`) llevan como `user_id` el `sub` (`provider_sub` o `guest:<uuid>`), nunca email, nombre, `nick` ni token; los de sync-core (`playback_command`, `drift_correction`, `buffering`) van **sin** `sub`, `nick` ni token | `MAXLEN ~100000` |
 | Navegador | `localStorage.tint_token` / `tint_guest_token` | Tokens del usuario | Hasta cerrar sesión, revocación (4001) o expiración |
 | Navegador | `localStorage.tint_room_title` / `tint_invite_link` | Título y link que recibe el invitado al reclamar la invitación (el invitado no puede pedirlos a la API de host) | Hasta el siguiente claim |
 

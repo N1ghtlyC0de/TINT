@@ -5,6 +5,8 @@
 | [Arquitectura del sistema](arquitectura.md) | Visión general: servicios, almacenes, contratos entre dominios, puertos y CI. **Empieza aquí.** |
 | [Usuarios, identidad y permisos](usuarios-e-identidad.md) | Tipos de usuario, matriz de permisos, esquema de PostgreSQL, esquemas de tokens, flujos de login, invitación y retiro. |
 | [Dominio de Reproducción](dominio-reproduccion.md) | Canal Sync v2: Reloj Maestro, comandos, drift, presencia, delegación, revocación, métricas, benchmarks y pruebas. |
+| [Contrato de eventos de analítica](contrato-eventos-analitica.md) | Qué publica cada servicio en `analytics:events` y qué entrega Analítica a cambio (tablas y API de lectura de KPIs). |
+| [Bug hunting 2026-10](bug-hunting-2026-10.md) | Hallazgos de la ronda de bug hunting de octubre de 2026 y cómo se corrigieron. |
 
 Cada servicio tiene además su `AGENTS.md` con stack, límites, modelo de datos y comandos (ver la tabla en el [AGENTS.md raíz](../AGENTS.md)).
 
