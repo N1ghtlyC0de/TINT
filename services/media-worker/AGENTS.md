@@ -7,7 +7,7 @@ Eres el agente responsable del procesamiento multimedia asíncrono de **TINT**. 
 ## Stack Técnico
 
 - Python 3.11
-- Redis Streams (`redis==5.2.1`) solo en el disparador; el núcleo no depende de Redis
+- Redis Streams (`redis==5.2.1`) solo en el disparador y en la publicación de analítica; el núcleo no depende de Redis
 - FFmpeg / ffprobe (instalados en la imagen Docker)
 - MinIO (Blob Storage) y PostgreSQL (estado del vídeo)
 - pytest + pytest-cov, ruff
@@ -21,11 +21,12 @@ Eres el agente responsable del procesamiento multimedia asíncrono de **TINT**. 
 - Preprocesamiento del vídeo recibido (validación, normalización y Ambilight) antes de publicarlo en el bucket.
 - Transición de estado del vídeo y publicación de artefactos en el bucket.
 - Disparador: consumir `media:uploads` y procesar el original de `incoming/` (`consumer.py`, `jobs.py`, `__main__.py`).
+- Publicar `media_processed` en `analytics:events` al terminar cada vídeo (`events.py`, emitido desde `jobs.py`).
 
 ## Límites de Dominio
 
 - ❌ No sirvas vídeo ni gestiones salas o sockets (→ `sync-core` / `social-core`).
-- ❌ No calcules KPIs ni analítica (→ `services/analytics`).
+- ❌ No calcules KPIs ni analítica (→ `services/analytics`); solo publicas el evento `media_processed`.
 - ❌ Nunca ejecutes FFmpeg real en las pruebas unitarias: inyecta/mockea el `runner`.
 
 ## Modelo de Datos Involucrado
@@ -38,6 +39,8 @@ Eres el agente responsable del procesamiento multimedia asíncrono de **TINT**. 
 | `media:uploads` | Redis Stream (grupo `media-workers`) | Evento `{video_id}` que publica identity-api al confirmar la subida |
 | `{video_id}/ambilight.json` | MinIO (`tint-media`) | `[{ "t_ms", "top", "bottom", "left", "right" }]` colores hex a 1 FPS |
 | `{video_id}/{720,360}p.mp4` | MinIO (`tint-media`) | Calidades reducidas (MP4 H.264 + AAC, `scale=-2:H`), solo las de altura estrictamente menor que la del original |
+| `users` | PostgreSQL (solo lectura) | `provider_sub` de `videos.uploaded_by` (`LEFT JOIN` en `GET_VIDEO_SQL`), para el `user_id` de analítica |
+| `analytics:events` | Redis Stream (`XADD MAXLEN ~ 100000`) | `media_processed`: `event_id`, `type`, `source=media-worker`, `occurred_at`, `received_at`, `media_id`, `status` (`ready`\|`failed`), `duration_ms` (vacío si `failed`), `processing_ms`, `user_id` (vacío si no hay dueño). Sin `room_id` ni PII |
 
 ## Reglas de Dominio
 
@@ -46,7 +49,8 @@ Eres el agente responsable del procesamiento multimedia asíncrono de **TINT**. 
 3. **Calidades:** Tras publicar `source.mp4` y `ambilight.json`, genera `720p`/`360p` (solo alturas menores que el original). Son opcionales: una que falle se omite con un aviso y **no** marca `failed`.
 4. **Persistencia:** Al finalizar con éxito, marca el vídeo como `ready` y escribe en `renditions` las calidades publicadas.
 5. **Idempotencia:** Reprocesar el mismo vídeo debe producir el mismo resultado sin duplicar artefactos.
-6. **TDD:** Escribe primero pruebas unitarias con `pytest` mockeando ejecuciones de FFmpeg. Cobertura obligatoria **≥ 85 %**.
+6. **Analítica best-effort:** `media_processed` se publica en cada resultado terminal (`ready`/`failed`, incluido el original ausente y la extensión no admitida) desde el adaptador (`jobs.handle_upload`, `publish` inyectado). Un fallo al publicar solo se registra: nunca cambia el resultado ni impide el `XACK`. No se publica para duplicados, eventos descartados ni fallos de infraestructura que dejan el mensaje pendiente.
+7. **TDD:** Escribe primero pruebas unitarias con `pytest` mockeando ejecuciones de FFmpeg. Cobertura obligatoria **≥ 85 %**.
 
 ## Comandos
 
