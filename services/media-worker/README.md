@@ -399,5 +399,5 @@ Las decisiones locales del servicio (formato estándar, normalización condicion
 - [STATUS.md](STATUS.md): estado, decisiones, mediciones y pendientes.
 - [Dominio de Reproducción §6.7](../../docs/dominio-reproduccion.md#67-subida-y-cambio-de-vídeo): subida y cambio de vídeo de punta a punta.
 - [Contrato de eventos de analítica](../../docs/contrato-eventos-analitica.md).
-- [Arquitectura](../../docs/arquitectura.md): vista de componentes y conectores (§2), almacenes (§4) y contrato `media:uploads` + `videos` (§5).
+- [Arquitectura](../../docs/arquitectura.md): [vista de componentes y conectores (§4)](../../docs/arquitectura.md#vista-de-componentes-y-conectores), almacenes (§6) y contrato `media:uploads` + `videos` (§5).
 - [identity-api](../identity-api/AGENTS.md): dueño de la tabla `videos` y del stream `media:uploads`.
