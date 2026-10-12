@@ -38,7 +38,9 @@ Cambiar uno exige actualizar **ambos lados**, sus pruebas y [docs/arquitectura.m
 | :--- | :--- | :--- |
 | Claims JWT HS256 (`sub`, `room_id`, `role`, `nick`, `jti`, `iss`, `aud`, `exp`) | identity-api ↔ sync-core, social-core | [usuarios-e-identidad §4](docs/usuarios-e-identidad.md#4-esquemas-de-tokens) |
 | `JWT_SECRET` / `JWT_ISSUER` / `JWT_AUDIENCE` | identity-api ↔ sync-core, social-core | `.env.example` raíz |
-| Protocolo del Canal Sync v2 | sync-core ↔ web | [sync-core/AGENTS.md](services/sync-core/AGENTS.md#protocolo-del-canal-sync) |
+| Protocolo del Canal Sync v2 (incl. `VOLUME`/`QUALITY`) | sync-core ↔ web | [sync-core/AGENTS.md](services/sync-core/AGENTS.md#protocolo-del-canal-sync) |
+| Protocolo del Canal Social (chat, reacciones, láser, encuestas, recap; láser y encuestas con sync-ticket del host) | social-core ↔ web | [social-core/AGENTS.md](services/social-core/AGENTS.md#protocolo-del-canal-social) |
+| Comandos de reproducción en `room:{id}:sync` (solo lectura, para el recap) | sync-core → social-core | [arquitectura §5](docs/arquitectura.md#5-contratos-compartidos-entre-dominios) |
 | Revocación `token:revoked:{jti}` + `REVOKED` (cierre `4001`; token caducado `4003`) | identity-api → sync-core, social-core, web | [dominio-reproduccion §6.6](docs/dominio-reproduccion.md#66-retirar-a-un-invitado-f5) |
 | Stream `media:uploads` + tabla `videos` (`id`, `storage_key`, `duration_ms`, `status`, `renditions`) + staging `incoming/{id}/original.*` (el worker publica `{id}/source.*` y reescribe `storage_key`; también `{id}/720p.mp4`/`{id}/360p.mp4` y sus alturas en `renditions`) | identity-api → media-worker | [dominio-reproduccion §6.7](docs/dominio-reproduccion.md#67-subida-y-cambio-de-vídeo) |
 | Puertos locales: social-core 8082, sync-core 8083 | infra ↔ web | `docker-compose.yml`, `.env.example` de la web |
