@@ -147,6 +147,74 @@ func TestMsgPackSyncCheckWithOlderVersionIsSkipped(t *testing.T) {
 	}
 }
 
+// Un host que hace scrubbing agota los 20 msg/s con comandos: si el
+// SYNC_CHECK contara en ese límite recibiría RATE_LIMITED, dejaría de
+// renovar lastCheckMs y acabaría cerrado como stale (1008).
+func TestSyncCheckIsExemptFromMessageLimit(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	_, g := playingRoom(t, e, h)
+	e.clock.advance(10 * time.Second)
+
+	for i := 0; i < MaxMsgsPerSecond; i++ {
+		send(t, h, g, buffering("b", 100, 0))
+	}
+	// El límite general está agotado, pero el SYNC_CHECK se procesa.
+	send(t, h, g, syncCheck("c", 9_000))
+	if corr := nextOf(t, g, syncevent.SyncCorrection); corr.Strategy != "rate" {
+		t.Errorf("SYNC_CHECK con el límite general agotado = %+v", corr)
+	}
+	if got := g.lastCheckMs.Load(); got != e.clock.now().UnixMilli() {
+		t.Errorf("lastCheckMs = %d, want %d", got, e.clock.now().UnixMilli())
+	}
+	// Y no consume cupo del límite general: el siguiente BUFFERING sigue
+	// siendo el 21.º de la ventana.
+	send(t, h, g, buffering("b", 100, 0))
+	if ev := nextOf(t, g, syncevent.Error); ev.Code != syncevent.CodeRateLimited {
+		t.Errorf("ERROR = %+v", ev)
+	}
+}
+
+// SYNC_CHECK tiene su propio límite (5/s); el exceso se descarta en silencio.
+func TestSyncCheckOwnLimit(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	_, g := playingRoom(t, e, h)
+	e.clock.advance(10 * time.Second)
+
+	for i := 0; i < MaxSyncChecksPerSecond; i++ {
+		send(t, h, g, syncCheck("c", 9_000)) // 1000 atrasado: corrección por rate
+		nextOf(t, g, syncevent.SyncCorrection)
+	}
+	send(t, h, g, syncCheck("c-extra", 9_000))
+	expectSilence(t, g) // ni corrección ni ERROR
+	if n := e.tel.count(); n != MaxSyncChecksPerSecond {
+		t.Errorf("correcciones = %d, want %d", n, MaxSyncChecksPerSecond)
+	}
+
+	e.clock.advance(time.Second)
+	send(t, h, g, syncCheck("c-next", 10_000))
+	nextOf(t, g, syncevent.SyncCorrection)
+}
+
+// Un mensaje que no se puede decodificar sigue contando en el límite general.
+func TestUndecodableMessagesAreRateLimited(t *testing.T) {
+	e := newEnv(t)
+	h := e.newHub(t)
+	g := connect(t, h, guest)
+	next(t, g)
+	for i := 0; i < MaxMsgsPerSecond; i++ {
+		h.Handle(context.Background(), g, []byte("{basura"))
+		if ev := nextOf(t, g, syncevent.Error); ev.Code != syncevent.CodeInvalid {
+			t.Fatalf("ERROR = %+v", ev)
+		}
+	}
+	h.Handle(context.Background(), g, []byte("{basura"))
+	if ev := nextOf(t, g, syncevent.Error); ev.Code != syncevent.CodeRateLimited {
+		t.Errorf("ERROR = %+v, want RATE_LIMITED", ev)
+	}
+}
+
 // El enfriamiento es por cliente: el seek de uno no silencia al otro.
 func TestSeekCooldownIsPerClient(t *testing.T) {
 	e := newEnv(t)

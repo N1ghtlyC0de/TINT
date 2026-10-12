@@ -48,6 +48,9 @@ const (
 	MaxMissedChecks = 3
 	// MaxMsgsPerSecond limita los mensajes entrantes por conexión.
 	MaxMsgsPerSecond = 20
+	// MaxSyncChecksPerSecond es el límite propio de SYNC_CHECK, que no
+	// cuenta en MaxMsgsPerSecond; el exceso se descarta en silencio.
+	MaxSyncChecksPerSecond = 5
 	// CacheTTL: cada cuánto se relee el estado de Redis aunque la caché
 	// local (alimentada por el bus) esté al día. Red de seguridad por si se
 	// perdiera un mensaje Pub/Sub durante una reconexión.
@@ -547,13 +550,22 @@ func (h *Hub) Deliver(roomID string, payload []byte) {
 // lectora del cliente (el rate limit no está protegido para concurrencia).
 func (h *Hub) Handle(ctx context.Context, c *Client, raw []byte) {
 	now := h.now()
-	if !c.allow(now.UnixMilli()) {
+	nowMs := now.UnixMilli()
+	// Se decodifica antes del rate limit para elegir el límite por tipo: el
+	// mensaje ya está acotado a 4 KB, y lo que no se puede decodificar
+	// cuenta en el límite general como cualquier otro mensaje.
+	var ev syncevent.Event
+	decodeErr := c.codec.Decode(raw, &ev)
+	if decodeErr == nil && ev.Type == syncevent.SyncCheck {
+		if !c.allowSyncCheck(nowMs) {
+			return // exceso de SYNC_CHECK: se descarta en silencio
+		}
+	} else if !c.allow(nowMs) {
 		h.m.rateLimited.Inc()
 		c.enqueueEvent(errorEvent(c.claims.RoomID, "", syncevent.CodeRateLimited, now))
 		return
 	}
-	var ev syncevent.Event
-	if err := c.codec.Decode(raw, &ev); err != nil {
+	if decodeErr != nil {
 		h.m.invalid.Inc()
 		c.enqueueEvent(errorEvent(c.claims.RoomID, "", syncevent.CodeInvalid, now))
 		return
