@@ -44,6 +44,7 @@ function makeSync(over: Partial<SyncSocketApi> = {}): SyncSocketApi {
     volume: 1,
     quality: 'auto',
     sendCommand: vi.fn(() => 'evt'),
+    sendBuffering: vi.fn(() => true),
     ...over,
   };
 }
