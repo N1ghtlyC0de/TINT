@@ -372,3 +372,59 @@ describe('useRoomPlayback — invitación no válida', () => {
     expect(localStorage.getItem('tint_guest_token')).toBe('g');
   });
 });
+
+describe('useRoomPlayback — calidades', () => {
+  const q720 = { id: '720p', label: '720p', url: 'https://minio/m1/720p.mp4?sig=1' };
+
+  it('servidor antiguo sin qualities → solo el original', async () => {
+    mockedApiFetch.mockResolvedValue(playback('m1', 'https://minio/m1?sig=1'));
+    const { result } = setup({ roomId: 'r1', mediaId: undefined });
+    await flush();
+    expect(result.current.qualities).toEqual([{ id: 'source', label: 'Original', url: 'https://minio/m1?sig=1' }]);
+  });
+
+  it('expone las calidades que envía identity-api', async () => {
+    const qualities = [{ id: 'source', label: 'Original', url: 'https://minio/m1?sig=1' }, q720];
+    mockedApiFetch.mockResolvedValue({ ...playback('m1', 'https://minio/m1?sig=1'), qualities });
+    const { result } = setup({ roomId: 'r1', mediaId: undefined });
+    await flush();
+    expect(result.current.qualities).toEqual(qualities);
+  });
+
+  it('sin vídeo no hay calidades', async () => {
+    mockedApiFetch.mockResolvedValue(playback(null, null));
+    const { result } = setup({ roomId: 'r1', mediaId: undefined });
+    expect(result.current.qualities).toEqual([]);
+    await flush();
+    expect(result.current.qualities).toEqual([]);
+  });
+
+  it('al re-consultar adopta las nuevas calidades sin cambiar la URL del original', async () => {
+    mockedApiFetch
+      .mockResolvedValueOnce({ ...playback('m1', 'https://minio/m1?sig=1'), status: 'processing' })
+      .mockResolvedValueOnce({
+        ...playback('m1', 'https://minio/m1?sig=2'),
+        status: 'ready',
+        qualities: [{ id: 'source', label: 'Original', url: 'https://minio/m1?sig=2' }, q720],
+      });
+    const { result } = setup({ roomId: 'r1', mediaId: 'm1' });
+    await flush();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PLAYBACK_PROCESSING_POLL_MS);
+    });
+    expect(result.current.url).toBe('https://minio/m1?sig=1');
+    expect(result.current.qualities).toEqual([{ id: 'source', label: 'Original', url: 'https://minio/m1?sig=1' }, q720]);
+  });
+
+  it('si el procesamiento falla se vacían las calidades', async () => {
+    mockedApiFetch
+      .mockResolvedValueOnce({ ...playback('m1', 'u'), status: 'processing' })
+      .mockResolvedValueOnce({ mediaId: 'm1', url: null, expiresAt: null, status: 'failed' });
+    const { result } = setup({ roomId: 'r1', mediaId: 'm1' });
+    await flush();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PLAYBACK_PROCESSING_POLL_MS);
+    });
+    expect(result.current.qualities).toEqual([]);
+  });
+});

@@ -417,7 +417,7 @@ export const quizQuestions: QuizQuestion[] = [
     prompt: '¿Qué pasa si un invitado (participant sin delegación) envía PLAY?',
     options: ['Se aplica igual', 'Se reenvía al host para aprobar', 'Cierre 4001', 'Recibe ERROR{FORBIDDEN}'],
     answer: 3,
-    explanation: 'PLAY/PAUSE/SEEK/RATE/LOAD de un participant devuelven ERROR{FORBIDDEN}; solo quien tiene control (host, cohost o delegado) puede enviarlos.',
+    explanation: 'PLAY/PAUSE/SEEK/RATE/LOAD (y VOLUME/QUALITY) de un participant devuelven ERROR{FORBIDDEN}; solo quien tiene control (host, cohost o delegado) puede enviarlos.',
     sources: ['services/sync-core/AGENTS.md', 'docs/usuarios-e-identidad.md'],
   },
 

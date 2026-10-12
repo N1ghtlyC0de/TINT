@@ -18,9 +18,15 @@ import {
   CLOSE_REVOKED,
   estimateServerNow,
   expectedPosition,
+  isQualityPref,
+  normalizeQuality,
+  normalizeVolume,
   toServerMessage,
+  DEFAULT_QUALITY,
+  DEFAULT_VOLUME,
   type CommandExtra,
   type CommandType,
+  type QualityPref,
   type SyncSnapshot,
   type SyncState,
 } from '../lib/syncProtocol';
@@ -72,6 +78,10 @@ export interface SyncBroadcast {
   position_ms: number;
   rate: number;
   media_id: string;
+  /** Volumen maestro tras el comando (VOLUME). */
+  volume?: number;
+  /** Calidad maestra tras el comando (QUALITY). */
+  quality?: QualityPref;
   /** true si lo emitió este cliente (event_id devuelto por sendCommand). */
   own: boolean;
 }
@@ -111,8 +121,12 @@ export interface SyncSocketApi {
   /** Reintento programado, o null si conectado / sin reintento. */
   reconnect: ReconnectInfo | null;
   lastBroadcast: SyncBroadcast | null;
+  /** Volumen maestro 0..1 (STATE/broadcasts/SYNC_CORRECTION; 1 si el servidor no lo informa). */
+  volume: number;
+  /** Calidad maestra ('auto' si el servidor no la informa). */
+  quality: QualityPref;
   /**
-   * Envía PLAY/PAUSE/SEEK/RATE/LOAD si este cliente tiene el control.
+   * Envía PLAY/PAUSE/SEEK/RATE/LOAD/VOLUME/QUALITY si este cliente tiene el control.
    * Devuelve el event_id o null si no se envió.
    */
   sendCommand: (type: CommandType, positionMs: number, extra?: CommandExtra) => string | null;
@@ -130,6 +144,10 @@ function validExtra(type: CommandType, extra: CommandExtra): boolean {
   if (type === 'LOAD') {
     return typeof extra.media_id === 'string' && extra.media_id.length > 0 && extra.media_id.length <= MAX_MEDIA_ID;
   }
+  if (type === 'VOLUME') {
+    return typeof extra.volume === 'number' && Number.isFinite(extra.volume) && extra.volume >= 0 && extra.volume <= 1;
+  }
+  if (type === 'QUALITY') return isQualityPref(extra.quality);
   return true;
 }
 
@@ -162,6 +180,8 @@ export function useSyncSocket({
   const [expired, setExpired] = useState(false);
   const [reconnect, setReconnect] = useState<ReconnectInfo | null>(null);
   const [lastBroadcast, setLastBroadcast] = useState<SyncBroadcast | null>(null);
+  const [volume, setVolume] = useState(DEFAULT_VOLUME);
+  const [quality, setQuality] = useState<QualityPref>(DEFAULT_QUALITY);
 
   const wsRef = useRef<WebSocket | null>(null);
   /** Codificación negociada con el socket actual (json si el servidor no aceptó msgpack). */
@@ -197,6 +217,9 @@ export function useSyncSocket({
     applyControl(role === 'host');
 
     const acceptState = (s: SyncState) => {
+      // Servidores previos a VOLUME/QUALITY no los envían: volumen 1 y calidad auto.
+      const masterVolume = normalizeVolume(s.volume);
+      const masterQuality = normalizeQuality(s.quality);
       const snapshot: SyncSnapshot = {
         status: s.status,
         position_ms: s.position_ms,
@@ -205,10 +228,14 @@ export function useSyncSocket({
         version: s.version,
         server_time_ms: s.server_time_ms,
         media_id: s.media_id ?? '',
+        volume: masterVolume,
+        quality: masterQuality,
         received_at_perf: nowRef.current(),
       };
       stateRef.current = snapshot;
       setState(snapshot);
+      setVolume(masterVolume);
+      setQuality(masterQuality);
       return snapshot;
     };
 
@@ -235,7 +262,9 @@ export function useSyncSocket({
         case 'PAUSE':
         case 'SEEK':
         case 'RATE':
-        case 'LOAD': {
+        case 'LOAD':
+        case 'VOLUME':
+        case 'QUALITY': {
           if (stateRef.current && msg.version <= stateRef.current.version) break;
           const snap = acceptState(msg);
           broadcastSeqRef.current += 1;
@@ -246,6 +275,8 @@ export function useSyncSocket({
             position_ms: snap.position_ms,
             rate: snap.rate,
             media_id: snap.media_id,
+            volume: snap.volume,
+            quality: snap.quality,
             own: !!msg.event_id && ownEventsRef.current.includes(msg.event_id),
           });
           break;
@@ -265,6 +296,9 @@ export function useSyncSocket({
           if (stateRef.current && msg.version < stateRef.current.version) break;
           seqRef.current += 1;
           setDriftMs(msg.drift_ms);
+          // Las correcciones son parciales: solo pisan volumen/calidad si los traen.
+          if (msg.volume !== undefined) setVolume(normalizeVolume(msg.volume));
+          if (msg.quality !== undefined) setQuality(normalizeQuality(msg.quality));
           setCorrection({
             seq: seqRef.current,
             target_ms: msg.target_ms,
@@ -410,6 +444,8 @@ export function useSyncSocket({
     fatalError,
     reconnect,
     lastBroadcast,
+    volume,
+    quality,
     sendCommand,
   };
 }

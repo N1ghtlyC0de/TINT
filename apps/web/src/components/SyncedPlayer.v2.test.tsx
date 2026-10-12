@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { createRef } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SyncedPlayer, type SyncedPlayerProps } from './SyncedPlayer';
@@ -33,6 +33,8 @@ function makeSync(over: Partial<SyncSocketApi> = {}): SyncSocketApi {
     fatalError: null,
     reconnect: null,
     lastBroadcast: null,
+    volume: 1,
+    quality: 'auto',
     sendCommand: vi.fn(() => 'evt'),
     ...over,
   };
@@ -78,7 +80,7 @@ describe('SyncedPlayer — velocidad (F6)', () => {
     const select = screen.getByRole('combobox', { name: 'Velocidad' });
     expect(select).toHaveValue('1');
     expect(select).toHaveAttribute('aria-keyshortcuts', '[ ]');
-    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['0.5×', '0.75×', '1×', '1.25×', '1.5×', '2×']);
+    expect(within(select).getAllByRole('option').map((o) => o.textContent)).toEqual(['0.5×', '0.75×', '1×', '1.25×', '1.5×', '2×']);
     video().currentTime = 20;
     fireEvent.change(select, { target: { value: '1.5' } });
     expect(sync.sendCommand).toHaveBeenCalledWith('RATE', 20_000, { rate: 1.5 });

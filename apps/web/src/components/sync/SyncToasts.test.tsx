@@ -37,6 +37,13 @@ describe('describeBroadcast', () => {
     [bc({ type: 'SEEK' }), 'El host saltó a 12:34'],
     [bc({ type: 'RATE', rate: 1.5 }), 'El host cambió la velocidad a 1.5×'],
     [bc({ type: 'LOAD' }), 'El host cargó un nuevo vídeo'],
+    [bc({ type: 'VOLUME', volume: 0.456 }), 'El host ajustó el volumen al 46 %'],
+    [bc({ type: 'VOLUME', volume: 0 }), 'El host silenció el vídeo'],
+    [bc({ type: 'VOLUME' }), 'El host ajustó el volumen al 100 %'],
+    [bc({ type: 'QUALITY', quality: '720p' }), 'El host cambió la calidad a 720p'],
+    [bc({ type: 'QUALITY', quality: 'source' }), 'El host cambió la calidad a Original'],
+    [bc({ type: 'QUALITY', quality: 'auto' }), 'El host cambió la calidad a Auto'],
+    [bc({ type: 'QUALITY' }), 'El host cambió la calidad a Auto'],
   ])('%#', (b, text) => {
     expect(describeBroadcast(b)).toBe(text);
   });

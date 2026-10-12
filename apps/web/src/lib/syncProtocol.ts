@@ -5,11 +5,34 @@
  * claves; ver `syncCodec.ts`). El servidor (Go) es la fuente de verdad: este módulo solo
  * tipa los mensajes, construye los comandos del cliente y estima la posición maestra a
  * partir del último snapshot recibido. Incluye las extensiones del contrato v2
- * (RATE/LOAD, CONTROL, `media_id`, `can_control`, `rtt_ms`/`drift_ms` en HEARTBEAT).
+ * (RATE/LOAD, CONTROL, `media_id`, `can_control`, `rtt_ms`/`drift_ms` en HEARTBEAT) y los
+ * controles del host VOLUME/QUALITY (`volume` 0..1 y `quality` en cada snapshot).
  */
 
 export type PlaybackStatus = 'playing' | 'paused';
-export type CommandType = 'PLAY' | 'PAUSE' | 'SEEK' | 'RATE' | 'LOAD';
+export type CommandType = 'PLAY' | 'PAUSE' | 'SEEK' | 'RATE' | 'LOAD' | 'VOLUME' | 'QUALITY';
+/** Calidad maestra pedida por el host; `auto` deja que cada cliente elija. */
+export type QualityPref = 'auto' | 'source' | '720p' | '360p';
+
+export const QUALITY_PREFS: readonly QualityPref[] = ['auto', 'source', '720p', '360p'];
+/** Volumen maestro cuando el servidor no lo informa (servidores previos a VOLUME). */
+export const DEFAULT_VOLUME = 1;
+export const DEFAULT_QUALITY: QualityPref = 'auto';
+
+export function isQualityPref(value: unknown): value is QualityPref {
+  return typeof value === 'string' && (QUALITY_PREFS as readonly string[]).includes(value);
+}
+
+/** Volumen del servidor acotado a [0, 1]; 1 si falta o no es un número finito. */
+export function normalizeVolume(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return DEFAULT_VOLUME;
+  return Math.min(1, Math.max(0, value));
+}
+
+/** Calidad del servidor; `auto` si falta o es desconocida. */
+export function normalizeQuality(value: unknown): QualityPref {
+  return isQualityPref(value) ? value : DEFAULT_QUALITY;
+}
 export type CorrectionStrategy = 'rate' | 'seek';
 export type ServerErrorCode = 'FORBIDDEN' | 'INVALID' | 'RATE_LIMITED' | 'INTERNAL';
 
@@ -25,6 +48,10 @@ export interface SyncState {
   server_time_ms: number;
   /** v2: vídeo actual de la sala (= mediaId de identity-api); vacío/ausente si no hay. */
   media_id?: string;
+  /** Volumen maestro 0..1 (ausente → 1). */
+  volume?: number;
+  /** Calidad maestra (ausente → 'auto'). */
+  quality?: QualityPref;
 }
 
 /** Snapshot local: estado maestro + instante local (performance.now) de recepción. */
@@ -71,6 +98,9 @@ export interface CorrectionMessage {
   strategy: CorrectionStrategy;
   drift_ms: number;
   version: number;
+  /** Volumen/calidad maestros vigentes (servidores con VOLUME/QUALITY). */
+  volume?: number;
+  quality?: QualityPref;
 }
 
 export interface HostStatusMessage {
@@ -101,10 +131,12 @@ export type ServerMessage =
   | AckMessage
   | ErrorMessage;
 
-/** Campos extra de los comandos v2: `rate` (RATE) y `media_id` (LOAD). */
+/** Campos extra de los comandos v2: `rate` (RATE), `media_id` (LOAD), `volume` (VOLUME), `quality` (QUALITY). */
 export interface CommandExtra {
   rate?: number;
   media_id?: string;
+  volume?: number;
+  quality?: QualityPref;
 }
 
 export interface ClientCommand extends CommandExtra {
@@ -131,6 +163,8 @@ const SERVER_TYPES = new Set<string>([
   'SEEK',
   'RATE',
   'LOAD',
+  'VOLUME',
+  'QUALITY',
   'CONTROL',
   'HEARTBEAT',
   'SYNC_CORRECTION',
@@ -187,6 +221,8 @@ export function buildCommand(
   };
   if (extra.rate !== undefined) cmd.rate = extra.rate;
   if (extra.media_id !== undefined) cmd.media_id = extra.media_id;
+  if (extra.volume !== undefined) cmd.volume = extra.volume;
+  if (extra.quality !== undefined) cmd.quality = extra.quality;
   return cmd;
 }
 
