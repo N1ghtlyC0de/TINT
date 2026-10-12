@@ -33,7 +33,7 @@ Eres el agente encargado del corazón de reproducción en tiempo real de **TINT*
 ## Modelo de Datos Involucrado
 | Clave / Entidad | Tipo | Descripción |
 | :--- | :--- | :--- |
-| `room:{id}:sync_state` | Redis Hash | Ancla del Reloj Maestro: `status` (playing/paused), `position_ms`, `updated_at_ms` (reloj del servidor), `rate`, `version` (orden total de comandos), `host_id`, `media_id` (vídeo actual). TTL 12 h (`ROOM_TTL`), refrescado en cada comando, desconexión y barrido de presencia (mientras haya clientes conectados). |
+| `room:{id}:sync_state` | Redis Hash | Ancla del Reloj Maestro: `status` (playing/paused), `position_ms`, `updated_at_ms` (reloj del servidor), `rate`, `version` (orden total de comandos), `host_id`, `media_id` (vídeo actual), `volume` (0–1, por defecto `1`) y `quality` (por defecto `auto`); los hashes anteriores sin estos campos se leen con sus valores por defecto. TTL 12 h (`ROOM_TTL`), refrescado en cada comando, desconexión y barrido de presencia (mientras haya clientes conectados). |
 | `room:{id}:evt:{event_id}` | Redis String | Idempotencia: un `event_id` ya aplicado se ignora durante 1 min (ACK con `duplicate: true`). |
 | `room:{id}:sync` | Redis Pub/Sub | Difusión de `Event` (comandos y `HOST_STATUS`) entre réplicas. |
 | `room:{id}:hosts_online` | Redis ZSET | Presencia de conexiones host/cohost: miembro = id de conexión, score = último latido (unix ms). Un host sin latir en 5 s se considera fuera. |
@@ -87,13 +87,15 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 | `PLAY` / `PAUSE` / `SEEK` | C → S (quien tenga control) | `event_id` (UUID, idempotencia), `room_id`, `position_ms` (posición del reproductor del Host), `occurred_at` |
 | `RATE` | C → S (quien tenga control) | lo anterior + `rate` ∈ [0.25, 4]. Re-ancla y cambia la velocidad; el status no cambia. |
 | `LOAD` | C → S (quien tenga control) | lo anterior + `media_id` (1–128 caracteres). Deja la sala en pausa en `position_ms`, `rate = 1` y el vídeo nuevo. |
-| `PLAY` / `PAUSE` / `SEEK` / `RATE` / `LOAD` | S → todos (broadcast vía Pub/Sub, incluido el emisor) | mismo `event_id` y `occurred_at` del emisor, `received_at`, `version`, ancla: `status`, `position_ms`, `rate`, `updated_at_ms`, `server_time_ms`, `media_id` |
+| `VOLUME` | C → S (quien tenga control) | lo anterior + `volume` ∈ [0, 1] (obligatorio; `0` = silencio). No mueve la reproducción: re-ancla en la posición maestra de `received_at` (ignora `position_ms` del emisor) y conserva status y velocidad. |
+| `QUALITY` | C → S (quien tenga control) | lo anterior + `quality` ∈ {`auto`, `source`, `720p`, `360p`}. Igual que `VOLUME`: re-ancla sin saltos y conserva status y velocidad. |
+| `PLAY` / `PAUSE` / `SEEK` / `RATE` / `LOAD` / `VOLUME` / `QUALITY` | S → todos (broadcast vía Pub/Sub, incluido el emisor) | mismo `event_id` y `occurred_at` del emisor, `received_at`, `version`, ancla: `status`, `position_ms`, `rate`, `updated_at_ms`, `server_time_ms`, `media_id`, `volume` (siempre presente, también si es `0`) y `quality` |
 | `ACK` | S → emisor | `ref_event_id`, `version` resultante, `duplicate` |
-| `STATE` | S → cliente al conectar | ancla completa + `media_id` + `online` (hay host vivo) + `can_control` |
+| `STATE` | S → cliente al conectar | ancla completa + `media_id` + `volume` + `quality` + `online` (hay host vivo) + `can_control` |
 | `HEARTBEAT` | S → C cada 1 s | `server_time_ms`, `rtt_ms` (RTT suavizado de ese cliente), `drift_ms` (último drift medido; se omite si es 0) |
 | `CONTROL` | S → participantes | `can_control` cuando cambia la delegación (ver abajo) |
 | `SYNC_CHECK` | C → S (respuesta a cada `HEARTBEAT`) | `event_id`, `room_id`, `position_ms` (posición local actual), `echo_server_ts` (= `server_time_ms` del HEARTBEAT), `occurred_at` |
-| `SYNC_CORRECTION` | S → C (solo si \|drift\| > 500 ms) | `target_ms` (= `position_ms`), `strategy` (`rate`/`seek`), `drift_ms` (+ adelantado, − atrasado), `version` + opcionales `status`, `rate` (velocidad de la sala, no la de corrección) y `media_id` del estado en esa `version`, para que un cliente que perdió un broadcast se reconcilie (la web aún no los usa) |
+| `SYNC_CORRECTION` | S → C (solo si \|drift\| > 500 ms) | `target_ms` (= `position_ms`), `strategy` (`rate`/`seek`), `drift_ms` (+ adelantado, − atrasado), `version` + opcionales `status`, `rate` (velocidad de la sala, no la de corrección), `media_id`, `volume` y `quality` del estado en esa `version`, para que un cliente que perdió un broadcast se reconcilie (la web aún no los usa) |
 | `HOST_STATUS` | S → todos (vía Pub/Sub) | `online`; solo en transiciones, incluida la caída de la réplica del host (detectada por el barrido) |
 | `REVOKED` | identity-api → réplicas (solo bus) | `jti`: cada réplica cierra esas conexiones con `4001`; nunca llega a los clientes |
 | `ERROR` | S → C | `code` (`FORBIDDEN`, `INVALID`, `RATE_LIMITED`, `INTERNAL`), `ref_event_id` |
@@ -124,7 +126,8 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 | Latidos sin `SYNC_CHECK` | 3 intervalos | cierre `1008` |
 | Token revocado (handshake o durante la conexión) | — | cierre `4001` (no reconectar) |
 | Token expirado en el handshake | — | cierre `4003` (pedir token nuevo) |
-| Comando de un `participant` | — | `ERROR{FORBIDDEN}` |
+| Comando de un `participant` (incluidos `VOLUME` y `QUALITY`) | — | `ERROR{FORBIDDEN}` |
+| `rate`, `media_id`, `volume` o `quality` fuera de contrato | — | `ERROR{INVALID}` (el estado no cambia) |
 
 ## Arquitectura interna
 | Paquete | Responsabilidad |
@@ -146,7 +149,7 @@ Todos los mensajes son JSON con `event_id`, `type`, `room_id`, `position_ms`, `o
 **Modelo de concurrencia:** cada conexión tiene una goroutine **lectora** (la del handler HTTP, llama a `hub.Handle`) y una **escritora** (única dueña de `conn.Write`, drena la cola). `hub.Run` mantiene por réplica un solo temporizador de `HEARTBEAT` (que también cierra a los clientes sin respuesta) y el barrido de presencia. Cada cliente tiene una cola con buffer (64); `enqueue` nunca bloquea, así un cliente lento no frena a los demás. La réplica emisora no difunde localmente: todo comando pasa por Redis Pub/Sub, lo que da un único camino y orden consistente entre réplicas. `hub.rooms` se protege con `sync.Mutex`; RTT y último latido son `atomic`.
 
 ## Reglas de Dominio
-1. **Aislamiento:** El canal WebSocket `/ws/sync` es exclusivo para comandos `PLAY`, `PAUSE`, `SEEK` y latidos. No proceses mensajes de chat aquí.
+1. **Aislamiento:** El canal WebSocket `/ws/sync` es exclusivo para comandos de reproducción (`PLAY`, `PAUSE`, `SEEK`, `RATE`, `LOAD`, `VOLUME`, `QUALITY`) y latidos. No proceses mensajes de chat aquí.
 2. **Reloj Maestro:** Mantén el estado maestro de la sala en Redis (`room:{id}:sync_state`) como ancla; nunca con timers en el servidor.
 3. **Formato de Payload:** Todo evento transmitido debe incluir `event_id` (UUID), `occurred_at` y `received_at`.
 4. **Concurrencia:** Todo estado compartido protegido (`sync.Mutex`/canales/`atomic`); las pruebas corren con `-race`.

@@ -153,6 +153,7 @@ gitGraph
 | F5 Revocación de invitados | identity-api (`guest_sessions`, `revoke`) + sync-core (`4001` en el handshake y en vivo) + web (panel "Participantes", pantalla de retiro) |
 | F6 Comandos `RATE` y `LOAD` | sync-core (`master`) + web (selector de velocidad, cambio de vídeo) |
 | F7 Delegación de control | sync-core (`CONTROL`) + web (`canControl`, aviso de control temporal) |
+| F8 Volumen y calidad del Host | sync-core (`VOLUME`, `QUALITY`; ver [§6.9](#69-volumen-y-calidad-del-host-f8)). La web aún no los emite ni los aplica. |
 | UX 1–6 | web (`SyncStatus`, `SyncToasts`, `SeekBar`, `usePlayerShortcuts`, reconexión, fundido) + `rtt_ms`/`drift_ms` en `HEARTBEAT` |
 | O1 k6 en CI | `.github/workflows/ci-pipeline.yml` (`sync-load-smoke`) |
 | O2 Bytes compartidos en broadcasts | Ya existía. Con MessagePack, cada broadcast se transcodifica una sola vez por sala. |
@@ -292,6 +293,8 @@ flowchart TB
 | `version` | Contador monotónico: orden total de comandos |
 | `host_id` | `sub` del último Host conectado |
 | `media_id` | Vídeo actual de la sala (v2) |
+| `volume` | Volumen de la sala, entre 0 y 1 (F8; por defecto `1`) |
+| `quality` | Calidad: `auto`, `source`, `720p` o `360p` (F8; por defecto `auto`) |
 
 ```text
 PositionAt(t) = position_ms + (t − updated_at_ms) × rate   si playing
@@ -307,10 +310,14 @@ stateDiagram-v2
     Paused --> Paused: SEEK(pos) o RATE(pos, rate)
     Playing --> Paused: LOAD(media) rate=1
     Paused --> Paused: LOAD(media) rate=1
+    Playing --> Playing: VOLUME(v) o QUALITY(q)
+    Paused --> Paused: VOLUME(v) o QUALITY(q)
     note right of Playing
         Cada transición incrementa version
         y fija el ancla en received_at − RTT/2
         del emisor. media_id se conserva salvo en LOAD.
+        VOLUME y QUALITY re-anclan en PositionAt(received_at)
+        (sin saltos); volume y quality se conservan en el resto.
     end note
 ```
 
@@ -490,7 +497,7 @@ stateDiagram-v2
     end note
 ```
 
-La elección es **determinista** (el `sub` menor entre los participantes vivos), así que todas las réplicas llegan al mismo delegado. `SET … GET` en Redis evita publicar dos veces el mismo cambio. El delegado puede usar `PLAY`/`PAUSE`/`SEEK`/`RATE`/`LOAD`. En la web, cambiar de vídeo requiere además el token Firebase del dueño.
+La elección es **determinista** (el `sub` menor entre los participantes vivos), así que todas las réplicas llegan al mismo delegado. `SET … GET` en Redis evita publicar dos veces el mismo cambio. El delegado puede usar `PLAY`/`PAUSE`/`SEEK`/`RATE`/`LOAD`/`VOLUME`/`QUALITY`. En la web, cambiar de vídeo requiere además el token Firebase del dueño.
 
 ### 6.6 Retirar a un invitado (F5)
 
@@ -594,6 +601,41 @@ stateDiagram-v2
     Desconectada --> [*]: hub.Disconnect (presencia, barrido si era host o delegado, TTL)
 ```
 
+### 6.9 Volumen y calidad del Host (F8)
+
+El Host (o un cohost, o el participante con control delegado) fija el volumen y la calidad de reproducción de toda la sala. Siguen el mismo camino que `RATE`/`LOAD`: CAS en Redis, broadcast por Pub/Sub a todas las réplicas y `ACK` al emisor.
+
+| Comando | Campo | Valores válidos | Error |
+| :--- | :--- | :--- | :--- |
+| `VOLUME` | `volume` (número) | [0, 1], ambos incluidos; `0` = silencio | ausente, `NaN` o fuera de rango → `ERROR{INVALID}` |
+| `QUALITY` | `quality` (string) | `auto`, `source`, `720p`, `360p` | cualquier otro valor → `ERROR{INVALID}` |
+
+Un `participant` sin control recibe `ERROR{FORBIDDEN}` y el estado no cambia.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Host
+    participant A as sync-core (réplica A)
+    participant R as Redis
+    participant B as sync-core (réplica B)
+    actor Inv as Invitado
+
+    Host->>A: VOLUME { event_id, room_id, position_ms, occurred_at, volume: 0.3 }
+    A->>A: canControl (host/cohost/delegado) y validación
+    A->>R: CAS sync_state (volume=0.3, ancla = PositionAt(received_at), version+1) + PUBLISH
+    A-->>Host: ACK { ref_event_id, version }
+    R-->>A: VOLUME (broadcast)
+    R-->>B: VOLUME (broadcast)
+    A-->>Host: VOLUME { ancla, media_id, volume: 0.3, quality }
+    B-->>Inv: VOLUME { ancla, media_id, volume: 0.3, quality }
+```
+
+- **Sin saltos:** a diferencia de `SEEK`/`RATE`, `VOLUME` y `QUALITY` no usan la `position_ms` del emisor ni el desplazamiento por RTT: el ancla se fija en la posición maestra del instante de recepción y se conservan `status` y `rate`. Así un Host con drift no mueve la reproducción de los demás.
+- **Siempre presentes:** `volume` y `quality` viajan en todo broadcast de comando, en `STATE` y en `SYNC_CORRECTION`. `volume` se envía explícito aunque sea `0` (en Go es un puntero; en MessagePack se omite solo si falta).
+- **Compatibilidad:** los hashes `room:{id}:sync_state` anteriores sin `volume`/`quality` se leen como `1` y `auto` (`store.Init` los agrega con `HSETNX`), y un broadcast de una réplica anterior sin esos campos se cachea con los mismos valores por defecto.
+- **Web:** pendiente. El cliente debe aplicar `volume`/`quality` de `STATE`, broadcasts y `SYNC_CORRECTION`, y ofrecer los controles solo a quien tenga `can_control`.
+
 ---
 
 ## 7. Modelo de datos en Redis
@@ -617,6 +659,8 @@ erDiagram
         int version
         string host_id
         string media_id
+        float volume
+        string quality
     }
     HOST_CONN {
         string member "id de conexión"

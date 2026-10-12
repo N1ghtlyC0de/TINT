@@ -149,3 +149,48 @@ func BenchmarkEncode(b *testing.B) {
 		})
 	}
 }
+
+// volume=0 (silencio) debe sobrevivir la ida y vuelta en MessagePack.
+func TestMsgPackVolume(t *testing.T) {
+	for _, v := range []*float64{nil, syncevent.Float64(0), syncevent.Float64(0.5)} {
+		ev := sample()
+		ev.Volume = v
+		raw, err := MsgPack.Encode(ev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got syncevent.Event
+		if err := MsgPack.Decode(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, ev) {
+			t.Errorf("volume %v: ida y vuelta = %+v", v, got.Volume)
+		}
+		var m map[string]any
+		_ = msgpack.Unmarshal(raw, &m)
+		if _, ok := m["volume"]; ok != (v != nil) {
+			t.Errorf("volume %v: presencia de la clave = %v", v, ok)
+		}
+	}
+}
+
+func TestMsgPackQuality(t *testing.T) {
+	ev := sample()
+	ev.Quality = "source"
+	raw, err := MsgPack.Encode(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got syncevent.Event
+	if err := MsgPack.Decode(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, ev) {
+		t.Errorf("ida y vuelta = %+v", got)
+	}
+	var m map[string]any
+	_ = msgpack.Unmarshal(raw, &m)
+	if m["quality"] != "source" {
+		t.Errorf("quality en msgpack = %#v", m["quality"])
+	}
+}

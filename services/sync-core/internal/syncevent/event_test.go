@@ -3,6 +3,7 @@ package syncevent
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -242,5 +243,90 @@ func TestJSONContractV2(t *testing.T) {
 		if _, ok := m[k]; !ok {
 			t.Errorf("falta %q en %s", k, raw)
 		}
+	}
+}
+
+func TestValidateInboundVolume(t *testing.T) {
+	tests := []struct {
+		name   string
+		volume *float64
+		want   error
+	}{
+		{"volumen medio", Float64(0.5), nil},
+		{"silencio (0) es válido", Float64(0), nil},
+		{"volumen máximo", Float64(1), nil},
+		{"sin volumen", nil, ErrInvalidVolume},
+		{"negativo", Float64(-0.01), ErrInvalidVolume},
+		{"mayor que 1", Float64(1.01), ErrInvalidVolume},
+		{"NaN", Float64(math.NaN()), ErrInvalidVolume},
+		{"infinito", Float64(math.Inf(1)), ErrInvalidVolume},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			e := validEvent()
+			e.Type, e.Volume = Volume, tt.volume
+			if err := e.ValidateInbound(); !errors.Is(err, tt.want) {
+				t.Errorf("ValidateInbound() = %v, want %v", err, tt.want)
+			}
+		})
+	}
+	e := validEvent()
+	e.Type = Volume
+	if err := e.Validate(); err != nil {
+		t.Errorf("VOLUME debe ser un tipo válido: %v", err)
+	}
+	if !(Event{Type: Volume}).IsCommand() {
+		t.Error("VOLUME debe ser comando")
+	}
+}
+
+// volume=0 (silencio) debe viajar explícito; sin volumen el campo se omite.
+func TestJSONVolume(t *testing.T) {
+	e := validEvent()
+	raw, _ := json.Marshal(e)
+	var m map[string]any
+	_ = json.Unmarshal(raw, &m)
+	if _, ok := m["volume"]; ok {
+		t.Errorf("volume ausente no debe serializarse: %s", raw)
+	}
+	e.Volume = Float64(0)
+	raw, _ = json.Marshal(e)
+	m = nil
+	_ = json.Unmarshal(raw, &m)
+	if v, ok := m["volume"]; !ok || v != 0.0 {
+		t.Errorf("volume=0 debe serializarse: %s", raw)
+	}
+}
+
+func TestValidateInboundQuality(t *testing.T) {
+	for _, q := range []string{"auto", "source", "720p", "360p"} {
+		e := validEvent()
+		e.Type, e.Quality = Quality, q
+		if err := e.ValidateInbound(); err != nil {
+			t.Errorf("quality %q: %v", q, err)
+		}
+	}
+	for _, q := range []string{"", "1080p", "AUTO", "720"} {
+		e := validEvent()
+		e.Type, e.Quality = Quality, q
+		if err := e.ValidateInbound(); !errors.Is(err, ErrInvalidQuality) {
+			t.Errorf("quality %q = %v, want ErrInvalidQuality", q, err)
+		}
+	}
+	e := validEvent()
+	e.Type = Quality
+	if err := e.Validate(); err != nil {
+		t.Errorf("QUALITY debe ser un tipo válido: %v", err)
+	}
+	if !(Event{Type: Quality}).IsCommand() {
+		t.Error("QUALITY debe ser comando")
+	}
+	e = validEvent()
+	e.Quality = "720p"
+	raw, _ := json.Marshal(e)
+	var m map[string]any
+	_ = json.Unmarshal(raw, &m)
+	if m["quality"] != "720p" {
+		t.Errorf("quality debe serializarse: %s", raw)
 	}
 }
