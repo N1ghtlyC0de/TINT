@@ -1,4 +1,4 @@
-# Entorno local de TINT: PostgreSQL, Redis, MinIO y el Canal Sync (sync-core).
+# Entorno local de TINT: PostgreSQL, Redis, MinIO, media-worker, analytics, social-core y sync-core.
 # Uso: cp .env.example .env && docker compose up -d
 
 services:
@@ -95,6 +95,35 @@ services:
       S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-tintadmin123}
       MINIO_BUCKET: ${MINIO_BUCKET:-tint-media}
       MEDIA_WORKER_CONSUMER: media-worker-1
+
+  # Analítica (Python): consume analytics:events, guarda telemetry_events/room_kpis y
+  # expone la API de solo lectura de KPIs para el host. JWT_* deben ser los de identity-api.
+  analytics:
+    build: ./services/analytics
+    container_name: tint-analytics
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-tint}:${POSTGRES_PASSWORD:-tint}@postgres:5432/${POSTGRES_DB:-tint}
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-dev-secret-change-in-prod}
+      JWT_ISSUER: ${JWT_ISSUER:-tint-identity}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-tint:room}
+      ANALYTICS_PORT: ${ANALYTICS_PORT:-8084}
+      # Orígenes (con esquema) que pueden llamar a la API desde el navegador.
+      ANALYTICS_ALLOWED_ORIGINS: ${ANALYTICS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      ANALYTICS_CONSUMER: analytics-1
+    ports:
+      - "${ANALYTICS_PORT:-8084}:${ANALYTICS_PORT:-8084}"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os, urllib.request; urllib.request.urlopen(f\"http://localhost:{os.environ['ANALYTICS_PORT']}/healthz\", timeout=2)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   # Canal Social (/ws/social): chat en vivo con historial corto en Redis.
   social-core:
