@@ -21,9 +21,10 @@ const state = vi.hoisted(() => ({ userId: '' }));
 
 vi.mock('../../src/middlewares/auth.js', () => ({
   requireAuthHost: (req: any, _res: any, next: any) => {
-    req.user = { id: state.userId, providerSub: 'it-host', email: 'host@tint.test', displayName: 'Host IT' };
+    req.user = { id: state.userId, providerSub: 'it-host', email: 'host@tint.test', displayName: 'Host IT', role: 'public_host' };
     next();
   },
+  requireRole: () => (_req: any, _res: any, next: any) => next(),
 }));
 
 const RUN = !!process.env.INTEGRATION;

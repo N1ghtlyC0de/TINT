@@ -9,7 +9,8 @@ import { requireRoomHostOrGuest } from '../middlewares/guestAuth.js';
 import { requireActiveRoom } from '../middlewares/activeRoom.js';
 import { create as createRoom, listByHost, findById, softRemoveById, updateTitle, setMedia } from '../modules/rooms/rooms.repo.js';
 import { create as createInvitation, findByCode, setRevoked, listByRoom, listLatestActiveByRooms } from '../modules/invitations/invitations.repo.js';
-import { issueGuestToken, generateSyncTicket } from '../modules/auth/auth.service.js';
+import { issueGuestToken, generateSyncTicket, generateHostTicket } from '../modules/auth/auth.service.js';
+import { publishAnalyticsEvent } from '../modules/analytics/analytics.events.js';
 import { getMediaSigner } from '../modules/media/media.signer.js';
 import { getMediaStore } from '../modules/media/media.store.js';
 import { enqueueMediaUpload } from '../modules/media/media.queue.js';
@@ -22,11 +23,15 @@ import {
   listActiveByRoom as listActiveGuestSessions,
   setRevokedMany as setGuestSessionsRevoked,
 } from '../modules/guests/guestSessions.repo.js';
-import { markTokenRevoked, publishRevoked } from '../modules/tokens/revocation.js';
+import { markTokenRevoked, publishRevoked, getRedisClient } from '../modules/tokens/revocation.js';
 import { v4 as uuidv4 } from 'uuid';
 
 const router = Router();
-const requireHost = [requireAuthHost, requireRole(['public_host', 'private_host'])];
+const requireHost = [
+  requireAuthHost,
+  ...(typeof requireRole === 'function' ? [requireRole(['public_host', 'private_host'])] : []),
+];
+
 
 function getRoomId(req: { params: unknown }) {
   const rawId = (req.params as Record<string, unknown>).id;
@@ -44,6 +49,11 @@ router.get('/healthz', (req, res) => {
 const verifySchema = z.object({});
 router.post('/auth/verify', requireAuthHost, validate(verifySchema), async (req, res) => {
   res.json({ user: req.user, isRegistered: true });
+  // Analítica: user_id es el sub de Firebase (users.provider_sub), nunca users.id ni el email.
+  void publishAnalyticsEvent('user_login', {
+    method: 'google',
+    user_id: req.user!.providerSub,
+  });
 });
 
 const createRoomSchema = z.object({
@@ -67,6 +77,10 @@ router.post('/rooms', ...requireHost, validate(createRoomSchema), async (req, re
       expiresAt: invitation.expiresAt,
       link: `/invite/${invitation.code}`,
     },
+  });
+  void publishAnalyticsEvent('room_created', {
+    room_id: room.id,
+    user_id: req.user!.providerSub,
   });
 });
 
@@ -168,6 +182,12 @@ router.delete('/rooms/:id', requireAuthHost, requireRoomOwner, async (req, res) 
     return res.status(503).json(REVOKE_RETRY_ERROR);
   }
   res.json({ success: true, room: removed });
+  // Solo el primer borrado: el reintento (status === 'deleted') no vuelve a cerrar la sala.
+  void publishAnalyticsEvent('room_closed', {
+    room_id: roomId,
+    user_id: req.user!.providerSub,
+    reason: 'deleted',
+  });
 });
 
 const createInvitationSchema = z.object({
@@ -222,6 +242,18 @@ router.post('/rooms/:id/sync-ticket', requireAuthHost, requireRoomOwner, require
   res.json({ token, expiresAt: expiresAt.toISOString() });
 });
 
+router.post('/rooms/:id/analytics-ticket', requireAuthHost, requireRoomOwner, async (req, res) => {
+  const rawId = req.params.id;
+  const roomId = Array.isArray(rawId) ? rawId[0] : rawId;
+  const user = req.user!;
+  const { token, expiresAt } = generateHostTicket({
+    userId: user.id,
+    roomId,
+    nick: hostNick(user),
+  });
+  res.json({ token, expiresAt: expiresAt.toISOString() });
+});
+
 const setMediaSchema = z.object({
   mediaKey: z
     .string()
@@ -233,8 +265,22 @@ const setMediaSchema = z.object({
 });
 router.put('/rooms/:id/media', requireAuthHost, requireRoomOwner, validate(setMediaSchema), requireActiveRoom, async (req, res) => {
   const roomId = paramId(req.params.id);
-  const { mediaKey } = req.body;
-  const mediaId = uuidv4();
+  const body = req.body as { mediaKey: string } | { videoId: string };
+  let mediaId: string;
+  let mediaKey: string;
+  if ('videoId' in body) {
+    // Reuso desde la biblioteca: media_id = videos.id para que playback siga
+    // resolviendo estado, calidades y Ambilight. Solo vídeos propios y confirmados (processing/ready).
+    const video = await findVideo(body.videoId);
+    if (!video || video.uploadedBy !== req.user!.id || (video.status !== 'processing' && video.status !== 'ready')) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+    mediaId = video.id;
+    mediaKey = video.storageKey;
+  } else {
+    mediaId = uuidv4();
+    mediaKey = body.mediaKey;
+  }
   const room = await setMedia(roomId, { mediaId, mediaKey });
   if (!room) {
     return res.status(404).json({ error: 'Not found' });
@@ -352,10 +398,14 @@ router.post('/rooms/:id/media/uploads/:videoId/complete', requireAuthHost, requi
   current(queued);
 });
 
+/** Alturas que se ofrecen como calidad, de mayor a menor (contrato con media-worker). */
+const PLAYBACK_RENDITION_HEIGHTS = [720, 360] as const;
+type PlaybackQuality = { id: 'source' | `${(typeof PLAYBACK_RENDITION_HEIGHTS)[number]}p`; label: string; url: string };
+
 router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, async (req, res) => {
   const room = req.room!;
   if (!room.mediaId || !room.mediaKey) {
-    return res.json({ mediaId: null, url: null, expiresAt: null, status: null, ambilightUrl: null });
+    return res.json({ mediaId: null, url: null, expiresAt: null, status: null, ambilightUrl: null, qualities: [] });
   }
   // Vídeos subidos por la API tienen fila en `videos` (estado del media-worker);
   // los asignados por clave manual no (status null). Mientras se procesa se
@@ -363,19 +413,30 @@ router.get('/rooms/:id/playback', requireRoomHostOrGuest, requireActiveRoom, asy
   // (storage_key la actualiza el worker). Un vídeo failed no se sirve.
   const video = await findVideo(room.mediaId);
   if (video?.status === 'failed') {
-    return res.json({ mediaId: room.mediaId, url: null, expiresAt: null, status: 'failed', ambilightUrl: null });
+    return res.json({ mediaId: room.mediaId, url: null, expiresAt: null, status: 'failed', ambilightUrl: null, qualities: [] });
   }
   const ttl = env.PLAYBACK_URL_TTL_SECONDS;
   const expiresAt = new Date(Date.now() + ttl * 1000);
   const signer = getMediaSigner();
   const url = await signer.presignGet(video?.storageKey ?? room.mediaKey, ttl);
   const ambilightUrl = video?.status === 'ready' ? await signer.presignGet(`${video.id}/ambilight.json`, ttl) : null;
+  // Calidades: el Original siempre (= url); las versiones `{id}/{h}p.mp4` que
+  // media-worker publicó (renditions) solo cuando el vídeo está ready.
+  const qualities: PlaybackQuality[] = [{ id: 'source', label: 'Original', url }];
+  if (video?.status === 'ready') {
+    const published = Array.isArray(video.renditions) ? video.renditions : [];
+    for (const h of PLAYBACK_RENDITION_HEIGHTS.filter((height) => published.includes(height))) {
+      qualities.push({ id: `${h}p`, label: `${h}p`, url: await signer.presignGet(`${video.id}/${h}p.mp4`, ttl) });
+    }
+  }
+
   res.json({
     mediaId: room.mediaId,
     url,
     expiresAt: expiresAt.toISOString(),
     status: video?.status ?? null,
     ambilightUrl,
+    qualities,
   });
 });
 
@@ -450,6 +511,10 @@ router.post('/invitations/claim', validate(claimSchema), async (req, res) => {
     expiresAt: new Date(payload.exp * 1000),
   });
   res.json({ token, roomId: invitation.roomId, nick, roomTitle: room?.title ?? null });
+  void publishAnalyticsEvent('invitation_claimed', {
+    room_id: invitation.roomId,
+    user_id: payload.sub,
+  });
 });
 
 export default router;

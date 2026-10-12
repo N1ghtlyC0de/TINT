@@ -10,7 +10,7 @@ let mockUser = { id: 'host-1', providerSub: 'sub-1', email: 'h@t.c', displayName
 
 vi.mock('../src/middlewares/auth.js', () => ({
   requireAuthHost: (req: any, _res: any, next: any) => {
-    req.user = { ...mockUser };
+    req.user = { ...mockUser, ...authUser.override };
     next();
   },
   requireRole: (allowedRoles: string[]) => (req: any, res: any, next: any) => {
@@ -67,10 +67,10 @@ const invitation = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockUser = { id: 'host-1', providerSub: 'sub-1', email: 'h@t.c', displayName: 'Host', role: 'public_host', ...authUser.override };
+  authUser.override = null;
+  mockUser = { id: 'host-1', providerSub: 'sub-1', email: 'h@t.c', displayName: 'Host', role: 'public_host' };
   // Por defecto la sala existe y está activa (requireActiveRoom).
   vi.mocked(findById).mockResolvedValue({ id: 'room-1', hostId: 'host-1', title: 'Sala', status: 'active', mediaId: null, mediaKey: null } as any);
-  authUser.override = null;
   setRedisClient(redis as any);
 });
 

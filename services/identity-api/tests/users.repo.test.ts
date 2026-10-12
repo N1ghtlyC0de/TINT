@@ -80,9 +80,28 @@ describe('users.repo', () => {
       email: 'a@b.c',
       displayName: 'AB',
       avatarUrl: null,
+      role: 'participant',
+      roleId: null,
     });
     const cfg = onConflictMock.mock.calls[0][0];
     expect(cfg.target).toEqual([users.provider, users.providerSub]);
+  });
+
+  it('upsertByProvider inicializa role y roleId personalizados si se proveen', async () => {
+    returningMock.mockResolvedValueOnce([{ ...row, role: 'public_host', roleId: 'role-1' }]);
+    const result = await upsertByProvider({
+      providerSub: 'sub-2',
+      email: 'h@t.c',
+      role: 'public_host',
+      roleId: 'role-1',
+    });
+    expect(result).toMatchObject({ role: 'public_host' });
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: 'public_host',
+        roleId: 'role-1',
+      }),
+    );
   });
 
   it('upsertByProvider refresca email, nombre y avatar si el usuario ya existía', async () => {

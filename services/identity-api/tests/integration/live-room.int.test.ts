@@ -16,9 +16,10 @@ vi.mock('../../src/middlewares/auth.js', () => ({
   requireAuthHost: (req: any, res: any, next: any) => {
     const h = req.headers['x-test-user'];
     if (h === 'none') return res.status(401).json({ error: 'Unauthorized' });
-    req.user = { id: h || state.userId, providerSub: 'it-host', email: 'host@tint.test', displayName: 'Host IT' };
+    req.user = { id: h || state.userId, providerSub: 'it-host', email: 'host@tint.test', displayName: 'Host IT', role: 'public_host' };
     next();
   },
+  requireRole: () => (_req: any, _res: any, next: any) => next(),
 }));
 
 const RUN = !!process.env.INTEGRATION;

@@ -36,13 +36,12 @@ export const medias = pgTable('medias', {
 export const rooms = pgTable('rooms', {
   id: uuid('id').primaryKey().defaultRandom(),
   hostId: uuid('host_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
-  mediaId: uuid('media_id').references(() => medias.id),
   title: varchar('title', { length: 150 }).notNull(),
   status: varchar('status', { length: 20 }).notNull().default('active'), // 'active' | 'grace_period' | 'closed' | 'deleted'
   scheduledAt: timestamp('scheduled_at', { withTimezone: true }).defaultNow().notNull(),
   gracePeriodUntil: timestamp('grace_period_until', { withTimezone: true }),
   // Vídeo asignado (F3): id estable que viaja en LOAD/STATE y key del objeto en MINIO_BUCKET.
-  mediaId: uuid('media_id'),
+  mediaId: uuid('media_id').references(() => medias.id),
   mediaKey: text('media_key'),
   createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),

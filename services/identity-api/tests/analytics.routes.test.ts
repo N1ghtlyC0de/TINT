@@ -4,9 +4,10 @@ import jwt from 'jsonwebtoken';
 
 vi.mock('../src/middlewares/auth.js', () => ({
   requireAuthHost: (req: any, _res: any, next: any) => {
-    req.user = { id: 'host-1', providerSub: 'firebase-uid-1', email: 'ana@correo.com', displayName: 'Ana Pérez' };
+    req.user = { id: 'host-1', providerSub: 'firebase-uid-1', email: 'ana@correo.com', displayName: 'Ana Pérez', role: 'public_host' };
     next();
   },
+  requireRole: () => (_req: any, _res: any, next: any) => next(),
 }));
 
 vi.mock('../src/modules/rooms/rooms.repo.js', () => ({
