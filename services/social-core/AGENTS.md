@@ -3,6 +3,8 @@
 ## Contexto & Responsabilidad
 Gestionas la interactividad de la audiencia en **TINT**: chat, reacciones con control de spam, puntero láser del host, encuestas en vivo, el resumen (recap) de la sesión, agregación de Heatmaps, emisión de Ambilight en vivo y motor de Trivias con Leaderboards.
 
+> Funcionamiento interno (componentes, flujos paso a paso, claves Redis, concurrencia y ejecución): [`README.md`](README.md).
+
 ## Stack Técnico
 - Go 1.22
 - WebSockets (canal social, independiente de `/ws/sync`)
