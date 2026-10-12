@@ -14,7 +14,7 @@ El navegador sube el original directo al bucket, a la zona de staging `incoming/
 2. `jobs.handle_upload` descarta ids que no son UUID (antes de tocar SQL), lee `status` y `storage_key` de `videos`, descarga el original a un archivo temporal y llama a `process_video` **sin modificarlo**. No reprocesa un vídeo ya publicado; si el original no está en el bucket, lo marca `failed`.
 3. `process_video` publica `{video_id}/source.mp4` (el vídeo normalizado) solo si el vídeo es válido. El staging lo borra la regla de ciclo de vida de `minio-init` a los 2 días (no se borra al publicar para no cortar a quien ya lo reproducía).
 
-Corre como servicio en `docker compose` (`tint-media-worker`). La tabla `videos` es de `identity-api`: el worker solo actualiza `status`, `duration_ms`, `storage_key` y `updated_at`, nunca crea filas ni cambia el esquema.
+Corre como servicio en `docker compose` (`tint-media-worker`). La tabla `videos` es de `identity-api`: el worker solo actualiza `status`, `duration_ms`, `storage_key`, `renditions` y `updated_at`, nunca crea filas ni cambia el esquema.
 
 Variables propias del disparador (aparte de `Settings`, que no conoce Redis):
 
@@ -30,10 +30,12 @@ El vídeo **nunca se guarda en el bucket sin preprocesar**:
 1. Valida `video_id` (solo ids planos: `[A-Za-z0-9][A-Za-z0-9_-]{0,127}`); si no, lanza `InvalidVideoIdError` sin tocar SQL ni el bucket.
 2. Comprueba la extensión del archivo: solo `.mp4`, `.mov`, `.mkv` y `.webm` (sin distinguir mayúsculas). Cualquier otra lanza `UnsupportedFormatError` sin tocar SQL ni el bucket. Si el evento llega por el disparador (`jobs.py`), la extensión de la clave `incoming/…` se comprueba **antes de descargar**: el vídeo queda en `failed` y no se descarga nada.
 3. Marca `processing` (si la fila no existe, lanza `VideoNotFoundError`).
-4. Inspecciona el archivo con ffprobe y obtiene la duración en ms.
+4. Inspecciona el archivo con ffprobe y obtiene la duración en ms y la altura del primer stream de vídeo (en la misma llamada; si la altura falta no se generan calidades, pero el vídeo no falla).
 5. Si el original ya es MP4 con vídeo H.264 `yuv420p` y audio AAC (o sin audio), según ffprobe (`normalize.is_normalized`), **no se re-codifica**: se publica tal cual. Si no, normaliza con FFmpeg a MP4 (H.264 yuv420p + AAC, `-movflags +faststart`) en un archivo temporal que se borra siempre al terminar. Al re-codificar usa `libx264 -preset veryfast -crf 23` y `aac 128k`, con timeout de 4 h (`normalize.DEFAULT_TIMEOUT_S`) tras el cual mata FFmpeg.
 6. Sobre el vídeo **normalizado**, extrae un fotograma por segundo con FFmpeg y calcula el color de la franja del 10 % de cada borde.
-7. Sube el normalizado como `source.mp4` y `ambilight.json` (siempre las mismas claves) y marca `ready` con `duration_ms` y `storage_key`.
+7. Sube el normalizado como `source.mp4` y `ambilight.json` (siempre las mismas claves).
+8. Genera las calidades reducidas (`renditions.py`): para cada altura de `(720, 360)` estrictamente menor que la del original, re-codifica el normalizado con `scale=-2:H`, `libx264 -preset veryfast -crf 23`, `aac 128k` y `+faststart` en un temporal y lo sube a `{video_id}/{H}p.mp4`. Una calidad que FFmpeg no logra generar se omite con un aviso, **sin marcar `failed`**.
+9. Marca `ready` con `duration_ms`, `storage_key` y `renditions` (jsonb con las alturas publicadas, p. ej. `[720,360]`, o `[]`).
 
 Si el archivo está corrupto, no existe o FFmpeg falla (normalización o Ambilight, incluido el timeout), el vídeo queda en `failed` y no se sube nada. Si falla la infraestructura (SQL, MinIO), la excepción se propaga sin marcar `failed`, para que quien llama decida si reintenta.
 

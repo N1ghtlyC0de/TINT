@@ -4,7 +4,18 @@ from unittest.mock import Mock
 import pytest
 from botocore.exceptions import ClientError
 
-from media_worker.storage import BlobNotFoundError, S3BlobStore, ambilight_key, source_key
+from media_worker.storage import (
+    BlobNotFoundError,
+    S3BlobStore,
+    ambilight_key,
+    rendition_key,
+    source_key,
+)
+
+
+def test_rendition_key_is_height_suffixed_mp4():
+    assert rendition_key("abc", 720) == "abc/720p.mp4"
+    assert rendition_key("abc", 360) == "abc/360p.mp4"
 
 
 def client_error(code):

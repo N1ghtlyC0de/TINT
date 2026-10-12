@@ -1,7 +1,7 @@
 # STATUS — media-worker
 
-Última revisión: 2026-10-11 · Rama: `feat/media-worker-probe`, al día con `develop` (solo para esta tarea de documentación; el trabajo nuevo sale de `develop`).
-Tests: 182 passed · Cobertura: 100 % (mín. ≥ 85 %) · ruff: limpio
+Última revisión: 2026-10-11 · Rama: `feat/media-worker-calidades` (desde `develop`).
+Tests: 227 passed · Cobertura: 100 % (mín. ≥ 85 %) · ruff: limpio
 
 Flujo de estado del worker: `processing -> ready | failed` (sin `pending`; ese estado es de `identity-api` antes de confirmar la subida).
 
@@ -22,6 +22,7 @@ No existe MED-BE-04.
 
 | Tarea | Notas |
 | :-- | :-- |
+| Medir las **calidades** 720p/360p con FFmpeg real | Cada calidad re-codifica el vídeo completo: medir tiempo y CPU en una película antes de fijar timeouts propios (hoy usan el de `normalize`, 4 h) |
 | Medir la **re-codificación** de una película de 2 a 3 h | Tiempo y memoria de `normalize.py` (timeout 4 h) con un original que no sea H.264 + AAC (el Ambilight de películas ya normalizadas está medido, ver Pruebas locales); con eso decidir límites de subida, el `preset` de x264 y los timeouts de FFmpeg |
 | Revisar el consumidor con tareas largas | Que no reclame un mensaje que sigue en proceso y lo duplique |
 | Borrar `videos/` | Los archivos llegan por la subida; comprobar antes que ningún test los use |
@@ -34,11 +35,12 @@ No existe MED-BE-04.
 - **Núcleo sin Redis:** `pipeline`, `repository`, `storage` y `Settings` no conocen Redis; su configuración vive en `TriggerSettings`.
 - **Formato estándar:** MP4 H.264 (yuv420p) + AAC con `+faststart`, clave fija `{id}/source.mp4`. Entrada admitida: `.mp4`, `.mov`, `.mkv` y `.webm` (`pipeline.SUPPORTED_EXTENSIONS`); cualquier otra lanza `UnsupportedFormatError` antes de tocar SQL o el bucket, y el disparador la marca `failed` sin descargar el archivo. El filtro en la firma del PUT de `identity-api` queda pendiente (otro dominio, otro PR).
 - **Normalización:** `normalize.py` omite la re-codificación si ffprobe indica que el original ya es MP4 + H.264 `yuv420p` + AAC (o sin audio); en ese caso se publica tal cual (sin forzar `faststart` ni descartar pistas extra). Ante cualquier duda del chequeo se re-codifica. Primer vídeo y primer audio; el audio es opcional. Escribe en un directorio temporal que se borra siempre; el Ambilight se extrae del normalizado. Un fallo o timeout de FFmpeg marca `failed` y no sube nada.
+- **Calidades (`renditions.py`):** tras publicar `source.mp4` y `ambilight.json` se generan `{id}/720p.mp4` y `{id}/360p.mp4`, solo las de altura estrictamente menor que la del original (la altura sale de la misma llamada a ffprobe que la duración). Se re-codifican desde el normalizado (`scale=-2:H`, `libx264 veryfast crf 23`, AAC, `+faststart`). Una calidad que FFmpeg no genera se omite con un aviso y no marca `failed`; un fallo del bucket se propaga para reintentar. Las alturas publicadas se guardan en `videos.renditions` (jsonb, columna de `identity-api`: su PR debe mergearse antes).
 - **Autenticación:** la verifica `identity-api` (Firebase); el worker no autentica.
-- **Esquema `videos`:** el worker solo hace `UPDATE` de `status`, `duration_ms`, `storage_key` y `updated_at`. Si la fila no existe lanza `VideoNotFoundError`. Columnas nuevas se piden en un PR aparte a `identity-api`.
+- **Esquema `videos`:** el worker solo hace `UPDATE` de `status`, `duration_ms`, `storage_key`, `renditions` y `updated_at`. Si la fila no existe lanza `VideoNotFoundError`. Columnas nuevas se piden en un PR aparte a `identity-api`.
 - **Errores:** `video_id` inválido → `InvalidVideoIdError`; vídeo corrupto o FFmpeg fallido → `failed` y no se sube nada; fallo de SQL o S3 → se propaga sin marcar `failed`.
 - **Motivo del fallo:** solo `logging`, no se guarda en SQL.
-- **Idempotencia:** las claves `{video_id}/source.mp4` y `{video_id}/ambilight.json` se sobrescriben y el `UPDATE` es idempotente. Un vídeo en `failed` solo se reprocesa si se pide de nuevo.
+- **Idempotencia:** las claves `{video_id}/source.mp4`, `{video_id}/ambilight.json` y `{video_id}/{H}p.mp4` se sobrescriben y el `UPDATE` (incluido `renditions`) es idempotente. Un vídeo en `failed` solo se reprocesa si se pide de nuevo.
 - **Lectura de píxeles:** FFmpeg con RGB crudo por pipe (`fps=1,scale=160:90`, `rgb24`), un fotograma a la vez, sin Pillow ni numpy.
 
 ## Rendimiento del Ambilight (medido con FFmpeg real)

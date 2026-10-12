@@ -10,7 +10,8 @@ from pathlib import Path, PurePosixPath
 
 from media_worker.ambilight import AmbilightError, extract_ambilight
 from media_worker.normalize import NormalizeError, is_normalized, normalize_video
-from media_worker.probe import VideoStatus, inspect_status
+from media_worker.probe import VideoStatus, inspect_media
+from media_worker.renditions import generate_renditions
 from media_worker.storage import ambilight_key, source_key
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,9 @@ def process_video(
 ) -> VideoStatus:
     """Normaliza a MP4 y extrae el Ambilight de `source`; solo entonces publica en el bucket.
 
-    Si `source` ya es MP4 H.264 + AAC no se re-codifica: se publica tal cual.
+    Si `source` ya es MP4 H.264 + AAC no se re-codifica: se publica tal cual. Tras publicar
+    `source.mp4` y `ambilight.json` se generan las calidades reducidas (720p, 360p) menores que
+    la altura del original; una calidad que falle se omite sin marcar `failed`.
 
     El vídeo recibido nunca se sube sin preprocesar: si es inválido o falla la normalización
     o la extracción Ambilight queda en `failed` y no se publica nada. `source` pertenece a quien
@@ -77,7 +80,7 @@ def process_video(
     if not repo.start_processing(video_id):
         raise VideoNotFoundError(f"vídeo {video_id} no existe en la tabla videos")
 
-    status, duration_ms = inspect_status(str(source), runner)
+    status, duration_ms, height = inspect_media(str(source), runner)
     if status is VideoStatus.FAILED:
         repo.mark_failed(video_id)
         return VideoStatus.FAILED
@@ -100,8 +103,16 @@ def process_video(
         storage_key = source_key(video_id)
         blobs.upload_file(normalized, storage_key)
         blobs.put_json(ambilight_key(video_id), palette)
-    repo.mark_ready(video_id, duration_ms, storage_key)
-    logger.info("vídeo %s listo (%d ms, %d muestras)", video_id, duration_ms, len(palette))
+        # Calidades reducidas: opcionales, una que falle se omite sin marcar `failed`.
+        renditions = generate_renditions(video_id, normalized, height, blobs, runner)
+    repo.mark_ready(video_id, duration_ms, storage_key, renditions)
+    logger.info(
+        "vídeo %s listo (%d ms, %d muestras, calidades %s)",
+        video_id,
+        duration_ms,
+        len(palette),
+        renditions,
+    )
     return VideoStatus.READY
 
 

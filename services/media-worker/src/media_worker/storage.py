@@ -24,6 +24,11 @@ def ambilight_key(video_id: str) -> str:
     return f"{video_id}/ambilight.json"
 
 
+def rendition_key(video_id: str, height: int) -> str:
+    """Clave determinista de una calidad reducida (`{id}/720p.mp4`, `{id}/360p.mp4`)."""
+    return f"{video_id}/{height}p.mp4"
+
+
 class S3BlobStore:
     def __init__(self, client, bucket: str) -> None:
         self.client = client
