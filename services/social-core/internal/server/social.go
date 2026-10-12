@@ -14,6 +14,7 @@ import (
 
 	"nhooyr.io/websocket"
 
+	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/analytics"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/auth"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/chat"
 	"github.com/HanamDavid/tint-monorepo/services/social-core/internal/polls"
@@ -29,7 +30,14 @@ type Deps struct {
 	Publish func(ctx context.Context, roomID string, msg socialevent.ChatMessage) error
 	// PublishReaction reenvía la reacción a las demás réplicas (nil = una réplica).
 	PublishReaction func(ctx context.Context, roomID string, r socialevent.Reaction) error
-	Track           func(ctx context.Context, roomID string, messageLength int, eventID string, occurredAt time.Time)
+	// TrackChat, TrackPresence y TrackReaction publican en analytics:events
+	// (sin texto ni nick). Nil = sin Redis: no se registra nada. Deben ser
+	// no bloqueantes (el emisor de internal/analytics solo encola).
+	TrackChat     func(analytics.ChatMessage)
+	TrackPresence func(analytics.Presence)
+	TrackReaction func(analytics.Reaction)
+	// analytics es el emisor cableado por DefaultDeps (Run lo arranca).
+	analytics *analytics.Emitter
 	// Subscribe abre la suscripción Pub/Sub de la sala (eventos de otras
 	// réplicas y REVOKED de identity-api); una sola por sala y réplica.
 	Subscribe func(ctx context.Context, roomID string) (<-chan chat.Inbound, func())
@@ -130,7 +138,9 @@ func (d *Deps) presenceUsers(roomID string) map[string]*presenceEntry {
 // presenceJoin suma una conexión; true si hay que avisar la entrada.
 // No se avisa si ya hay otra conexión activa (multipestaña) ni si el
 // usuario salió dentro de la ventana de gracia (reingreso/flap).
-func (d *Deps) presenceJoin(roomID, userID string, now time.Time) bool {
+// connected son las entradas de presencia de la sala tras el cambio
+// (leídas bajo el mismo lock, para analítica).
+func (d *Deps) presenceJoin(roomID, userID string, now time.Time) (notify bool, connected int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	users := d.presenceUsers(roomID)
@@ -141,13 +151,14 @@ func (d *Deps) presenceJoin(roomID, userID string, now time.Time) bool {
 	}
 	e.conns++
 	e.gen++
+	connected = len(users)
 	if e.conns > 1 {
-		return false
+		return false, connected
 	}
 	if !e.lastLeave.IsZero() && now.Sub(e.lastLeave) < d.leaveGrace() {
-		return false
+		return false, connected
 	}
-	return true
+	return true, connected
 }
 
 // presenceLeave resta una conexión y, si fue la última, programa el aviso
@@ -175,17 +186,19 @@ func (d *Deps) presenceLeave(roomID string, claims auth.Claims) {
 		d.mu.Lock()
 		cur := d.presence[roomID][claims.Subject]
 		fire := cur != nil && cur.conns == 0 && cur.gen == gen
+		connected := 0
 		if fire {
 			// Pasada la gracia la entrada ya no aporta nada: se borra (y la
 			// sala si quedó vacía) para no acumular memoria sin cota.
 			delete(d.presence[roomID], claims.Subject)
-			if len(d.presence[roomID]) == 0 {
+			connected = len(d.presence[roomID])
+			if connected == 0 {
 				delete(d.presence, roomID)
 			}
 		}
 		d.mu.Unlock()
 		if fire {
-			d.emitNotice(roomID, claims, socialevent.NoticeLeft)
+			d.announcePresence(roomID, claims, socialevent.NoticeLeft, connected)
 		}
 	})
 }
@@ -211,9 +224,28 @@ func noticeText(nick string, kind socialevent.NoticeKind) string {
 	return nick + " entró al chat"
 }
 
+// announcePresence emite el aviso en vivo y, si se emitió, el evento presence
+// de analítica con el mismo event_id. connected es el conteo de esta
+// réplica (la presencia no se comparte entre réplicas).
+func (d *Deps) announcePresence(roomID string, claims auth.Claims, kind socialevent.NoticeKind, connected int) {
+	eventID, at, ok := d.emitNotice(roomID, claims, kind)
+	if !ok || d.TrackPresence == nil {
+		return
+	}
+	pk := analytics.PresenceJoined
+	if kind == socialevent.NoticeLeft {
+		pk = analytics.PresenceLeft
+	}
+	d.TrackPresence(analytics.Presence{
+		EventID: eventID, RoomID: roomID, UserID: claims.Subject, Kind: pk,
+		ConnectedUsers: connected, OccurredAt: at, ReceivedAt: at,
+	})
+}
+
 // emitNotice envía un aviso de presencia solo en vivo: no se guarda en el
-// historial, no se publica a otras réplicas ni se registra en analítica.
-func (d *Deps) emitNotice(roomID string, claims auth.Claims, kind socialevent.NoticeKind) {
+// historial ni se publica a otras réplicas. Devuelve el event_id y la hora
+// del aviso; ok = false si no se emitió.
+func (d *Deps) emitNotice(roomID string, claims auth.Claims, kind socialevent.NoticeKind) (eventID string, at time.Time, ok bool) {
 	now := d.now()
 	n := socialevent.Notice{
 		EventID: d.newID(), Type: socialevent.TypeNotice, RoomID: roomID,
@@ -221,16 +253,17 @@ func (d *Deps) emitNotice(roomID string, claims auth.Claims, kind socialevent.No
 		Text: noticeText(claims.Nick, kind), OccurredAt: now,
 	}
 	if err := n.Validate(); err != nil {
-		return
+		return "", time.Time{}, false
 	}
 	raw, err := json.Marshal(n)
 	if err != nil {
-		return
+		return "", time.Time{}, false
 	}
 	if d.markSeen(n.EventID) {
-		return
+		return "", time.Time{}, false
 	}
 	d.Hub.Broadcast(roomID, raw)
+	return n.EventID, now, true
 }
 
 func (d *Deps) now() time.Time {
@@ -353,8 +386,8 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 
 	// Aviso de entrada (solo en vivo, tras el historial). Se perdona el
 	// reingreso dentro de la gracia (StrictMode, refresh, flap).
-	if d.presenceJoin(roomID, claims.Subject, d.now()) {
-		d.emitNotice(roomID, claims, socialevent.NoticeJoined)
+	if notify, connected := d.presenceJoin(roomID, claims.Subject, d.now()); notify {
+		d.announcePresence(roomID, claims, socialevent.NoticeJoined, connected)
 	}
 
 	// Escritor hacia este cliente; termina cuando el handler retorna. Si una
@@ -463,8 +496,11 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 		if d.Publish != nil {
 			_ = d.Publish(ctx, roomID, out)
 		}
-		if d.Track != nil {
-			d.Track(ctx, roomID, length, out.EventID, out.OccurredAt)
+		if d.TrackChat != nil {
+			d.TrackChat(analytics.ChatMessage{
+				EventID: out.EventID, RoomID: roomID, UserID: claims.Subject,
+				MessageLength: length, OccurredAt: out.OccurredAt, ReceivedAt: out.ReceivedAt,
+			})
 		}
 		// broadcastOnce traga el eco de Redis si el relay lo vio primero.
 		d.broadcastOnce(roomID, out)
@@ -477,8 +513,8 @@ func handleSocial(w http.ResponseWriter, r *http.Request, d *Deps) {
 	d.presenceLeave(roomID, claims)
 }
 
-// handleReaction valida, limita (5/s en memoria), agrega al bucket de 5s y
-// emite la reacción en vivo. Efímera: sin historial ni analítica.
+// handleReaction valida, limita (5/s en memoria), agrega al bucket de 5s,
+// emite la reacción en vivo y la registra en analítica. Sin historial.
 func (d *Deps) handleReaction(ctx context.Context, c *websocket.Conn, roomID string, claims auth.Claims, raw []byte, limiter *reactions.Limiter) {
 	var in socialevent.ReactionSend
 	if err := json.Unmarshal(raw, &in); err != nil {
@@ -520,6 +556,12 @@ func (d *Deps) handleReaction(ctx context.Context, c *websocket.Conn, roomID str
 	d.recordReaction(ctx, out)
 	if d.PublishReaction != nil {
 		_ = d.PublishReaction(ctx, roomID, out)
+	}
+	if d.TrackReaction != nil {
+		d.TrackReaction(analytics.Reaction{
+			EventID: out.EventID, RoomID: roomID, UserID: claims.Subject, Emoji: out.Emoji,
+			PositionMS: out.PositionMS, OccurredAt: out.OccurredAt, ReceivedAt: out.ReceivedAt,
+		})
 	}
 	// broadcastRawOnce traga el eco de Redis si el relay lo vio primero.
 	d.broadcastRawOnce(roomID, out.EventID, out)
