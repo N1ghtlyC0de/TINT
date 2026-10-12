@@ -140,11 +140,11 @@ gitGraph
 | :--- | :--- | :--- |
 | **HU-SYNC-01** | Canal `/ws/sync?room_id=X` aislado, estado inmediato | `hub.Connect` encola `STATE` antes que cualquier otro mensaje. |
 | **REQ-27 / HU-SYNC-02** | Comandos del Host a todos en < 100 ms | CAS en Redis + Pub/Sub. Medido: 1–4 ms entre réplicas. |
-| **REQ-28 / HU-SYNC-03** | Drift > 500 ms, corrección suave y métrica | `internal/drift` (`rate` ±5 % o `seek`) y `sync_drift` a `analytics:events`. |
+| **REQ-28 / HU-SYNC-03** | Drift > 500 ms, corrección suave y métrica | `internal/drift` (`rate` ±5 % o `seek`) y `drift_correction` a `analytics:events`. |
 | **REQ-07** | La sala sobrevive 12 h sin Host | TTL de 12 h. Ahora también se avisa la caída de la réplica del Host. |
 | **REQ-08 / SYNC-BE-05** | Escalado entre réplicas | Pub/Sub, presencia compartida y barrido determinista. |
 | **SYNC-TEST-01** | 500 conexiones | `loadtest/sync.js`. Humo de 50 VUs en CI. Ver [§14](#14-verificación-y-resultados). |
-| **Ley 1581** | Analítica sin PII | `sync_drift` sin `sub`, `nick` ni token. `GET /guests` no expone `sub`. |
+| **Ley 1581** | Analítica sin PII | `drift_correction`, `playback_command` y `buffering` sin `sub`, `nick` ni token (solo `role`). `GET /guests` no expone `sub`. |
 
 | Mejora (v2) | Dónde |
 | :--- | :--- |
@@ -429,7 +429,7 @@ sequenceDiagram
         H->>H: RTT EWMA con el reloj del servidor<br/>drift = pos − PositionAt(recv − RTT/2)
         alt |drift| > 500 ms
             H-->>C: SYNC_CORRECTION { target_ms, strategy, version, status, rate, media_id }
-            H-)T: sync_drift (no bloqueante)
+            H-)T: drift_correction (no bloqueante)
         end
     end
 ```
@@ -636,6 +636,41 @@ sequenceDiagram
 - **Compatibilidad:** los hashes `room:{id}:sync_state` anteriores sin `volume`/`quality` se leen como `1` y `auto` (`store.Init` los agrega con `HSETNX`), y un broadcast de una réplica anterior sin esos campos se cachea con los mismos valores por defecto.
 - **Web:** pendiente. El cliente debe aplicar `volume`/`quality` de `STATE`, broadcasts y `SYNC_CORRECTION`, y ofrecer los controles solo a quien tenga `can_control`.
 
+### 6.10 Telemetría de reproducción y `BUFFERING`
+
+sync-core publica tres tipos en `analytics:events` ([contrato](contrato-eventos-analitica.md#sync-core)), todos con `source=sync-core`, `role` y **sin** `sub` ni `nick`, por el mismo canal con buffer de `internal/telemetry` (si se llena se descartan y se cuentan en `sync_telemetry_dropped_total`):
+
+| `type` | Cuándo | Campos propios |
+| :--- | :--- | :--- |
+| `playback_command` | Comando aplicado (no duplicado ni rechazado), incluidos `VOLUME` y `QUALITY`, con el `event_id` del comando | `command`, `position_ms` (ancla resultante) |
+| `drift_correction` | Cada `SYNC_CORRECTION` (antes `sync_drift`) | `drift_ms`, `position_ms` (= `target_ms`), `rtt_ms`, `strategy` |
+| `buffering` | Mensaje `BUFFERING` aceptado, con su `event_id` | `duration_ms`, `position_ms` |
+
+`BUFFERING` es el único mensaje cliente → servidor que no es comando ni latido. La web lo envía al terminar un stall del `<video>` (`waiting` → `playing`) si duró al menos 100 ms:
+
+```json
+{ "event_id": "<uuid>", "type": "BUFFERING", "room_id": "<uuid>", "position_ms": 12345, "duration_ms": 850, "occurred_at": "<RFC3339>" }
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Cliente (cualquier rol)
+    participant H as hub.Handle
+    participant T as telemetry
+    C->>H: BUFFERING { duration_ms, position_ms }
+    H->>H: sella received_at y valida (0 ≤ duration_ms ≤ 120000, position_ms ≥ 0)
+    alt inválido
+        H-->>C: ERROR { code: INVALID }
+    else otro BUFFERING de esta conexión hace < 1 s
+        H->>H: se descarta en silencio
+    else
+        H-)T: buffering (no bloqueante)
+    end
+```
+
+No hay `ACK`, no hay broadcast y no se toca Redis en el camino del mensaje. Con MessagePack viajan las mismas claves (`duration_ms`).
+
 ---
 
 ## 7. Modelo de datos en Redis
@@ -649,7 +684,7 @@ erDiagram
     SALA ||--o{ MEMBER : "room:{id}:members (ZSET)"
     SALA ||--o| PRESENCIA : "host_online · hostless_since · delegate"
     TOKEN ||--o| REVOCADO : "token:revoked:{jti} (EXAT exp)"
-    SALA ||--o{ SYNC_DRIFT : "analytics:events (Stream)"
+    SALA ||--o{ ANALYTICS_EVENT : "analytics:events (Stream)"
 
     SYNC_STATE {
         string status
@@ -678,12 +713,17 @@ erDiagram
     CANAL {
         json Event "comandos, HOST_STATUS, CONTROL, REVOKED"
     }
-    SYNC_DRIFT {
+    ANALYTICS_EVENT {
+        string type "playback_command, drift_correction, buffering"
+        string source "sync-core"
         string room_id
-        int drift_ms
-        int rtt_ms
-        string strategy
         string role
+        int position_ms
+        int drift_ms "drift_correction"
+        int rtt_ms "drift_correction"
+        string strategy "drift_correction"
+        string command "playback_command"
+        int duration_ms "buffering"
     }
 ```
 
@@ -804,9 +844,9 @@ flowchart TD
 | Autorización | `host`/`cohost` siempre; un participante solo si es el delegado vigente. El resto recibe `FORBIDDEN`. |
 | Origen | `OriginPatterns` desde `ALLOWED_ORIGINS`. |
 | Tamaño y frecuencia | 4 KB por mensaje (`1009`) y 20 mensajes/s (`RATE_LIMITED`). |
-| Argumentos | `rate` ∈ [0.25, 4] y `media_id` de 1 a 128 caracteres; fuera de rango → `INVALID`. |
+| Argumentos | `rate` ∈ [0.25, 4], `media_id` de 1 a 128 caracteres y `duration_ms` de `BUFFERING` en [0, 120000]; fuera de rango → `INVALID`. `BUFFERING`: máximo 1 por segundo y conexión (el exceso se descarta). |
 | Vídeo | URL firmada con vida corta (`PLAYBACK_URL_TTL_SECONDS`); el bucket no es público. |
-| Privacidad | `sync_drift` sin PII; `/guests` no expone `sub`; `/metrics` sin identificadores de usuario y detrás del ingress. |
+| Privacidad | `drift_correction`, `playback_command` y `buffering` sin PII (solo `role`); `/guests` no expone `sub`; `/metrics` sin identificadores de usuario y detrás del ingress. |
 
 ---
 
