@@ -9,6 +9,7 @@ import (
 
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/auth"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/codec"
+	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/drift"
 	"github.com/HanamDavid/tint-monorepo/services/sync-core/internal/syncevent"
 )
 
@@ -32,6 +33,7 @@ type Client struct {
 	rttMs       atomic.Int64 // RTT suavizado (EWMA), medido con el reloj del servidor
 	lastCheckMs atomic.Int64 // último SYNC_CHECK recibido
 	lastDriftMs atomic.Int64 // último drift medido (se informa en HEARTBEAT)
+	lastSeekMs  atomic.Int64 // último SYNC_CORRECTION por seek enviado (0 = nunca)
 
 	// Rate limit por ventana fija; solo lo toca la goroutine lectora.
 	windowStartMs int64
@@ -125,6 +127,17 @@ func (c *Client) allow(nowMs int64) bool {
 	}
 	c.windowCount++
 	return c.windowCount <= MaxMsgsPerSecond
+}
+
+// allowSeek indica si se le puede enviar un seek al cliente: no más de uno
+// cada drift.SeekCooldownMs. Si lo permite, registra nowMs como el último.
+func (c *Client) allowSeek(nowMs int64) bool {
+	last := c.lastSeekMs.Load()
+	if last != 0 && nowMs-last < drift.SeekCooldownMs {
+		return false
+	}
+	c.lastSeekMs.Store(nowMs)
+	return true
 }
 
 // allowBuffering acepta como máximo un BUFFERING por BufferingInterval.

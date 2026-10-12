@@ -159,6 +159,7 @@ func BenchmarkHandleSyncCheck(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				c.windowCount = 0
+				c.lastSeekMs.Store(0) // sin enfriamiento: mide siempre el camino de corrección
 				h.Handle(ctx, c, raw)
 				for len(c.send) > 0 {
 					<-c.send

@@ -665,6 +665,11 @@ func (h *Hub) handleSyncCheck(ctx context.Context, c *Client, ev syncevent.Event
 	if corr == nil {
 		return
 	}
+	// Solo la goroutine lectora del cliente llega aquí: leer y escribir
+	// lastSeekMs por separado no compite con otro SYNC_CHECK del mismo cliente.
+	if corr.Strategy == drift.Seek && !c.allowSeek(nowMs) {
+		return // el cliente aún aplica (o se recupera de) el seek anterior
+	}
 	h.m.corrections.With(string(corr.Strategy)).Inc()
 	out := baseEvent(syncevent.SyncCorrection, room, now)
 	out.TargetMs = syncevent.Int64(corr.TargetMs)

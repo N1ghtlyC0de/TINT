@@ -16,6 +16,11 @@ const (
 	// RTTClampSlackMs es el margen fijo del recorte de muestras de RTT
 	// (máximo aceptado = 2·RTT previo + RTTClampSlackMs).
 	RTTClampSlackMs = 200
+	// SeekCooldownMs: tras enviar un seek a un cliente no se le envía otro
+	// durante este tiempo (las correcciones por rate siguen permitidas). Un
+	// cliente en stall reporta una posición congelada y, sin enfriamiento,
+	// cada latido producía otro seek que volvía a provocar el stall.
+	SeekCooldownMs = 3000
 )
 
 // Strategy indica cómo debe realinearse el reproductor del cliente.
