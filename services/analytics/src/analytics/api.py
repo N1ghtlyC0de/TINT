@@ -29,6 +29,7 @@ from analytics.kpis import (
     TIMELINE_TYPES,
     compute_room_kpis,
     format_timestamp,
+    heatmap_density,
     reaction_heatmap,
     reactions_by_emoji,
     timeline,
@@ -51,6 +52,9 @@ METRICS = (
     ("playback_commands", int),
     ("buffering_events", int),
     ("avg_buffering_ms", float),
+    ("avg_rtt_ms", float),
+    ("p95_drift_ms", float),
+    ("total_buffering_ms", int),
 )
 # (default, mínimo, máximo) de los parámetros de consulta.
 BUCKET_MS = (5000, 1000, 60000)
@@ -195,6 +199,7 @@ class AnalyticsApi:
                 "room_id": room_id,
                 "live": False,
                 **{name: cast(row[name]) for name, cast in METRICS},
+                "close_reason": row["close_reason"],
                 "closed_at": _iso(row["closed_at"]),
                 "computed_at": _iso(row["computed_at"]),
             }
@@ -204,6 +209,7 @@ class AnalyticsApi:
             "room_id": room_id,
             "live": True,
             **{name: cast(kpis[name]) for name, cast in METRICS},
+            "close_reason": None,
             "closed_at": None,
             "computed_at": _iso(self.clock()),
         }
@@ -214,6 +220,7 @@ class AnalyticsApi:
             "room_id": room_id,
             "bucket_ms": bucket_ms,
             "buckets": reaction_heatmap(events, bucket_ms),
+            "density": heatmap_density(events, bucket_ms),
             "by_emoji": reactions_by_emoji(events),
         }
 

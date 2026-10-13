@@ -117,6 +117,10 @@ services:
       # Orígenes (con esquema) que pueden llamar a la API desde el navegador.
       ANALYTICS_ALLOWED_ORIGINS: ${ANALYTICS_ALLOWED_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       ANALYTICS_CONSUMER: analytics-1
+      # Horas sin actividad tras las que una sala se da por cerrada (REQ-07) y se consolidan sus KPIs.
+      ANALYTICS_ROOM_GRACE_HOURS: ${ANALYTICS_ROOM_GRACE_HOURS:-12}
+      # Zona horaria del corte del día en DAU/MAU.
+      ANALYTICS_TIMEZONE: ${ANALYTICS_TIMEZONE:-America/Bogota}
     ports:
       - "${ANALYTICS_PORT:-8084}:${ANALYTICS_PORT:-8084}"
     healthcheck:

@@ -180,6 +180,10 @@ def test_kpis_of_a_closed_room_come_from_room_kpis():
         "playback_commands": 3,
         "buffering_events": 2,
         "avg_buffering_ms": 400,
+        "avg_rtt_ms": 35,
+        "p95_drift_ms": 900,
+        "total_buffering_ms": 800,
+        "close_reason": "grace_expired",
         "closed_at": datetime(2026, 10, 11, 11, 0, tzinfo=UTC),
         "computed_at": datetime(2026, 10, 11, 11, 0, 1, tzinfo=UTC),
     }
@@ -198,6 +202,10 @@ def test_kpis_of_a_closed_room_come_from_room_kpis():
         "playback_commands": 3,
         "buffering_events": 2,
         "avg_buffering_ms": 400.0,
+        "avg_rtt_ms": 35.0,
+        "p95_drift_ms": 900.0,
+        "total_buffering_ms": 800,
+        "close_reason": "grace_expired",
         "closed_at": "2026-10-11T11:00:00.000Z",
         "computed_at": "2026-10-11T11:00:01.000Z",
     }
@@ -210,6 +218,8 @@ def test_kpis_of_an_open_room_are_computed_live_from_telemetry():
         {"type": "presence", "connected_users": "2"},
         {"type": "presence", "connected_users": "4"},
         {"type": "chat_message", "message_length": "3"},
+        {"type": "drift_correction", "drift_ms": "-700", "rtt_ms": "45"},
+        {"type": "buffering", "duration_ms": "250"},
     ]
     repo = FakeReadRepository(events={ROOM: events})
     response = get(make_api(repo=repo), kpis_path(), bearer=token())
@@ -219,13 +229,17 @@ def test_kpis_of_an_open_room_are_computed_live_from_telemetry():
         "live": True,
         "peak_users": 4,
         "avg_users": 3.0,
-        "avg_drift_ms": 0.0,
+        "avg_drift_ms": 700.0,
         "trivia_accuracy_pct": 0.0,
         "messages": 1,
         "reactions": 0,
         "playback_commands": 0,
-        "buffering_events": 0,
-        "avg_buffering_ms": 0.0,
+        "buffering_events": 1,
+        "avg_buffering_ms": 250.0,
+        "avg_rtt_ms": 45.0,
+        "p95_drift_ms": 700.0,
+        "total_buffering_ms": 250,
+        "close_reason": None,
         "closed_at": None,
         "computed_at": "2026-10-11T12:00:00.000Z",
     }
@@ -266,6 +280,10 @@ def test_heatmap_with_default_bucket():
             {"bucket_start_ms": 0, "emoji": "👏", "count": 1},
             {"bucket_start_ms": 0, "emoji": "😂", "count": 1},
             {"bucket_start_ms": 5000, "emoji": "👏", "count": 1},
+        ],
+        "density": [
+            {"bucket_start_ms": 0, "count": 2, "density": 1.0},
+            {"bucket_start_ms": 5000, "count": 1, "density": 0.5},
         ],
         "by_emoji": [{"emoji": "👏", "count": 2}, {"emoji": "😂", "count": 1}],
     }
