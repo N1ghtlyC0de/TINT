@@ -33,6 +33,7 @@ Este README explica **cómo funciona por dentro**. Las reglas del dominio, la fo
 | Servir KPIs, heatmap de reacciones y línea de tiempo al Host de la sala | `api.py` |
 | Verificar el `analytics-ticket` HS256 y su revocación, con falla cerrado | `api.py` |
 | Aplicar sus propias migraciones SQL al arrancar | `db.py` + `migrations/` |
+| Auditar bajo demanda que lo persistido no tiene texto de chat ni PII | `audit.py` |
 
 **Lo que NO hace:**
 
@@ -357,6 +358,20 @@ ruff check . && ruff format --check .
 pytest --cov=src --cov-fail-under=85
 # Integración opcional con PostgreSQL real (esquema temporal que se borra al terminar):
 ANALYTICS_TEST_DATABASE_URL=postgresql://tint:tint@localhost:5432/tint pytest tests/test_db_integration.py
+```
+
+**Auditoría de privacidad (ANA-TEST-02).** `python -m analytics.audit` revisa la base real, solo con `SELECT`, y certifica que:
+
+1. ningún `payload` de `telemetry_events` conserva los campos que quita el sanitizador (`text`, `message`, `content`, `body`, `nick`, `email`, `name`, `display_name`);
+2. todo `chat_message` guarda únicamente los campos comunes y un `message_length` numérico;
+3. las tablas de analítica no tienen columnas de texto fuera de las conocidas (`ALLOWED_TEXT_COLUMNS`).
+
+Imprime el resumen y termina con `0` si cumple, `1` si hay alguna violación y `2` si falta `DATABASE_URL`.
+
+```bash
+docker exec tint-analytics python -m analytics.audit
+# auditoría de privacidad: 1286 eventos, 12 de chat revisados
+# resultado: CUMPLE
 ```
 
 Las pruebas unitarias usan dobles (`tests/fakes.py`) para Redis y PostgreSQL. La API se prueba llamando a `AnalyticsApi.handle(method, target, headers)` directamente, sin abrir sockets.
