@@ -112,6 +112,8 @@ class FakeEventStore:
         self.invalid_ids = set(invalid_ids)
         self.saves = 0
         self.purges = 0
+        self.grace_closes = []
+        self.dau_refreshes = []
 
     def save(self, event):
         from analytics.sanitize import InvalidEvent
@@ -130,6 +132,14 @@ class FakeEventStore:
     def purge_expired(self):
         self.purges += 1
         return 0
+
+    def close_idle_rooms(self, grace):
+        self.grace_closes.append(grace)
+        return 0
+
+    def refresh_daily_active_users(self, timezone, days):
+        self.dau_refreshes.append((timezone, days))
+        return days
 
 
 class FakeReadRepository:

@@ -73,7 +73,7 @@ flowchart TB
     MEDIA -- "source, 720p, 360p, ambilight.json" --> MI
     MEDIA -- "UPDATE videos" --> PG
     AN -- "XREADGROUP analytics:events · revocación" --> RD
-    AN -- "telemetry_events, room_kpis" --> PG
+    AN -- "telemetry_events, room_kpis,<br/>room_heatmap, daily_active_users" --> PG
 ```
 
 ## 3. Servicios y estado
@@ -284,7 +284,7 @@ Son los únicos puntos en los que un PR puede necesitar coordinar dos dominios (
 | Almacén | Dueño | Contenido principal |
 | :--- | :--- | :--- |
 | PostgreSQL | identity-api | `users`, `rooms`, `invitations`, `guest_sessions` (con `device_id`), `room_bans`, `videos` (con `renditions` y `title`) ([esquema](usuarios-e-identidad.md#3-esquema-de-datos-postgresql)); media-worker lee y actualiza `videos` (no crea filas) y lee `users.provider_sub` |
-| PostgreSQL | analytics | `schema_migrations`, `telemetry_events` (90 días), `room_kpis` ([modelo](../services/analytics/AGENTS.md#modelo-de-datos-involucrado)) |
+| PostgreSQL | analytics | `schema_migrations`, `telemetry_events` (90 días), `room_kpis`, `room_heatmap`, `daily_active_users` ([modelo](../services/analytics/AGENTS.md#modelo-de-datos-involucrado)) |
 | Redis | sync-core | `room:{id}:sync_state`, `:evt:{event_id}`, `:hosts_online`, `:members`, `:host_online`, `:hostless_since`, `:delegate` y Pub/Sub `room:{id}:sync` ([modelo](dominio-reproduccion.md#7-modelo-de-datos-en-redis)) |
 | Redis | identity-api → sync-core, social-core, analytics | `token:revoked:{jti}` |
 | Redis | social-core | `room:{id}:chat:history`, `room:{id}:chat:settings`/`:muted`/`:last:{sub}` (moderación), `room:{id}:poll*` (encuestas), `room:{id}:recap:*` (métricas del recap y ancla de reproducción), `room:{id}:trivia:*` (trivias y rankings), Pub/Sub `room:{id}:social` (chat, reacciones, láser, `poll_state`, `chat_settings`, `trivia_question` y `trivia_result` entre réplicas) |
