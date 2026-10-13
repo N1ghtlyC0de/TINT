@@ -32,6 +32,13 @@ describe('App', () => {
     window.history.pushState({}, '', '/');
   });
 
+  it('expone /arquitectura sin sesión (ruta oculta solo por URL)', async () => {
+    window.history.pushState({}, '', '/arquitectura');
+    render(<App />);
+    expect(await screen.findByRole('heading', { level: 1, name: /Por dónde viajan los datos/ })).toBeInTheDocument();
+    window.history.pushState({}, '', '/');
+  });
+
   it('/rooms/:id/analytics exige sesión de host', async () => {
     window.history.pushState({}, '', '/rooms/r1/analytics');
     render(<App />);

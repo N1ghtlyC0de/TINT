@@ -42,6 +42,7 @@ flowchart LR
         WATCH["/watch/:roomId<br/>WatchRoom"]
         ANALYTICS["/rooms/:id/analytics<br/>RoomAnalytics (lazy)"]
         TESTME["/test-me<br/>TestMe (lazy, oculta)"]
+        ARQ["/arquitectura<br/>Arquitectura (lazy, oculta)"]
     end
     PR["ProtectedRoute<br/>(exige tint_token)"]
 
@@ -126,13 +127,13 @@ Reglas que el diagrama hace visibles:
 
 | Carpeta | Responsabilidad |
 | :--- | :--- |
-| `src/main.tsx` · `src/App.tsx` | Arranque (`startHostSession(auth)` una vez), `MotionProvider`, `BrowserRouter` y rutas animadas (`AnimatePresence mode="wait"`). `TestMe` y `RoomAnalytics` se cargan con `React.lazy`. |
+| `src/main.tsx` · `src/App.tsx` | Arranque (`startHostSession(auth)` una vez), `MotionProvider`, `BrowserRouter` y rutas animadas (`AnimatePresence mode="wait"`). `TestMe`, `Arquitectura` y `RoomAnalytics` se cargan con `React.lazy`. |
 | `src/routes/` | `ProtectedRoute`: sin `tint_token` redirige a `/login?next=<ruta>`. |
-| `src/pages/` | Una página por ruta: `Login`, `Dashboard`, `CreateRoom`, `InviteLanding`, `WatchRoom` (orquesta toda la sala), `RoomAnalytics`, `TestMe`. |
+| `src/pages/` | Una página por ruta: `Login`, `Dashboard`, `CreateRoom`, `InviteLanding`, `WatchRoom` (orquesta toda la sala), `RoomAnalytics`, `TestMe`, `Arquitectura` (mapa interactivo de la arquitectura, oculto). |
 | `src/hooks/` | Estado con efectos: sockets (`useSyncSocket`, `useSocialSocket`), vídeo de la sala (`useRoomPlayback`), `useAmbilight`, `useRecapGate`, `usePlayerShortcuts`, `useSyncToasts`, `useThrottle`, `useCountdown`, `useTransientFlag`, `useElementWidth`, `useQuiz`. |
-| `src/lib/` | Lógica pura y clientes: REST (`api.ts`, `upload.ts`, `videos.ts`, `bans.ts`, `analytics.ts`), protocolos (`syncProtocol.ts`, `syncCodec.ts`, `socialSocket.ts`), drift y calidad (`drift.ts`, `syncQuality.ts`, `quality.ts`, `stallTracker.ts`), identidad y almacenamiento (`authSession.ts`, `firebase.ts`, `identity.ts`, `deviceId.ts`, `safeStorage.ts`, `invite.ts`), `ambilight.ts`, `motion.ts`, `chartScale.ts`, `time.ts`, `quiz.ts`. |
-| `src/components/` | UI: `SyncedPlayer`, `LaserOverlay`, `PollPanel`, `RecapScreen`, `ReactionBar`/`ReactionOverlay`, `InvitePopover`; subcarpetas `player/` (`SeekBar`, `AmbilightGlow`), `host/` (`ChangeVideoPanel`, `ParticipantsPanel`, `HostControlBar`), `chat/` (`ChatPanel`), `quiz/` (`TriviaPanel` y el cuestionario), `sync/` (semáforo, reconexión, toasts), `analytics/` (gráficos SVG), `brand/` (`TintLogo`), `layout/` (`AppShell`, `AmbientBackground`), `motion/`, `ui/` (`Button`, `Primitives`, `ConfirmDialog`, `BackLink`). |
-| `src/data/` | Banco de preguntas del cuestionario oculto `/test-me`. |
+| `src/lib/` | Lógica pura y clientes: REST (`api.ts`, `upload.ts`, `videos.ts`, `bans.ts`, `analytics.ts`), protocolos (`syncProtocol.ts`, `syncCodec.ts`, `socialSocket.ts`), drift y calidad (`drift.ts`, `syncQuality.ts`, `quality.ts`, `stallTracker.ts`), identidad y almacenamiento (`authSession.ts`, `firebase.ts`, `identity.ts`, `deviceId.ts`, `safeStorage.ts`, `invite.ts`), `ambilight.ts`, `motion.ts`, `chartScale.ts`, `time.ts`, `quiz.ts`, `archSim.ts` (aristas, geometría y reducer del mapa `/arquitectura`). |
+| `src/components/` | UI: `SyncedPlayer`, `LaserOverlay`, `PollPanel`, `RecapScreen`, `ReactionBar`/`ReactionOverlay`, `InvitePopover`; subcarpetas `player/` (`SeekBar`, `AmbilightGlow`), `host/` (`ChangeVideoPanel`, `ParticipantsPanel`, `HostControlBar`), `chat/` (`ChatPanel`), `quiz/` (`TriviaPanel` y el cuestionario), `sync/` (semáforo, reconexión, toasts), `analytics/` (gráficos SVG), `arch/` (diagrama, panel de paso y ficha de componente de `/arquitectura`), `brand/` (`TintLogo`), `layout/` (`AppShell`, `AmbientBackground`), `motion/`, `ui/` (`Button`, `Primitives`, `ConfirmDialog`, `BackLink`). |
+| `src/data/` | Banco de preguntas del cuestionario oculto `/test-me` y el modelo del mapa `/arquitectura` (componentes, conectores C1–C15 e historias de usuario paso a paso). |
 | `src/test/` | Dobles de prueba compartidos: `MockWebSocket`, `MockXhr`, `testGuestToken`. |
 | `public/` | `logo.svg`, `favicon.svg`, `apple-touch-icon.png`, `icon-192.png`, `icon-512.png`, `manifest.webmanifest`. |
 
