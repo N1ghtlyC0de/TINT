@@ -130,6 +130,18 @@ Ruta sin `ProtectedRoute` ni enlaces desde la UI (solo por URL) para aprender c�
 
 Si cambia un dato documentado (puertos, contratos, límites), actualiza la pregunta correspondiente. Al agregar preguntas, ajusta `expected` de la categoría y cita solo datos en los que la documentación no se contradiga.
 
+## Mapa oculto `/arquitectura`
+Ruta hermana de `/test-me` (sin `ProtectedRoute` ni enlaces desde la UI, `React.lazy`): el diagrama de componentes y conectores de [`docs/arquitectura.md` §4](../../docs/arquitectura.md#vista-de-componentes-y-conectores) y cinco historias de usuario que se recorren salto a salto. Dos modos: **Recorrer** (paso a paso, con qué viaja, por qué conector y por qué se decidió así) y **Predecir** (antes de cada salto se hace clic en el componente que recibe el mensaje; al terminar salen las preguntas de `/test-me` de esa historia).
+
+| Pieza | Rol |
+| :--- | :--- |
+| `src/data/architecture.ts` | Los 10 componentes (con su posición en el `viewBox`) y los conectores C1–C15, con los pares de componentes que une cada uno. |
+| `src/data/architectureStories.ts` | Las historias: cada paso tiene `from`, `to`, `connector` (null si es interno), `ask` (pregunta de Predecir, sin nombrar el destino), `message`, `detail`, `why` y `sources`; `quizIds` enlaza preguntas de `quizQuestions.ts`. Su prueba verifica que el conector de cada paso una de verdad a sus dos componentes, que ningún paso salga de un componente que aún no participó y que las fuentes y los `quizIds` existan. |
+| `src/lib/archSim.ts` | Lógica pura: aristas (`buildEdges`, una por par de componentes), geometría (`EDGE_BENDS` curva las aristas que pasarían por detrás de otro nodo) y el reducer de los dos modos (puntaje con `multiplierFor` de `quiz.ts`). |
+| `src/components/arch/*` · `src/pages/Arquitectura.tsx` | `ArchDiagram` (SVG propio; continuo = síncrono, grueso = WebSocket, punteado = asíncrono por Redis, igual que la leyenda de `docs/`; nodos `role="button"` con teclado; el paquete no se anima con `prefers-reduced-motion`), `StepPanel`, `NodeCard` (ficha del componente) y `RelatedQuiz` (reutiliza `QuizCard`/`AnswerPanel`). Flechas ←/→ para avanzar y retroceder. |
+
+Si cambia un conector o un flujo en `docs/`, actualiza `architecture.ts` y la historia afectada. Una historia nueva se transcribe de un diagrama de secuencia de `docs/` y cita su fuente en cada paso; no inventes saltos.
+
 ## Reglas de Dominio
 1. **Canales Aislados:** Mantén el uso de dos hooks separados: `useSyncSocket` (vídeo/comandos) y `useSocialSocket` (chat y su moderación, reacciones, láser, encuestas, trivia, recap). Nunca mezcles los sockets. El Ambilight no usa sockets: se descarga por HTTP (`useAmbilight`).
 2. **Auto-Alineación:** sync-core detecta el desfase (> 500 ms) y lo reporta a telemetría; el cliente aplica la corrección recibida con `src/lib/drift.ts` y nunca envía telemetría de sync por su cuenta. La única excepción es `BUFFERING` (ver "Analítica"), que viaja por el Canal Sync y lo publica sync-core.

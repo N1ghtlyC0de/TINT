@@ -12,6 +12,8 @@ import { MotionProvider } from './components/motion/MotionProvider';
 import { PageTransition } from './components/motion/PageTransition';
 // Carga diferida: la ruta oculta del cuestionario no se enlaza desde la UI.
 const TestMe = lazy(() => import('./pages/TestMe'));
+// Carga diferida: mapa interactivo de la arquitectura, también oculto y hermano del cuestionario.
+const Arquitectura = lazy(() => import('./pages/Arquitectura'));
 // Carga diferida: la analítica solo la abre el host y no debe pesar en el bundle principal.
 const RoomAnalytics = lazy(() => import('./pages/RoomAnalytics'));
 
@@ -36,6 +38,8 @@ function AnimatedRoutes() {
         <Route path="/403" element={page(<Forbidden />)} />
         {/* Ruta oculta: cuestionario del monorepo, sin enlaces desde la UI. */}
         <Route path="/test-me" element={<Suspense fallback={null}><TestMe /></Suspense>} />
+        {/* Ruta oculta: mapa interactivo de la arquitectura, sin enlaces desde la UI. */}
+        <Route path="/arquitectura" element={<Suspense fallback={null}><Arquitectura /></Suspense>} />
         <Route path="/" element={<Navigate to="/login" replace />} />
       </Routes>
     </AnimatePresence>
