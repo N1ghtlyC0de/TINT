@@ -87,11 +87,11 @@ flowchart LR
 | :--- | :--- | :--- |
 | Arranque | Lee la configuración, aplica migraciones, crea dos clientes Redis (consumidor y API, este con timeouts de 2 s), arranca los tres hilos y apaga ordenadamente con SIGTERM/SIGINT | `src/analytics/__main__.py` |
 | Configuración | `DATABASE_URL` y `JWT_SECRET` obligatorias (sin ellas no arranca); valida `ANALYTICS_PORT` | `src/analytics/config.py` |
-| Consumidor | `XGROUP CREATE ... MKSTREAM`, recupera pendientes, lotes de 50 con `BLOCK 5000`, `XACK` tras persistir, reintento cada 5 s | `src/analytics/consumer.py` |
+| Consumidor | `XGROUP CREATE ... MKSTREAM`, recupera pendientes, lotes de hasta 500 con `BLOCK 5000`, una transacción y un `XACK` por lote, reintento cada 5 s | `src/analytics/consumer.py` |
 | Mantenimiento | Al arrancar y cada 3600 s, con su propia conexión: cierre por periodo de gracia, `DELETE` de lo que tenga más de 90 días y DAU/MAU. Si una tarea falla, se registra y las demás siguen | `src/analytics/consumer.py` |
 | Sanitización | Campos obligatorios, fechas RFC 3339, descarte de campos prohibidos, `message_length` | `src/analytics/sanitize.py` |
 | KPIs | `compute_room_kpis`, `reaction_heatmap`, `heatmap_density`, `reactions_by_emoji`, `timeline` (sin E/S) | `src/analytics/kpis.py` |
-| Escritura | `EventStore`: una conexión larga que se reabre si se pierde; una transacción por evento | `src/analytics/db.py` |
+| Escritura | `EventStore`: una conexión larga que se reabre si se pierde; una transacción por lote (`save_many`) | `src/analytics/db.py` |
 | Lectura | `ReadRepository`: una conexión corta por consulta (seguro entre hilos) | `src/analytics/db.py` |
 | Migraciones | Archivos `NNN_*.sql` aplicados en una transacción con `pg_advisory_xact_lock` | `src/analytics/db.py`, `src/analytics/migrations/` |
 | API | Enrutamiento, auth, CORS y vistas en `AnalyticsApi.handle` (sin sockets); `create_server` la monta sobre `http.server` de la stdlib | `src/analytics/api.py` |
@@ -119,27 +119,30 @@ sequenceDiagram
     participant DB as EventStore (PostgreSQL)
 
     P->>R: XADD analytics:events * event_id, type, source, ...
-    C->>R: XREADGROUP analytics-workers COUNT 50 BLOCK 5000
+    C->>R: XREADGROUP analytics-workers COUNT 500 BLOCK 5000
     R-->>C: lote de mensajes
-    loop cada mensaje
+    loop cada mensaje del lote
         C->>S: sanitize_event(campos)
         alt no cumple el contrato
             S-->>C: InvalidEvent
             C->>C: log de aviso, se descarta
         else válido
             S-->>C: evento sin texto libre ni PII
-            C->>DB: BEGIN, INSERT telemetry_events ON CONFLICT (event_id) DO NOTHING
-            opt type = room_closed
-                DB->>DB: recalcula y UPSERT room_kpis (misma transacción)
-            end
-            DB-->>C: COMMIT
         end
-        C->>R: XACK analytics:events analytics-workers id
     end
-    Note over C,DB: si PostgreSQL falla no hay XACK, el mensaje queda pendiente y se reintenta a los 5 s
+    C->>DB: BEGIN (save_many, una transacción para el lote)
+    loop cada evento válido
+        C->>DB: INSERT telemetry_events ON CONFLICT (event_id) DO NOTHING
+        opt type = room_closed
+            DB->>DB: recalcula y UPSERT room_kpis (misma transacción)
+        end
+    end
+    DB-->>C: COMMIT
+    C->>R: XACK analytics:events analytics-workers id1 id2 ...
+    Note over C,DB: si PostgreSQL falla no hay XACK, el lote queda pendiente y se reintenta a los 5 s
 ```
 
-**Grupo de consumidores y reintentos.** Igual que en media-worker: el grupo `analytics-workers` se crea desde el principio del stream (`id="0"`, `mkstream`); al arrancar se reprocesan los pendientes propios (`XREADGROUP ... 0`), por eso `ANALYTICS_CONSUMER` debe ser estable por réplica. Si el almacén lanza (PostgreSQL caído), el mensaje no se confirma, el consumidor espera 5 s y reintenta sus pendientes antes de leer mensajes nuevos. La inserción idempotente por `event_id` hace que reprocesar no cuente doble.
+**Grupo de consumidores y reintentos.** Igual que en media-worker: el grupo `analytics-workers` se crea desde el principio del stream (`id="0"`, `mkstream`); al arrancar se reprocesan los pendientes propios (`XREADGROUP ... 0`), por eso `ANALYTICS_CONSUMER` debe ser estable por réplica. Cada lote (hasta 500 mensajes) se persiste en una sola transacción y se confirma con un único `XACK`: con una transacción por evento el worker se quedaba en unos 230 eventos/s ([prueba de carga](loadtest/README.md)). Si el almacén lanza (PostgreSQL caído), el lote no se confirma, el consumidor espera 5 s y reintenta sus pendientes antes de leer mensajes nuevos. La inserción idempotente por `event_id` hace que reprocesar no cuente doble.
 
 **Validación del contrato** (`sanitize_event`):
 
@@ -149,7 +152,7 @@ sequenceDiagram
 | `room_id` presente, salvo en `user_login` y `media_processed` (los únicos eventos fuera de una sala) | `InvalidEvent` |
 | `occurred_at` y `received_at` en RFC 3339 (con `Z` u offset; sin offset se asume UTC) | `InvalidEvent` |
 | Ningún valor contiene un byte NUL (PostgreSQL no lo admite en `text`/`jsonb`) | `InvalidEvent` |
-| PostgreSQL rechaza un dato (`psycopg.DataError`) | Se trata como `InvalidEvent`: reintentar no serviría |
+| PostgreSQL rechaza un dato (`psycopg.DataError`) | Se deshace el lote y se reintenta evento por evento; el que falla se trata como `InvalidEvent`: reintentarlo no serviría |
 
 Un evento inválido se registra y **se confirma igual**: no envenena el stream. Un `type` que no está en el contrato se guarda, pero no entra a ningún KPI.
 

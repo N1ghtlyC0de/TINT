@@ -111,19 +111,29 @@ class FakeEventStore:
         self.fail_times = fail_times
         self.invalid_ids = set(invalid_ids)
         self.saves = 0
+        self.batches = []
         self.purges = 0
         self.grace_closes = []
         self.dau_refreshes = []
 
     def save(self, event):
+        return self.save_many([event]) == 1
+
+    def save_many(self, events):
+        """Todo o nada, como la transacción real: si un evento falla no se guarda ninguno."""
         from analytics.sanitize import InvalidEvent
 
+        events = list(events)
         self.saves += 1
+        self.batches.append([event["event_id"] for event in events])
         if self.fail_times:
             self.fail_times -= 1
             raise RuntimeError("postgres caído")
-        if event["event_id"] in self.invalid_ids:
+        if any(event["event_id"] in self.invalid_ids for event in events):
             raise InvalidEvent("dato inválido para la BD")
+        return sum(self.stored(event) for event in events)
+
+    def stored(self, event):
         if event["event_id"] in self.events:
             return False
         self.events[event["event_id"]] = event

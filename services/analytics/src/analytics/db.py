@@ -1,8 +1,8 @@
 """PostgreSQL de analítica: migraciones versionadas, escritura de eventos y lecturas de la API.
 
-Las conexiones se piden a una fábrica (`connect`) en modo autocommit; cada escritura va en su
-propia transacción explícita (`conn.transaction()`), así el consumidor solo hace `XACK` cuando el
-evento ya está confirmado en la base.
+Las conexiones se piden a una fábrica (`connect`) en modo autocommit; cada escritura va en una
+transacción explícita (`conn.transaction()`), una por lote leído del stream, así el consumidor
+solo hace `XACK` cuando sus eventos ya están confirmados en la base.
 """
 
 from __future__ import annotations
@@ -159,40 +159,53 @@ class EventStore:
         return self._conn
 
     def save(self, event: dict[str, Any]) -> bool:
-        """Inserta el evento sanitizado (idempotente por `event_id`); True si era nuevo.
+        """Inserta el evento sanitizado (idempotente por `event_id`); True si era nuevo."""
+        return self.save_many([event]) == 1
 
-        Un `room_closed` además recalcula y guarda los `room_kpis` de la sala en la misma
-        transacción. Un dato que PostgreSQL rechaza se reporta como `InvalidEvent` (reintentarlo
-        no serviría); cualquier otro error descarta la conexión y se propaga para reintentar.
+    def save_many(self, events: Iterable[dict[str, Any]]) -> int:
+        """Inserta un lote de eventos sanitizados en una sola transacción; devuelve los nuevos.
+
+        Un commit por lote (y no por evento) es lo que permite ingerir ráfagas: el coste es el
+        `fsync` del commit. Un `room_closed` además recalcula y guarda los `room_kpis` de la sala
+        en esa transacción, ya con los eventos anteriores del lote. Un dato que PostgreSQL
+        rechaza deshace el lote entero y se reporta como `InvalidEvent` (reintentarlo no
+        serviría): quien llama lo reintenta evento por evento para descartar solo el malo.
+        Cualquier otro error descarta la conexión y se propaga para reintentar.
         """
+        inserted = 0
         try:
             conn = self._connection()
             with conn.transaction():
-                row = conn.execute(
-                    INSERT_EVENT_SQL,
-                    (
-                        event["event_id"],
-                        event["type"],
-                        event.get("room_id") or None,
-                        event.get("user_id") or None,
-                        event["source"],
-                        parse_timestamp(event["occurred_at"]),
-                        parse_timestamp(event["received_at"]),
-                        Jsonb(event),
-                    ),
-                ).fetchone()
-                if event["type"] == "room_closed":
-                    self._refresh_room_kpis(
-                        conn,
-                        event["room_id"],
-                        parse_timestamp(event["occurred_at"]),
-                        event.get("reason") or None,
-                    )
+                for event in events:
+                    inserted += self._insert(conn, event)
         except psycopg.DataError as exc:
             raise InvalidEvent(f"PostgreSQL rechazó el evento: {exc}") from exc
         except Exception:
             self.close()
             raise
+        return inserted
+
+    def _insert(self, conn, event: dict[str, Any]) -> bool:
+        row = conn.execute(
+            INSERT_EVENT_SQL,
+            (
+                event["event_id"],
+                event["type"],
+                event.get("room_id") or None,
+                event.get("user_id") or None,
+                event["source"],
+                parse_timestamp(event["occurred_at"]),
+                parse_timestamp(event["received_at"]),
+                Jsonb(event),
+            ),
+        ).fetchone()
+        if event["type"] == "room_closed":
+            self._refresh_room_kpis(
+                conn,
+                event["room_id"],
+                parse_timestamp(event["occurred_at"]),
+                event.get("reason") or None,
+            )
         return row is not None
 
     def _refresh_room_kpis(

@@ -117,6 +117,53 @@ def test_save_inserts_event_idempotently_inside_a_transaction():
     assert conns[0].committed == 1
 
 
+def test_save_many_inserts_the_batch_in_a_single_transaction_and_counts_new_events():
+    def responder(sql, params):
+        new = sql.startswith("INSERT INTO telemetry_events") and params[0] != "dup"
+        return [(params[0],)] if new else []
+
+    store, conns = store_with(responder)
+    batch = [event(event_id="a"), event(event_id="dup"), event(event_id="b")]
+    assert store.save_many(batch) == 2
+    conn = conns[0]
+    assert [params[0] for _sql, params in conn.statements("INSERT INTO telemetry_events")] == [
+        "a",
+        "dup",
+        "b",
+    ]
+    assert conn.transactions == conn.committed == 1
+
+
+def test_save_many_of_an_empty_batch_inserts_nothing():
+    store, conns = store_with()
+    assert store.save_many([]) == 0
+    assert conns[0].statements("INSERT INTO telemetry_events") == []
+
+
+def test_room_closed_in_a_batch_consolidates_inside_the_batch_transaction():
+    store, conns = store_with(inserted)
+    store.save_many([event(event_id="a"), event(event_id="z", type="room_closed")])
+    conn = conns[0]
+    sqls = [sql for sql, _ in conn.executed]
+    first_insert = sqls.index(conn.statements("INSERT INTO telemetry_events")[0][0])
+    assert first_insert < sqls.index(conn.statements("SELECT payload FROM telemetry_events")[0][0])
+    assert len(conn.statements("INSERT INTO room_kpis")) == 1
+    assert conn.transactions == conn.committed == 1
+
+
+def test_save_many_turns_data_errors_into_invalid_events_without_committing():
+    def responder(sql, params):
+        if sql.startswith("INSERT INTO telemetry_events") and params[0] == "bad":
+            raise psycopg.DataError("valor fuera de rango")
+        return inserted(sql, params)
+
+    store, conns = store_with(responder)
+    with pytest.raises(InvalidEvent):
+        store.save_many([event(event_id="a"), event(event_id="bad")])
+    assert conns[0].committed == 0
+    assert not conns[0].closed
+
+
 def test_save_reports_duplicates_and_reuses_the_connection():
     store, conns = store_with()
     assert store.save(event()) is False
