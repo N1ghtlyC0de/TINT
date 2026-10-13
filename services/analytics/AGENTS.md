@@ -83,7 +83,7 @@ Errores: `{ "error": "<mensaje>" }` con 400 (parámetro fuera de rango), 401 (si
 1. **Privacy by Design (Ley 1581):** NUNCA analices o almacenes el texto plano de las conversaciones de chat. Registra únicamente `message_length` (se respeta el que envía el productor; solo se deriva si llegara texto). Se descartan también `nick`, `email` y nombres.
 2. **Desacoplamiento:** Ingesta eventos asíncronamente para evitar que la telemetría bloquee la reproducción.
 3. **Retención & KPIs:** Mantén la telemetría por 90 días (purga cada hora). Al recibir `room_closed`, calcula y guarda (upsert) en `room_kpis` los KPIs consolidados en la misma transacción del evento, junto con el heatmap normalizado en `room_heatmap`. Una sala sin `room_closed` se consolida igual cuando lleva `ANALYTICS_ROOM_GRACE_HOURS` sin eventos (`close_reason = grace_expired`); un cierre explícito nunca se pisa. `daily_active_users` se recalcula cada hora.
-4. **Idempotencia:** Inserciones por `event_id` (`ON CONFLICT DO NOTHING`) y `XACK` solo tras el commit. Un evento inválido se registra y se confirma (no envenena el stream); un fallo de infraestructura lo deja pendiente y se reintenta.
+4. **Idempotencia:** Inserciones por `event_id` (`ON CONFLICT DO NOTHING`) y `XACK` solo tras el commit. Cada lote leído del stream (hasta 500 eventos) va en **una sola transacción**: es lo que permite ingerir 1.000 eventos/s ([prueba de carga](loadtest/README.md)). Un evento inválido se registra y se confirma (no envenena el stream); si PostgreSQL rechaza un dato, el lote se reintenta evento por evento para descartar solo ese; un fallo de infraestructura deja el lote pendiente y se reintenta.
 5. **Falla cerrado** en la API: sin `JWT_SECRET` no arranca; sin Redis no se sirve nada autenticado (503).
 6. **TDD:** Pruebas unitarias (prueba primero) de sanitización, KPIs, consumidor, SQL y API con `pytest-cov` **≥ 85 %**.
 
@@ -92,6 +92,8 @@ Errores: `{ "error": "<mensaje>" }` con 400 (parámetro fuera de rango), 401 (si
 pip install -r requirements-dev.txt
 ruff check . && ruff format --check .
 pytest --cov=src --cov-fail-under=85
+# Prueba de carga de la ingesta (ANA-TEST-01): 1.000 eventos/s; ver loadtest/README.md
+k6 run loadtest/ingest.js
 # Integración opcional con PostgreSQL real (usa un esquema temporal que se borra al terminar):
 ANALYTICS_TEST_DATABASE_URL=postgresql://tint:tint@localhost:5432/tint pytest tests/test_db_integration.py
 ```
