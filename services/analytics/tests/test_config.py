@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 import pytest
 
 from analytics.config import ConfigError, Settings
@@ -15,6 +17,8 @@ def test_defaults():
     assert settings.port == 8084
     assert settings.allowed_origins == ("http://localhost:5173",)
     assert settings.consumer
+    assert settings.room_grace == timedelta(hours=12)
+    assert settings.timezone == "America/Bogota"
     assert "s3cret" not in repr(settings)
     assert "u:p" not in repr(settings)
 
@@ -29,6 +33,8 @@ def test_overrides():
             "ANALYTICS_PORT": "9000",
             "ANALYTICS_ALLOWED_ORIGINS": " http://a.test , ,http://b.test ",
             "ANALYTICS_CONSUMER": "analytics-1",
+            "ANALYTICS_ROOM_GRACE_HOURS": "0",
+            "ANALYTICS_TIMEZONE": "UTC",
         }
     )
     assert (settings.jwt_issuer, settings.jwt_audience) == ("iss", "aud")
@@ -36,6 +42,8 @@ def test_overrides():
     assert settings.port == 9000
     assert settings.allowed_origins == ("http://a.test", "http://b.test")
     assert settings.consumer == "analytics-1"
+    assert settings.room_grace == timedelta(0)
+    assert settings.timezone == "UTC"
 
 
 @pytest.mark.parametrize("missing", ["DATABASE_URL", "JWT_SECRET"])
@@ -49,6 +57,12 @@ def test_required_variables(missing):
 def test_invalid_port(port):
     with pytest.raises(ConfigError, match="ANALYTICS_PORT"):
         Settings.from_env({**ENV, "ANALYTICS_PORT": port})
+
+
+@pytest.mark.parametrize("hours", ["doce", "-1", "1.5"])
+def test_invalid_room_grace(hours):
+    with pytest.raises(ConfigError, match="ANALYTICS_ROOM_GRACE_HOURS"):
+        Settings.from_env({**ENV, "ANALYTICS_ROOM_GRACE_HOURS": hours})
 
 
 def test_reads_os_environ_by_default(monkeypatch):

@@ -1,5 +1,6 @@
 import logging
 import threading
+from datetime import timedelta
 from unittest.mock import Mock
 
 import pytest
@@ -7,10 +8,12 @@ from fakes import FakeEventStore, FakeRedis
 from redis.exceptions import ResponseError
 
 from analytics.consumer import (
-    PURGE_INTERVAL_S,
+    DAU_BACKFILL_DAYS,
+    DAU_REFRESH_DAYS,
+    MAINTENANCE_INTERVAL_S,
     RETRY_DELAY_S,
     StreamConsumer,
-    run_purge_loop,
+    run_maintenance_loop,
 )
 from analytics.sanitize import CONSUMER_GROUP, STREAM_KEY
 
@@ -191,20 +194,54 @@ class StopAfter(threading.Event):
         return self.is_set()
 
 
-def test_purge_loop_purges_at_start_and_every_interval_until_stopped():
+def test_maintenance_runs_at_start_and_every_interval_until_stopped():
     store = FakeEventStore()
     stop = StopAfter(2)
-    run_purge_loop(store, stop)
+    run_maintenance_loop(store, stop)
     assert store.purges == 2
-    assert stop.waits == [PURGE_INTERVAL_S, PURGE_INTERVAL_S]
+    assert store.grace_closes == [timedelta(hours=12)] * 2
+    # El primer ciclo rellena el histórico; los siguientes solo hoy y ayer.
+    assert store.dau_refreshes == [
+        ("America/Bogota", DAU_BACKFILL_DAYS),
+        ("America/Bogota", DAU_REFRESH_DAYS),
+    ]
+    assert stop.waits == [MAINTENANCE_INTERVAL_S, MAINTENANCE_INTERVAL_S]
 
 
-def test_purge_loop_survives_errors(caplog):
+def test_maintenance_uses_the_configured_grace_and_timezone():
+    store = FakeEventStore()
+    run_maintenance_loop(store, StopAfter(1), room_grace=timedelta(hours=1), timezone="UTC")
+    assert store.grace_closes == [timedelta(hours=1)]
+    assert store.dau_refreshes == [("UTC", DAU_BACKFILL_DAYS)]
+
+
+def test_maintenance_consolidates_idle_rooms_before_purging_their_events():
     store = Mock()
+    store.close_idle_rooms.return_value = store.purge_expired.return_value = 0
+    store.refresh_daily_active_users.return_value = 2
+    run_maintenance_loop(store, StopAfter(1))
+    assert [call[0] for call in store.method_calls] == [
+        "close_idle_rooms",
+        "purge_expired",
+        "refresh_daily_active_users",
+    ]
+
+
+def test_a_failing_maintenance_task_is_logged_and_does_not_stop_the_others(caplog):
+    store = Mock()
+    store.close_idle_rooms.side_effect = [RuntimeError("caído"), 1]
     store.purge_expired.side_effect = [RuntimeError("caído"), 3]
+    store.refresh_daily_active_users.side_effect = [RuntimeError("caído"), 90]
     stop = StopAfter(2)
     with caplog.at_level(logging.INFO, logger="analytics.consumer"):
-        run_purge_loop(store, stop, interval_s=10)
+        run_maintenance_loop(store, stop, interval_s=10)
     assert store.purge_expired.call_count == 2
+    assert store.close_idle_rooms.call_count == 2
     assert "fallo purgando" in caplog.text
+    assert "fallo consolidando" in caplog.text
+    assert "fallo calculando" in caplog.text
     assert "purgados 3 eventos" in caplog.text
+    assert "consolidadas 1 salas" in caplog.text
+    # El relleno del histórico se reintenta hasta que sale bien.
+    days = [call.args[1] for call in store.refresh_daily_active_users.call_args_list]
+    assert days == [DAU_BACKFILL_DAYS, DAU_BACKFILL_DAYS]

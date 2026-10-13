@@ -12,6 +12,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from datetime import timedelta
 
 from redis.exceptions import ResponseError
 
@@ -23,8 +24,14 @@ DEFAULT_BLOCK_MS = 5000
 DEFAULT_COUNT = 50
 # Espera tras un fallo de infraestructura antes de reintentar los pendientes.
 RETRY_DELAY_S = 5.0
-# Cada cuánto se purga la telemetría con más de 90 días.
-PURGE_INTERVAL_S = 3600.0
+# Cada cuánto corre el mantenimiento: cierre por gracia, purga de 90 días y DAU/MAU.
+MAINTENANCE_INTERVAL_S = 3600.0
+# Periodo de gracia de la sala (REQ-07): el mismo TTL que usan sync-core y social-core.
+DEFAULT_ROOM_GRACE = timedelta(hours=12)
+DEFAULT_TIMEZONE = "America/Bogota"
+# El primer ciclo rellena todo lo que aún hay en la telemetría cruda; después, hoy y ayer.
+DAU_BACKFILL_DAYS = 90
+DAU_REFRESH_DAYS = 2
 
 
 class StreamConsumer:
@@ -114,13 +121,45 @@ class StreamConsumer:
         self.redis.xack(self.stream, self.group, message_id)
 
 
-def run_purge_loop(store, stop: threading.Event, interval_s: float = PURGE_INTERVAL_S) -> None:
-    """Purga la telemetría vencida al arrancar y luego cada `interval_s` hasta `stop`."""
+def _maintain(task: str, done: str, call: Callable[[], int]) -> bool:
+    """Ejecuta una tarea de mantenimiento; un fallo se registra y no detiene las demás."""
+    try:
+        logger.info(done, call())
+    except Exception:
+        logger.exception("fallo %s", task)
+        return False
+    return True
+
+
+def run_maintenance_loop(
+    store,
+    stop: threading.Event,
+    interval_s: float = MAINTENANCE_INTERVAL_S,
+    room_grace: timedelta = DEFAULT_ROOM_GRACE,
+    timezone: str = DEFAULT_TIMEZONE,
+) -> None:
+    """Mantenimiento al arrancar y luego cada `interval_s` hasta `stop`.
+
+    Primero consolida las salas que agotaron el periodo de gracia (antes de que la purga se
+    lleve sus eventos), luego purga la telemetría vencida y por último recalcula DAU/MAU.
+    """
+    dau_days = DAU_BACKFILL_DAYS
     while True:
-        try:
-            purged = store.purge_expired()
-            logger.info("purgados %d eventos con más de 90 días", purged)
-        except Exception:
-            logger.exception("fallo purgando la telemetría vencida")
+        _maintain(
+            "consolidando las salas inactivas",
+            "consolidadas %d salas por periodo de gracia",
+            lambda: store.close_idle_rooms(room_grace),
+        )
+        _maintain(
+            "purgando la telemetría vencida",
+            "purgados %d eventos con más de 90 días",
+            store.purge_expired,
+        )
+        if _maintain(
+            "calculando los usuarios activos",
+            "usuarios activos (DAU/MAU) recalculados para %d días",
+            lambda days=dau_days: store.refresh_daily_active_users(timezone, days),
+        ):
+            dau_days = DAU_REFRESH_DAYS
         if stop.wait(interval_s):
             return
