@@ -188,3 +188,38 @@ def test_daily_active_users(connect):
         rows = conn.execute("SELECT day, dau FROM daily_active_users ORDER BY day").fetchall()
     assert rows == [(date(2026, 10, 10), 1), (date(2026, 10, 11), 2)]
     store.close()
+
+
+def test_business_overview(connect):
+    with connect() as conn:
+        apply_migrations(conn)
+    store = EventStore(connect, clock=lambda: NOW)
+    repo = ReadRepository(connect)
+    assert repo.business_overview(30, 50) == {
+        "daily": [],
+        "events": [],
+        "active_rooms": 0,
+        "rooms": [],
+        "heatmaps": {},
+    }
+
+    store.save(ev("a", "presence", connected_users="3"))
+    store.save(ev("b", "reaction", emoji="👏", position_ms="1500"))
+    store.save(ev("c", "reaction", emoji="👏", position_ms="7500", room_id="r2"))
+    store.save(ev("l", "user_login", source="identity-api", room_id="", user_id="uid"))
+    store.save(ev("z", "room_closed", source="identity-api", reason="deleted"))
+    store.refresh_daily_active_users("UTC", 3)
+
+    overview = repo.business_overview(2, 50)
+    assert overview["daily"] == [(date(2026, 10, 10), 0, 0), (date(2026, 10, 11), 1, 1)]
+    assert overview["events"] == [
+        ("reaction", "social-core", 2),
+        ("presence", "social-core", 1),
+        ("room_closed", "identity-api", 1),
+        ("user_login", "identity-api", 1),
+    ]
+    assert overview["active_rooms"] == 2
+    (room,) = overview["rooms"]
+    assert (room["room_id"], room["peak_users"], room["close_reason"]) == ("r1", 3, "deleted")
+    assert overview["heatmaps"] == {"r1": [(0, 1, 1.0)]}
+    store.close()

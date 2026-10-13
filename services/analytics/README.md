@@ -237,9 +237,11 @@ sequenceDiagram
 | `GET /api/v1/rooms/{id}/kpis` | — | KPIs de §3.3 + `room_id`, `live`, `close_reason`, `closed_at`, `computed_at` |
 | `GET /api/v1/rooms/{id}/reactions/heatmap` | `bucket_ms` (1000–60000, por defecto 5000) | `{ room_id, bucket_ms, buckets, density, by_emoji }` |
 | `GET /api/v1/rooms/{id}/timeline` | `step_s` (10–3600, por defecto 60) | `{ room_id, step_s, points }` |
+| `GET /api/v1/analytics/overview` | — (Bearer = `ANALYTICS_ADMIN_PASSWORD`) | Panel de negocio: `{ generated_at, daily, events, rooms }` |
 
 Formas exactas de cada respuesta en [AGENTS.md › API](AGENTS.md#api-solo-lectura-puerto-analytics_port-por-defecto-8084).
 
+- **Panel de negocio.** `GET /api/v1/analytics/overview` alimenta la página oculta `/analitica` de la web: DAU/MAU de los últimos 30 días, eventos por tipo y las 50 salas cerradas más recientes con sus KPIs y su heatmap normalizado. No usa el analytics-ticket: se protege con una contraseña compartida (`ANALYTICS_ADMIN_PASSWORD`, comparada en tiempo constante). Sin esa variable la ruta responde 404. Solo entrega agregados, sin `user_id`.
 - **Orden de la autorización:** firma y claims → revocación en Redis → rol → sala. La revocación se consulta antes que el rol, así un ticket revocado siempre da 401.
 - **Falla cerrado:** si Redis no responde (timeout de 2 s del cliente de la API) se responde 503; nunca se acepta el token por defecto.
 - El analytics-ticket es el mismo ticket de Host que el sync-ticket (`generateHostTicket` en identity-api). identity-api lo entrega también para salas **borradas**, para que el Host vea los KPIs consolidados de una sala cerrada.
@@ -329,6 +331,7 @@ Tipos que llegan hoy, por productor: identity-api (`user_login`, `room_created`,
 | `ANALYTICS_CONSUMER` | nombre del host | Estable por réplica para recuperar sus pendientes |
 | `ANALYTICS_ROOM_GRACE_HOURS` | `12` | Entero ≥ 0. Horas sin actividad tras las que una sala se consolida como `grace_expired` |
 | `ANALYTICS_TIMEZONE` | `America/Bogota` | Nombre IANA; corte del día en DAU/MAU (lo resuelve PostgreSQL) |
+| `ANALYTICS_ADMIN_PASSWORD` | — | Contraseña del panel de negocio; vacía = panel deshabilitado |
 
 En `docker-compose.yml` el servicio `analytics` (`tint-analytics`) toma `JWT_*` y `ANALYTICS_*` del `.env` raíz ([`.env.example`](../../.env.example)), fija `ANALYTICS_CONSUMER=analytics-1`, publica el puerto `${ANALYTICS_PORT:-8084}` y tiene un *healthcheck* que llama a `/healthz` cada 10 s. Arranca cuando PostgreSQL y Redis están sanos.
 

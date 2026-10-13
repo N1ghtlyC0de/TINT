@@ -39,7 +39,7 @@ Cómo funciona el servicio por dentro (ingesta, sanitización, KPIs y API): [REA
 ## Límites de Dominio
 - ❌ No bloquees ni llames de forma síncrona a `sync-core` o `social-core`: solo consumes el stream.
 - ❌ No almacenes PII ni contenido de chat (Ley 1581 de 2012 — Habeas Data, Colombia).
-- ❌ Solo lectura diferida de KPIs: **nunca** endpoints de tiempo real (WebSocket, SSE, polling de presencia) **ni de eventos crudos**. La API devuelve agregados de una sala a su host.
+- ❌ Solo lectura diferida de KPIs: **nunca** endpoints de tiempo real (WebSocket, SSE, polling de presencia) **ni de eventos crudos**. La API devuelve agregados de una sala a su host y, con la contraseña del equipo, el panel de negocio (también solo agregados: sin `user_id` ni títulos de sala).
 - ❌ No emites tokens: el `analytics-ticket` lo firma identity-api; aquí solo se verifica.
 
 ## Modelo de Datos Involucrado
@@ -65,6 +65,7 @@ Errores: `{ "error": "<mensaje>" }` con 400 (parámetro fuera de rango), 401 (si
 | `GET /healthz` | `{"status":"ok"}` (sin token) |
 | `GET /api/v1/rooms/{id}/kpis` | `{room_id, live, peak_users, avg_users, avg_drift_ms, trivia_accuracy_pct, messages, reactions, playback_commands, buffering_events, avg_buffering_ms, avg_rtt_ms, p95_drift_ms, total_buffering_ms, close_reason, closed_at, computed_at}`. `live: false` = fila de `room_kpis` (sala cerrada; un cierre `grace_expired` con actividad posterior no cuenta); `live: true` = calculado al vuelo sobre `telemetry_events` (`closed_at: null`). |
 | `GET /api/v1/rooms/{id}/reactions/heatmap?bucket_ms=5000` | `{room_id, bucket_ms, buckets: [{bucket_start_ms, emoji, count}], density: [{bucket_start_ms, count, density}], by_emoji: [{emoji, count}]}`. `density` es el total del tramo entre el del tramo más activo (0 a 1). Tramos por `position_ms` del vídeo; `bucket_ms` entre 1000 y 60000. `buckets` ordenado por `bucket_start_ms` y `emoji`; `by_emoji` por `count` descendente. |
+| `GET /api/v1/analytics/overview` | Panel de negocio (página `/analitica` de la web). Auth distinta: `Authorization: Bearer <ANALYTICS_ADMIN_PASSWORD>` (comparación en tiempo constante; 401 si no coincide). Sin la variable la ruta responde 404. `{generated_at, daily: [{day, dau, mau}] (30 días), events: {total, rooms, by_type: [{type, source, count}]}, rooms: [{room_id, …KPIs, close_reason, closed_at, computed_at, heatmap: [{bucket_start_ms, reactions, density}]}] (50 más recientes)}`. |
 | `GET /api/v1/rooms/{id}/timeline?step_s=60` | `{room_id, step_s, points: [{t, connected_users, messages, reactions}]}`. Intervalos por `occurred_at` alineados a la época; `t` es el inicio del intervalo (RFC 3339 UTC con ms); `connected_users` es el último `presence` conocido al final del intervalo (se arrastra); `step_s` entre 10 y 3600. |
 
 ## Variables de entorno
@@ -79,6 +80,7 @@ Errores: `{ "error": "<mensaje>" }` con 400 (parámetro fuera de rango), 401 (si
 | `ANALYTICS_CONSUMER` | hostname | Nombre estable por réplica para recuperar sus pendientes. |
 | `ANALYTICS_ROOM_GRACE_HOURS` | `12` | Entero ≥ 0: horas sin actividad para consolidar una sala como `grace_expired` (REQ-07). |
 | `ANALYTICS_TIMEZONE` | `America/Bogota` | Nombre IANA del corte del día en DAU/MAU. |
+| `ANALYTICS_ADMIN_PASSWORD` | — (panel deshabilitado) | Contraseña compartida del panel de negocio. Es un control de acceso débil, pensado para el equipo: no hay usuarios ni límite de intentos. |
 
 ## Reglas de Dominio
 1. **Privacy by Design (Ley 1581):** NUNCA analices o almacenes el texto plano de las conversaciones de chat. Registra únicamente `message_length` (se respeta el que envía el productor; solo se deriva si llegara texto). Se descartan también `nick`, `email` y nombres.

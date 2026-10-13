@@ -121,6 +121,8 @@ services:
       ANALYTICS_ROOM_GRACE_HOURS: ${ANALYTICS_ROOM_GRACE_HOURS:-12}
       # Zona horaria del corte del día en DAU/MAU.
       ANALYTICS_TIMEZONE: ${ANALYTICS_TIMEZONE:-America/Bogota}
+      # Contraseña compartida del panel de negocio (/analitica); vacía = panel deshabilitado.
+      ANALYTICS_ADMIN_PASSWORD: ${ANALYTICS_ADMIN_PASSWORD:-}
     ports:
       - "${ANALYTICS_PORT:-8084}:${ANALYTICS_PORT:-8084}"
     healthcheck:

@@ -83,6 +83,7 @@ def main(
         issuer=settings.jwt_issuer,
         audience=settings.jwt_audience,
         allowed_origins=settings.allowed_origins,
+        admin_password=settings.admin_password,
     )
     server = server_factory(api, "0.0.0.0", settings.port)
     workers = [

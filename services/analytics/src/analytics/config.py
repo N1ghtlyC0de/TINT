@@ -27,6 +27,8 @@ class Settings:
     allowed_origins: tuple[str, ...] = DEFAULT_ALLOWED_ORIGINS
     consumer: str = field(default_factory=socket.gethostname)
     room_grace: timedelta = DEFAULT_ROOM_GRACE
+    # Contraseña compartida del panel de negocio; sin ella la ruta no se sirve.
+    admin_password: str | None = field(default=None, repr=False)
     timezone: str = DEFAULT_TIMEZONE
 
     @classmethod
@@ -45,6 +47,7 @@ class Settings:
             ("ANALYTICS_CONSUMER", "consumer"),
             # Zona horaria (nombre IANA) del corte del día en DAU/MAU; la resuelve PostgreSQL.
             ("ANALYTICS_TIMEZONE", "timezone"),
+            ("ANALYTICS_ADMIN_PASSWORD", "admin_password"),
         ):
             if env.get(var):
                 optional[attr] = env[var]

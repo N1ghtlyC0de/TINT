@@ -138,6 +138,7 @@ XADD analytics:events *
 | `GET /api/v1/rooms/{id}/kpis` | Los KPIs de arriba más `live` (`false` = `room_kpis` de una sala cerrada; `true` = calculados al vuelo), `close_reason`, `closed_at` y `computed_at` |
 | `GET /api/v1/rooms/{id}/reactions/heatmap?bucket_ms=5000` | `buckets` `[{bucket_start_ms, emoji, count}]` por posición del vídeo, `density` `[{bucket_start_ms, count, density}]` (0 a 1) y `by_emoji` `[{emoji, count}]` |
 | `GET /api/v1/rooms/{id}/timeline?step_s=60` | `points` `[{t, connected_users, messages, reactions}]` por intervalo |
+| `GET /api/v1/analytics/overview` | Panel de negocio (página `/analitica`): DAU/MAU por día, eventos por tipo y salas cerradas con KPIs y heatmap. No usa el ticket: Bearer con `ANALYTICS_ADMIN_PASSWORD` |
 
 Formas exactas, auth (HS256, `role` `host`, sala del token, revocación con falla cerrado) y errores:
 [services/analytics/AGENTS.md](../services/analytics/AGENTS.md#api-solo-lectura-puerto-analytics_port-por-defecto-8084).
