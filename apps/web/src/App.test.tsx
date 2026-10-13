@@ -39,6 +39,14 @@ describe('App', () => {
     window.history.pushState({}, '', '/');
   });
 
+  it('expone /analitica sin sesión y pide la contraseña del equipo', async () => {
+    window.history.pushState({}, '', '/analitica');
+    render(<App />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'Analítica de TINT' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Contraseña')).toBeInTheDocument();
+    window.history.pushState({}, '', '/');
+  });
+
   it('/rooms/:id/analytics exige sesión de host', async () => {
     window.history.pushState({}, '', '/rooms/r1/analytics');
     render(<App />);

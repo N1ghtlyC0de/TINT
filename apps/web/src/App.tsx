@@ -16,6 +16,8 @@ const TestMe = lazy(() => import('./pages/TestMe'));
 const Arquitectura = lazy(() => import('./pages/Arquitectura'));
 // Carga diferida: la analítica solo la abre el host y no debe pesar en el bundle principal.
 const RoomAnalytics = lazy(() => import('./pages/RoomAnalytics'));
+// Carga diferida: panel de negocio de analítica, oculto y protegido con contraseña.
+const BusinessAnalytics = lazy(() => import('./pages/BusinessAnalytics'));
 
 const page = (node: ReactNode) => <PageTransition>{node}</PageTransition>;
 
@@ -40,6 +42,8 @@ function AnimatedRoutes() {
         <Route path="/test-me" element={<Suspense fallback={null}><TestMe /></Suspense>} />
         {/* Ruta oculta: mapa interactivo de la arquitectura, sin enlaces desde la UI. */}
         <Route path="/arquitectura" element={<Suspense fallback={null}><Arquitectura /></Suspense>} />
+        {/* Ruta oculta: panel de negocio de analítica (pide la contraseña del equipo). */}
+        <Route path="/analitica" element={<Suspense fallback={null}><BusinessAnalytics /></Suspense>} />
         <Route path="/" element={<Navigate to="/login" replace />} />
       </Routes>
     </AnimatePresence>
