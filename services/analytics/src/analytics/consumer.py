@@ -1,9 +1,10 @@
 """Ingesta: consume `analytics:events` (`XREADGROUP` + `XACK`) y lo persiste en PostgreSQL.
 
-Adaptado del consumidor de `services/media-worker` (mismo manejo de pendientes). Por mensaje:
-`sanitize_event` → `EventStore.save` (INSERT idempotente; `room_closed` consolida KPIs) → `XACK`.
-Un evento inválido se registra y se confirma para no envenenar el stream; un fallo de
-infraestructura lo deja pendiente y se reintenta.
+Adaptado del consumidor de `services/media-worker` (mismo manejo de pendientes). Por lote leído:
+`sanitize_event` de cada mensaje → `EventStore.save_many` (INSERT idempotente en una sola
+transacción; `room_closed` consolida KPIs) → `XACK` de todo el lote. Un evento inválido se
+registra y se confirma para no envenenar el stream; un fallo de infraestructura deja el lote
+pendiente y se reintenta.
 """
 
 from __future__ import annotations
@@ -21,7 +22,8 @@ from analytics.sanitize import CONSUMER_GROUP, STREAM_KEY, InvalidEvent, sanitiz
 logger = logging.getLogger(__name__)
 
 DEFAULT_BLOCK_MS = 5000
-DEFAULT_COUNT = 50
+# Eventos por lote y, por tanto, por transacción: con 50 el commit se llevaba casi todo el tiempo.
+DEFAULT_COUNT = 500
 # Espera tras un fallo de infraestructura antes de reintentar los pendientes.
 RETRY_DELAY_S = 5.0
 # Cada cuánto corre el mantenimiento: cierre por gracia, purga de 90 días y DAU/MAU.
@@ -37,7 +39,7 @@ DAU_REFRESH_DAYS = 2
 class StreamConsumer:
     """Lee `analytics:events` con el grupo `analytics-workers` y confirma tras persistir.
 
-    Si el almacén lanza (p. ej. PostgreSQL caído) el evento no se confirma: queda pendiente,
+    Si el almacén lanza (p. ej. PostgreSQL caído) el lote no se confirma: queda pendiente,
     `run` espera `RETRY_DELAY_S` y lo reintenta (`recover_pending`) sin tumbar el servicio. Al
     reiniciar también se reprocesan los pendientes; la inserción idempotente evita duplicados.
     """
@@ -76,12 +78,10 @@ class StreamConsumer:
         response = self.redis.xreadgroup(
             self.group, self.consumer, {self.stream: last_id}, count=self.count, block=block
         )
-        handled = 0
-        for _stream, messages in response or []:
-            for message_id, fields in messages:
-                self._handle(message_id, fields)
-                handled += 1
-        return handled
+        messages = [message for _stream, batch in response or [] for message in batch]
+        if messages:
+            self._handle(messages)
+        return len(messages)
 
     def recover_pending(self) -> int:
         """Reprocesa los eventos entregados a este consumidor que nunca se confirmaron."""
@@ -113,12 +113,26 @@ class StreamConsumer:
                 )
                 retry = True
 
-    def _handle(self, message_id: str, fields: dict | None) -> None:
-        try:
-            self.store.save(sanitize_event(dict(fields or {})))
-        except InvalidEvent as exc:
-            logger.warning("evento %s inválido, se descarta: %s", message_id, exc)
-        self.redis.xack(self.stream, self.group, message_id)
+    def _handle(self, messages: list[tuple[str, dict | None]]) -> None:
+        """Persiste el lote en una transacción y lo confirma entero (inválidos incluidos)."""
+        valid = []
+        for message_id, fields in messages:
+            try:
+                valid.append((message_id, sanitize_event(dict(fields or {}))))
+            except InvalidEvent as exc:
+                logger.warning("evento %s inválido, se descarta: %s", message_id, exc)
+        if valid:
+            try:
+                self.store.save_many([event for _id, event in valid])
+            except InvalidEvent:
+                # PostgreSQL rechazó algún dato y deshizo el lote: uno por uno, para descartar
+                # solo el evento malo.
+                for message_id, event in valid:
+                    try:
+                        self.store.save(event)
+                    except InvalidEvent as exc:
+                        logger.warning("evento %s inválido, se descarta: %s", message_id, exc)
+        self.redis.xack(self.stream, self.group, *(message_id for message_id, _ in messages))
 
 
 def _maintain(task: str, done: str, call: Callable[[], int]) -> bool:

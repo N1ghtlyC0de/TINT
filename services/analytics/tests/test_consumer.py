@@ -67,6 +67,24 @@ def test_poll_sanitizes_persists_and_acks_each_message():
     assert redis.pending == {}
 
 
+def test_poll_persists_the_whole_batch_in_one_call_and_acks_it_at_once():
+    redis = Mock()
+    redis.xreadgroup.return_value = [[STREAM_KEY, [("1-0", fields("e1")), ("2-0", fields("e2"))]]]
+    store = FakeEventStore()
+    assert make_consumer(redis, store).poll() == 2
+    assert store.batches == [["e1", "e2"]], "una sola transacción para el lote"
+    redis.xack.assert_called_once_with(STREAM_KEY, CONSUMER_GROUP, "1-0", "2-0")
+
+
+def test_poll_without_messages_does_not_touch_the_store_or_ack():
+    redis = Mock()
+    redis.xreadgroup.return_value = []
+    store = FakeEventStore()
+    assert make_consumer(redis, store).poll() == 0
+    assert store.saves == 0
+    redis.xack.assert_not_called()
+
+
 def test_poll_passes_block_and_count_to_redis():
     redis = Mock()
     redis.xreadgroup.return_value = None
@@ -107,6 +125,32 @@ def test_event_rejected_by_the_database_is_acked(caplog):
     assert "dato inválido" in caplog.text
 
 
+def test_a_rejected_event_only_discards_itself_and_the_rest_of_the_batch_is_saved(caplog):
+    redis = FakeRedis()
+    ids = [redis.xadd(STREAM_KEY, fields(e)) for e in ("e1", "bad", "e3")]
+    ids.append(redis.xadd(STREAM_KEY, fields(event_id="")))
+    store = FakeEventStore(invalid_ids={"bad"})
+    with caplog.at_level(logging.WARNING, logger="analytics.consumer"):
+        make_consumer(redis, store).poll()
+    assert list(store.events) == ["e1", "e3"]
+    # El lote entero falla una vez y luego se reintenta evento por evento.
+    assert store.batches == [["e1", "bad", "e3"], ["e1"], ["bad"], ["e3"]]
+    assert redis.acks == ids
+    assert f"evento {ids[1]} inválido" in caplog.text
+    assert f"evento {ids[3]} inválido" in caplog.text
+
+
+def test_store_error_leaves_the_whole_batch_pending():
+    redis = FakeRedis()
+    ids = [redis.xadd(STREAM_KEY, fields(e)) for e in ("e1", "e2")]
+    store = FakeEventStore(fail_times=1)
+    with pytest.raises(RuntimeError):
+        make_consumer(redis, store).poll()
+    assert redis.acks == []
+    assert set(redis.pending) == set(ids)
+    assert store.events == {}
+
+
 def test_store_error_leaves_message_pending():
     redis = FakeRedis()
     message_id = redis.xadd(STREAM_KEY, fields())
@@ -133,11 +177,10 @@ class StoppingStore(FakeEventStore):
         self.stop = stop
         self.stop_on = stop_on
 
-    def save(self, event):
-        result = super().save(event)
+    def stored(self, event):
         if event["event_id"] == self.stop_on:
             self.stop.set()
-        return result
+        return super().stored(event)
 
 
 def test_run_survives_store_errors_and_retries_pending(caplog):
