@@ -26,6 +26,7 @@ Cómo funciona el servicio por dentro (ingesta, sanitización, KPIs y API): [REA
 | `db.py` + `migrations/` | Migraciones, `EventStore` (escritura del consumidor) y `ReadRepository` (lecturas de la API). |
 | `consumer.py` | `XREADGROUP` → `sanitize` → `INSERT … ON CONFLICT DO NOTHING` → `XACK`; purga de 90 días. |
 | `api.py` | API HTTP de solo lectura (`AnalyticsApi.handle` sin sockets + `create_server`). |
+| `audit.py` | Auditoría de privacidad sobre la BD (`python -m analytics.audit`, solo lectura). |
 | `config.py`, `__main__.py` | Variables de entorno; migra y arranca consumidor, purga y API en hilos; apagado con SIGTERM. |
 
 ## Responsabilidades
@@ -88,5 +89,8 @@ pip install -r requirements-dev.txt
 ruff check . && ruff format --check .
 pytest --cov=src --cov-fail-under=85
 # Integración opcional con PostgreSQL real (usa un esquema temporal que se borra al terminar):
-ANALYTICS_TEST_DATABASE_URL=postgresql://tint:tint@localhost:5432/tint pytest tests/test_db_integration.py
+ANALYTICS_TEST_DATABASE_URL=postgresql://tint:tint@localhost:5432/tint pytest tests/test_db_integration.py tests/test_audit.py
+# Auditoría de privacidad (Ley 1581) sobre la base real; sale con 1 si encuentra una violación:
+DATABASE_URL=postgresql://tint:tint@localhost:5432/tint PYTHONPATH=src python -m analytics.audit
+docker exec tint-analytics python -m analytics.audit   # contra el despliegue
 ```
