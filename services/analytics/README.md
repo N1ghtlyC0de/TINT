@@ -1,6 +1,6 @@
 # analytics
 
-Servicio de **analítica** de TINT (Python 3.11, Redis Streams, PostgreSQL). Ingiere la telemetría que publican los demás servicios en `analytics:events`, la sanitiza (sin texto libre ni datos personales), la guarda 90 días, consolida los **KPIs de cada sala** cuando se cierra y se los entrega a su Host por una **API HTTP de solo lectura**.
+Servicio de **analítica** de TINT (Python 3.11, Redis Streams, PostgreSQL). Ingiere la telemetría que publican los demás servicios en `analytics:events`, la sanitiza (sin texto libre ni datos personales), la guarda 90 días, consolida los **KPIs de cada sala** cuando se cierra (o agota su periodo de gracia), resume los **usuarios activos por día** y le entrega los KPIs a su Host por una **API HTTP de solo lectura**.
 
 Este README explica **cómo funciona por dentro**. Las reglas del dominio, la forma exacta de cada respuesta y las variables están en [AGENTS.md](AGENTS.md); el contrato de eventos (qué publica cada servicio) está en [docs/contrato-eventos-analitica.md](../../docs/contrato-eventos-analitica.md), del que este dominio es dueño.
 
@@ -25,8 +25,11 @@ Este README explica **cómo funciona por dentro**. Las reglas del dominio, la fo
 | Consumir `analytics:events` con el grupo `analytics-workers` y confirmar (`XACK`) solo tras el commit | `consumer.py` |
 | Validar el contrato mínimo de cada evento y quitar texto libre y PII | `sanitize.py` |
 | Guardar cada evento sanitizado en `telemetry_events`, sin duplicados por `event_id` | `db.py` (`EventStore`) |
-| Consolidar los KPIs de la sala en `room_kpis` al recibir `room_closed` | `db.py` + `kpis.py` |
-| Purgar la telemetría con más de 90 días (al arrancar y cada hora) | `consumer.py` (`run_purge_loop`) |
+| Consolidar los KPIs de la sala en `room_kpis` y su heatmap normalizado en `room_heatmap` al recibir `room_closed` | `db.py` + `kpis.py` |
+| Consolidar igual las salas que agotan el periodo de gracia (12 h sin actividad) sin un `room_closed` | `db.py` (`close_idle_rooms`) |
+| Resumir los usuarios activos por día (DAU/MAU) en `daily_active_users` | `db.py` (`refresh_daily_active_users`) |
+| Purgar la telemetría con más de 90 días | `db.py` (`purge_expired`) |
+| Ejecutar ese mantenimiento al arrancar y cada hora | `consumer.py` (`run_maintenance_loop`) |
 | Servir KPIs, heatmap de reacciones y línea de tiempo al Host de la sala | `api.py` |
 | Verificar el `analytics-ticket` HS256 y su revocación, con falla cerrado | `api.py` |
 | Aplicar sus propias migraciones SQL al arrancar | `db.py` + `migrations/` |
@@ -37,11 +40,11 @@ Este README explica **cómo funciona por dentro**. Las reglas del dominio, la fo
 - No guarda PII ni contenido de chat (Ley 1581): del chat solo queda `message_length`.
 - No ofrece tiempo real (WebSocket, SSE, polling de presencia) ni **eventos crudos**: la API devuelve agregados de una sala a su Host.
 - No emite tokens: el `analytics-ticket` lo firma identity-api; aquí solo se verifica.
-- No toca las tablas de identity-api: usa la misma base PostgreSQL, pero solo sus tablas `schema_migrations`, `telemetry_events` y `room_kpis`.
+- No toca las tablas de identity-api: usa la misma base PostgreSQL, pero solo sus tablas `schema_migrations`, `telemetry_events`, `room_kpis`, `room_heatmap` y `daily_active_users`.
 
 ## 2. Arquitectura interna
 
-Un único proceso (`python -m analytics`) con tres hilos: el **consumidor**, la **purga** y la **API**.
+Un único proceso (`python -m analytics`) con tres hilos: el **consumidor**, el **mantenimiento** y la **API**.
 
 ```mermaid
 flowchart LR
@@ -52,7 +55,7 @@ flowchart LR
         MAIN["__main__.py<br/>migra, arranca hilos, SIGTERM"]
         CFG["config.py<br/>Settings"]
         CONS["consumer.py<br/>StreamConsumer"]
-        PURGE["consumer.py<br/>run_purge_loop"]
+        PURGE["consumer.py<br/>run_maintenance_loop"]
         SAN["sanitize.py<br/>contrato y PII"]
         KPI["kpis.py<br/>funciones puras"]
         STORE["db.py<br/>EventStore"]
@@ -85,9 +88,9 @@ flowchart LR
 | Arranque | Lee la configuración, aplica migraciones, crea dos clientes Redis (consumidor y API, este con timeouts de 2 s), arranca los tres hilos y apaga ordenadamente con SIGTERM/SIGINT | `src/analytics/__main__.py` |
 | Configuración | `DATABASE_URL` y `JWT_SECRET` obligatorias (sin ellas no arranca); valida `ANALYTICS_PORT` | `src/analytics/config.py` |
 | Consumidor | `XGROUP CREATE ... MKSTREAM`, recupera pendientes, lotes de 50 con `BLOCK 5000`, `XACK` tras persistir, reintento cada 5 s | `src/analytics/consumer.py` |
-| Purga | `DELETE` de lo que tenga más de 90 días, al arrancar y cada 3600 s | `src/analytics/consumer.py` |
+| Mantenimiento | Al arrancar y cada 3600 s, con su propia conexión: cierre por periodo de gracia, `DELETE` de lo que tenga más de 90 días y DAU/MAU. Si una tarea falla, se registra y las demás siguen | `src/analytics/consumer.py` |
 | Sanitización | Campos obligatorios, fechas RFC 3339, descarte de campos prohibidos, `message_length` | `src/analytics/sanitize.py` |
-| KPIs | `compute_room_kpis`, `reaction_heatmap`, `reactions_by_emoji`, `timeline` (sin E/S) | `src/analytics/kpis.py` |
+| KPIs | `compute_room_kpis`, `reaction_heatmap`, `heatmap_density`, `reactions_by_emoji`, `timeline` (sin E/S) | `src/analytics/kpis.py` |
 | Escritura | `EventStore`: una conexión larga que se reabre si se pierde; una transacción por evento | `src/analytics/db.py` |
 | Lectura | `ReadRepository`: una conexión corta por consulta (seguro entre hilos) | `src/analytics/db.py` |
 | Migraciones | Archivos `NNN_*.sql` aplicados en una transacción con `pg_advisory_xact_lock` | `src/analytics/db.py`, `src/analytics/migrations/` |
@@ -99,8 +102,8 @@ flowchart LR
 
 1. `Settings.from_env`: si falta `DATABASE_URL` o `JWT_SECRET`, imprime el error y termina con código **2** (falla cerrado: sin secreto no hay API).
 2. `apply_migrations`: en una transacción toma el *advisory lock* `727001` (dos réplicas no migran a la vez), crea `schema_migrations` si no existe y aplica en orden los `migrations/*.sql` que falten. Si PostgreSQL falla, termina con código **1**.
-3. Arranca los hilos `consumer`, `purge` y `api` (este último *daemon*).
-4. Con SIGTERM/SIGINT: para el servidor HTTP, espera hasta 10 s a cada hilo de trabajo y cierra la conexión de escritura.
+3. Arranca los hilos `consumer`, `maintenance` y `api` (este último *daemon*).
+4. Con SIGTERM/SIGINT: para el servidor HTTP, espera hasta 10 s a cada hilo de trabajo y cierra las conexiones de escritura.
 
 ### 3.2 Ingesta de `analytics:events`
 
@@ -154,7 +157,7 @@ Un evento inválido se registra y **se confirma igual**: no envenena el stream. 
 
 ### 3.3 Consolidación de KPIs al cerrar una sala
 
-identity-api publica `room_closed` (hoy, cuando el Host borra la sala). En la **misma transacción** en la que se inserta ese evento, `EventStore` lee todos los eventos de la sala de los tipos que alimentan KPIs, los agrega con `compute_room_kpis` y hace `INSERT ... ON CONFLICT (room_id) DO UPDATE` en `room_kpis`, con `closed_at` = `occurred_at` del `room_closed` y `computed_at` = ahora. Si `room_closed` llega repetido, se recalcula y se sobrescribe con el mismo resultado.
+identity-api publica `room_closed` (hoy, cuando el Host borra la sala). En la **misma transacción** en la que se inserta ese evento, `EventStore` lee todos los eventos de la sala de los tipos que alimentan KPIs, los agrega con `compute_room_kpis` y hace `INSERT ... ON CONFLICT (room_id) DO UPDATE` en `room_kpis`, con `closed_at` = `occurred_at` del `room_closed`, `close_reason` = su `reason` y `computed_at` = ahora. En esa misma transacción reemplaza las filas de la sala en `room_heatmap`. Si `room_closed` llega repetido, se recalcula y se sobrescribe con el mismo resultado.
 
 | KPI | Cómo se calcula | Eventos |
 | :--- | :--- | :--- |
@@ -164,18 +167,35 @@ identity-api publica `room_closed` (hoy, cuando el Host borra la sala). En la **
 | `trivia_accuracy_pct` | `100 × correctas / respuestas` | `trivia_answer` (social-core) |
 | `messages` · `reactions` · `playback_commands` · `buffering_events` | Número de eventos de cada tipo | `chat_message`, `reaction`, `playback_command`, `buffering` |
 | `avg_buffering_ms` | Promedio de `duration_ms` | `buffering` (sync-core) |
+| `total_buffering_ms` | Suma de `duration_ms` | `buffering` |
+| `avg_rtt_ms` | Promedio de `rtt_ms` (se ignoran los negativos) | `drift_correction` |
+| `p95_drift_ms` | Percentil 95 de `\|drift_ms\|` (rango más cercano) | `drift_correction` |
+
+**QoS y QoE.** Las métricas de calidad de servicio son las de red y sincronización (`avg_rtt_ms`, `avg_drift_ms`, `p95_drift_ms`); las de calidad de experiencia, las de recarga del vídeo (`buffering_events`, `avg_buffering_ms`, `total_buffering_ms`).
 
 - Los promedios se redondean a 2 decimales y valen `0.0` si no hay muestras.
 - Los valores llegan de Redis como texto: se interpretan con tolerancia (`"3"`, `"3.0"`, `"true"`/`"1"`/`"yes"`). Un valor ilegible o no finito se ignora en esa medida, sin descartar el evento.
 
-### 3.4 Heatmap y línea de tiempo
+**Heatmap normalizado.** Al consolidar se guarda en `room_heatmap` una fila por tramo de 5 s de la posición del vídeo con reacciones: `reactions` (todos los emojis) y `density` = `reactions` / reacciones del tramo más activo de la sala, de 0 a 1 (`heatmap_density`).
+
+**Cierre por periodo de gracia.** identity-api solo publica `room_closed` cuando el Host borra la sala. Para las demás, el mantenimiento busca cada hora las salas cuyo último evento es anterior a `ANALYTICS_ROOM_GRACE_HOURS` (12 h, el periodo de gracia de REQ-07) y que aún no tienen fila en `room_kpis`, y las consolida igual, con `closed_at` = su último evento y `close_reason = grace_expired`. Un cierre explícito nunca se pisa. Si una sala cerrada por gracia vuelve a tener actividad, la API la trata otra vez como abierta (`live: true`) y el mantenimiento la consolida de nuevo cuando vuelva a quedar inactiva.
+
+### 3.4 Usuarios activos (DAU/MAU)
+
+En cada ciclo de mantenimiento se hace *upsert* en `daily_active_users`: `dau` = usuarios distintos con `user_login` ese día y `mau` = usuarios distintos en los 30 días que terminan ese día. El día se corta en `ANALYTICS_TIMEZONE`. El primer ciclo tras arrancar recalcula 90 días (todo lo que queda en la telemetría cruda); los siguientes, hoy y ayer. La tabla no se purga y solo se consulta por SQL:
+
+```sql
+SELECT day, dau, mau FROM daily_active_users ORDER BY day DESC LIMIT 30;
+```
+
+### 3.5 Heatmap y línea de tiempo
 
 No se precalculan: se calculan **al vuelo** sobre `telemetry_events` en cada petición (y por tanto solo cubren los últimos 90 días).
 
-- **Heatmap** (`reaction_heatmap`): agrupa las reacciones por tramo de la **posición del vídeo**, `bucket_start_ms = position_ms // bucket_ms × bucket_ms`, y por emoji. Se omiten las reacciones sin emoji o con `position_ms` inválida o negativa. `by_emoji` da el total por emoji, de más a menos usado (empates por emoji).
+- **Heatmap** (`reaction_heatmap`, más `heatmap_density` con el `bucket_ms` pedido): agrupa las reacciones por tramo de la **posición del vídeo**, `bucket_start_ms = position_ms // bucket_ms × bucket_ms`, y por emoji. Se omiten las reacciones sin emoji o con `position_ms` inválida o negativa. `by_emoji` da el total por emoji, de más a menos usado (empates por emoji).
 - **Línea de tiempo** (`timeline`): agrupa por intervalos de `step_s` segundos del **reloj** (`occurred_at`), alineados a la época, desde el primer hasta el último evento e incluyendo los intervalos vacíos. Cada punto trae `messages`, `reactions` y `connected_users`, que es el último `presence` conocido al final del intervalo (se arrastra; `0` antes del primero).
 
-### 3.5 API de solo lectura con `analytics-ticket`
+### 3.6 API de solo lectura con `analytics-ticket`
 
 ```mermaid
 sequenceDiagram
@@ -198,7 +218,7 @@ sequenceDiagram
     end
     API->>API: role == host y room_id == id de la ruta, si no 403
     API->>PG: SELECT room_kpis WHERE room_id
-    alt la sala está cerrada (hay fila)
+    alt la sala está cerrada (hay fila vigente)
         API-->>H: KPIs consolidados con live false
     else sala abierta
         API->>PG: SELECT payload FROM telemetry_events WHERE room_id AND type = ANY(...)
@@ -210,8 +230,8 @@ sequenceDiagram
 | Ruta | Parámetros | Devuelve |
 | :--- | :--- | :--- |
 | `GET /healthz` | — (sin token) | `{"status":"ok"}` |
-| `GET /api/v1/rooms/{id}/kpis` | — | KPIs de §3.3 + `room_id`, `live`, `closed_at`, `computed_at` |
-| `GET /api/v1/rooms/{id}/reactions/heatmap` | `bucket_ms` (1000–60000, por defecto 5000) | `{ room_id, bucket_ms, buckets, by_emoji }` |
+| `GET /api/v1/rooms/{id}/kpis` | — | KPIs de §3.3 + `room_id`, `live`, `close_reason`, `closed_at`, `computed_at` |
+| `GET /api/v1/rooms/{id}/reactions/heatmap` | `bucket_ms` (1000–60000, por defecto 5000) | `{ room_id, bucket_ms, buckets, density, by_emoji }` |
 | `GET /api/v1/rooms/{id}/timeline` | `step_s` (10–3600, por defecto 60) | `{ room_id, step_s, points }` |
 
 Formas exactas de cada respuesta en [AGENTS.md › API](AGENTS.md#api-solo-lectura-puerto-analytics_port-por-defecto-8084).
@@ -226,11 +246,12 @@ Formas exactas de cada respuesta en [AGENTS.md › API](AGENTS.md#api-solo-lectu
 
 ### 4.1 Tablas (PostgreSQL)
 
-Migración `src/analytics/migrations/001_init.sql`. Viven en la misma base que las tablas de identity-api, sin claves foráneas hacia ellas (`room_id` y `user_id` son `TEXT`).
+Migraciones `src/analytics/migrations/001_init.sql` y `002_business_kpis.sql`. Viven en la misma base que las tablas de identity-api, sin claves foráneas hacia ellas (`room_id` y `user_id` son `TEXT`).
 
 ```mermaid
 erDiagram
     telemetry_events }o..o| room_kpis : "room_id (sin FK)"
+    room_kpis ||..o{ room_heatmap : "room_id (sin FK)"
 
     schema_migrations {
         text version PK
@@ -257,13 +278,29 @@ erDiagram
         integer playback_commands
         integer buffering_events
         float avg_buffering_ms
+        float avg_rtt_ms
+        float p95_drift_ms
+        bigint total_buffering_ms
+        text close_reason "deleted, host_closed o grace_expired"
         timestamptz closed_at
+        timestamptz computed_at
+    }
+    room_heatmap {
+        text room_id PK
+        bigint bucket_start_ms PK
+        integer reactions
+        float density "0 a 1"
+    }
+    daily_active_users {
+        date day PK
+        integer dau
+        integer mau
         timestamptz computed_at
     }
 ```
 
-- `telemetry_events` tiene índices `(room_id, type)` (consultas de la API y de los KPIs) y `(occurred_at)` (purga). Se purga a los **90 días**.
-- `room_kpis` **no** se purga: los KPIs consolidados de una sala cerrada quedan aunque su telemetría cruda ya se haya borrado.
+- `telemetry_events` tiene índices `(room_id, type)` (consultas de la API y de los KPIs), `(occurred_at)` (purga) y `(type, occurred_at)` (DAU/MAU). Se purga a los **90 días**.
+- `room_kpis`, `room_heatmap` y `daily_active_users` **no** se purgan: los KPIs consolidados de una sala cerrada quedan aunque su telemetría cruda ya se haya borrado.
 - `user_id` es el `sub` del token (UID de Firebase o `guest:<uuid>`); un `user_id` vacío se guarda como `NULL`.
 
 ### 4.2 Redis
@@ -286,6 +323,8 @@ Tipos que llegan hoy, por productor: identity-api (`user_login`, `room_created`,
 | `ANALYTICS_PORT` | `8084` | Entero de 1 a 65535 |
 | `ANALYTICS_ALLOWED_ORIGINS` | `http://localhost:5173` | Lista separada por comas, con esquema |
 | `ANALYTICS_CONSUMER` | nombre del host | Estable por réplica para recuperar sus pendientes |
+| `ANALYTICS_ROOM_GRACE_HOURS` | `12` | Entero ≥ 0. Horas sin actividad tras las que una sala se consolida como `grace_expired` |
+| `ANALYTICS_TIMEZONE` | `America/Bogota` | Nombre IANA; corte del día en DAU/MAU (lo resuelve PostgreSQL) |
 
 En `docker-compose.yml` el servicio `analytics` (`tint-analytics`) toma `JWT_*` y `ANALYTICS_*` del `.env` raíz ([`.env.example`](../../.env.example)), fija `ANALYTICS_CONSUMER=analytics-1`, publica el puerto `${ANALYTICS_PORT:-8084}` y tiene un *healthcheck* que llama a `/healthz` cada 10 s. Arranca cuando PostgreSQL y Redis están sanos.
 
@@ -333,7 +372,7 @@ Las pruebas unitarias usan dobles (`tests/fakes.py`) para Redis y PostgreSQL. La
 | 500 | Error de programación no controlado (`error interno`; el detalle va al log) |
 | 503 | Redis (revocación) o PostgreSQL no disponibles |
 
-**Logs.** `logging` a nivel `INFO` con el formato `%(asctime)s %(levelname)s %(name)s %(message)s`. Cada petición HTTP se registra con la IP, el método, la ruta y el estado, **nunca las cabeceras** (el token va en `Authorization`). Mensajes clave: `migraciones aplicadas: ...`, `analytics consumiendo analytics:events; API en :8084`, `reprocesados N eventos pendientes`, `evento X inválido, se descarta: ...`, `KPIs consolidados de la sala X`, `purgados N eventos con más de 90 días` y `fallo procesando un evento; se reintenta en 5 s`.
+**Logs.** `logging` a nivel `INFO` con el formato `%(asctime)s %(levelname)s %(name)s %(message)s`. Cada petición HTTP se registra con la IP, el método, la ruta y el estado, **nunca las cabeceras** (el token va en `Authorization`). Mensajes clave: `migraciones aplicadas: ...`, `analytics consumiendo analytics:events; API en :8084`, `reprocesados N eventos pendientes`, `evento X inválido, se descarta: ...`, `KPIs consolidados de la sala X (razón)`, `consolidadas N salas por periodo de gracia`, `purgados N eventos con más de 90 días`, `usuarios activos (DAU/MAU) recalculados para N días` y `fallo procesando un evento; se reintenta en 5 s`.
 
 **Métricas y salud.** No hay endpoint de métricas; `GET /healthz` (sin token) es la sonda de vida que usa el *healthcheck* de Docker. Para ver el atraso de la ingesta: `XPENDING analytics:events analytics-workers` en Redis.
 
