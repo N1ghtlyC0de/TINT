@@ -106,6 +106,26 @@ UPSERT_DAILY_ACTIVE_USERS_SQL = (
     "ON CONFLICT (day) DO UPDATE SET dau = EXCLUDED.dau, mau = EXCLUDED.mau, "
     "computed_at = EXCLUDED.computed_at"
 )
+# Panel de negocio: solo agregados.
+SELECT_DAILY_USERS_SQL = (
+    "SELECT day, dau, mau FROM daily_active_users "
+    "WHERE day > (SELECT max(day) FROM daily_active_users) - %s::integer ORDER BY day"
+)
+SELECT_EVENT_COUNTS_SQL = (
+    "SELECT type, source, count(*) FROM telemetry_events "
+    "GROUP BY type, source ORDER BY count(*) DESC, type, source"
+)
+COUNT_ACTIVE_ROOMS_SQL = (
+    "SELECT count(DISTINCT room_id) FROM telemetry_events WHERE room_id IS NOT NULL"
+)
+SELECT_CLOSED_ROOMS_SQL = (
+    f"SELECT room_id, {', '.join(KPI_COLUMNS)} FROM room_kpis "
+    "ORDER BY closed_at DESC NULLS LAST, room_id LIMIT %s"
+)
+SELECT_HEATMAPS_SQL = (
+    "SELECT room_id, bucket_start_ms, reactions, density FROM room_heatmap "
+    "WHERE room_id = ANY(%s) ORDER BY room_id, bucket_start_ms"
+)
 GRACE_EXPIRED = "grace_expired"
 HEATMAP_BUCKET_MS = 5000
 
@@ -299,3 +319,31 @@ class ReadRepository:
         with self._connect() as conn:
             rows = conn.execute(SELECT_ROOM_EVENTS_SQL, (room_id, list(types))).fetchall()
         return [row[0] for row in rows]
+
+    def business_overview(self, days: int, rooms: int) -> dict[str, Any]:
+        """Agregados del panel de negocio en una sola conexión.
+
+        `daily`: (día, dau, mau) de los últimos `days` días con datos; `events`: (tipo, origen,
+        conteo); `active_rooms`: salas con telemetría; `rooms`: las `rooms` salas cerradas más
+        recientes; `heatmaps`: por sala, sus tramos (inicio, reacciones, densidad).
+        """
+        with self._connect() as conn:
+            daily = conn.execute(SELECT_DAILY_USERS_SQL, (days,)).fetchall()
+            events = conn.execute(SELECT_EVENT_COUNTS_SQL).fetchall()
+            (active_rooms,) = conn.execute(COUNT_ACTIVE_ROOMS_SQL).fetchone()
+            closed = [
+                dict(zip(("room_id", *KPI_COLUMNS), row, strict=True))
+                for row in conn.execute(SELECT_CLOSED_ROOMS_SQL, (rooms,)).fetchall()
+            ]
+            heatmaps: dict[str, list[tuple[int, int, float]]] = {}
+            if closed:
+                rows = conn.execute(SELECT_HEATMAPS_SQL, ([room["room_id"] for room in closed],))
+                for room_id, start, reactions, density in rows.fetchall():
+                    heatmaps.setdefault(room_id, []).append((start, reactions, density))
+        return {
+            "daily": daily,
+            "events": events,
+            "active_rooms": active_rooms,
+            "rooms": closed,
+            "heatmaps": heatmaps,
+        }

@@ -397,3 +397,42 @@ def test_room_events_filters_by_room_and_types():
     ((sql, params),) = conn.executed
     assert "WHERE room_id = %s AND type = ANY(%s)" in sql
     assert params == ("r1", ["reaction"])
+
+
+def test_business_overview_reads_every_aggregate_in_one_connection():
+    kpi_row = ("r1", 3, 2.5, 120.0, 50.0, 4, 5, 6, 1, 800.0, 40.0, 900.0, 800, "deleted", NOW, NOW)
+
+    def responder(sql, params):
+        if sql.startswith("SELECT day, dau, mau"):
+            return [("2026-10-12", 3, 4)]
+        if sql.startswith("SELECT type, source, count(*)"):
+            return [("presence", "social-core", 16)]
+        if sql.startswith("SELECT count(DISTINCT room_id)"):
+            return [(5,)]
+        if sql.startswith("SELECT room_id, peak_users"):
+            return [kpi_row]
+        return [("r1", 0, 2, 0.4), ("r1", 5000, 5, 1.0)]
+
+    conn = FakeConn(responder)
+    overview = ReadRepository(lambda: conn).business_overview(30, 50)
+    assert overview["daily"] == [("2026-10-12", 3, 4)]
+    assert overview["events"] == [("presence", "social-core", 16)]
+    assert overview["active_rooms"] == 5
+    (room,) = overview["rooms"]
+    assert (room["room_id"], room["close_reason"], room["avg_rtt_ms"]) == ("r1", "deleted", 40.0)
+    assert overview["heatmaps"] == {"r1": [(0, 2, 0.4), (5000, 5, 1.0)]}
+    params = [params for _sql, params in conn.executed]
+    assert params == [(30,), None, None, (50,), (["r1"],)]
+    assert all(sql.startswith("SELECT") for sql, _ in conn.executed)
+    assert "user_id" not in " ".join(sql for sql, _ in conn.executed)
+    assert conn.closed
+
+
+def test_business_overview_without_closed_rooms_skips_the_heatmap_query():
+    def responder(sql, params):
+        return [(0,)] if sql.startswith("SELECT count(DISTINCT room_id)") else []
+
+    conn = FakeConn(responder)
+    overview = ReadRepository(lambda: conn).business_overview(30, 50)
+    assert overview == {"daily": [], "events": [], "active_rooms": 0, "rooms": [], "heatmaps": {}}
+    assert len(conn.executed) == 4

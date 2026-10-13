@@ -153,7 +153,8 @@ class FakeEventStore:
 
 
 class FakeReadRepository:
-    def __init__(self, kpis=None, events=None, fail=False):
+    def __init__(self, kpis=None, events=None, fail=False, overview=None):
+        self.overview = overview
         self.kpis = dict(kpis or {})
         self.events = dict(events or {})
         self.fail = fail
@@ -164,6 +165,12 @@ class FakeReadRepository:
         if self.fail:
             raise RuntimeError("postgres caído")
         return self.kpis.get(room_id)
+
+    def business_overview(self, days, rooms):
+        self.calls.append(("business_overview", days, rooms))
+        if self.fail:
+            raise RuntimeError("postgres caído")
+        return self.overview
 
     def room_events(self, room_id, types):
         self.calls.append(("room_events", room_id, tuple(types)))
